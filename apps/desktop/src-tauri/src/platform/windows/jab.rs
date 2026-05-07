@@ -501,9 +501,7 @@ unsafe fn navigate_preferring_string(
         match navigate_to_element_by_string_path(api, vm_id, root_ac, sp) {
             Ok(target) => return Ok(target),
             Err(e) => {
-                log::warn!(
-                    "JAB string path navigation failed ({e}); falling back to index path"
-                );
+                log::warn!("JAB string path navigation failed ({e}); falling back to index path");
             }
         }
     }

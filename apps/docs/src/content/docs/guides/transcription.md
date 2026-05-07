@@ -3,7 +3,7 @@ title: Transcription
 description: Learn about Voquill's transcription modes and how to choose the right one.
 ---
 
-Voquill supports three transcription modes. You can switch between them at any time from the settings page.
+Voquill supports three transcription modes. You can switch between them at any time from the settings page, or quickly from the **Transcription Provider** submenu in the system tray icon.
 
 ## Local
 

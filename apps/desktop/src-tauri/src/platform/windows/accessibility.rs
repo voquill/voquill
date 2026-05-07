@@ -1764,8 +1764,7 @@ fn jab_smart_write(
     index_path: &[usize],
     desired: &str,
 ) -> Result<(), String> {
-    let current =
-        super::jab::jab_read_text(hwnd, string_path, index_path)?.unwrap_or_default();
+    let current = super::jab::jab_read_text(hwnd, string_path, index_path)?.unwrap_or_default();
 
     if current == desired {
         log::info!("JAB smart write: text already matches, no edits needed");

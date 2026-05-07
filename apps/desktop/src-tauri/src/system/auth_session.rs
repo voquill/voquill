@@ -190,7 +190,8 @@ impl AuthSession {
         custom_token: &str,
     ) -> Result<(), AuthSessionError> {
         let mut guard = self.inner.lock().await;
-        let response = sign_in_with_custom_token(&guard.client, &guard.config, custom_token).await?;
+        let response =
+            sign_in_with_custom_token(&guard.client, &guard.config, custom_token).await?;
         persist_refresh_token(&guard.session_path, &response.refresh_token)?;
         guard.refresh_token = Some(response.refresh_token);
         guard.id_token = Some(IdTokenCache {
@@ -249,7 +250,9 @@ impl AuthSession {
                 Ok(false)
             }
             Err(AuthSessionError::Firebase(msg)) => {
-                log::warn!("auth_is_signed_in: firebase rejected refresh ({msg}); clearing session");
+                log::warn!(
+                    "auth_is_signed_in: firebase rejected refresh ({msg}); clearing session"
+                );
                 clear_session(&mut guard)?;
                 Ok(false)
             }
@@ -352,8 +355,8 @@ pub(crate) fn navigate_main_to_built_in(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("main")
         .ok_or_else(|| "main webview not available".to_string())?;
     let url = built_in_url(app)?.to_string();
-    let url_json = serde_json::to_string(&url)
-        .map_err(|err| format!("serialize built-in url: {err}"))?;
+    let url_json =
+        serde_json::to_string(&url).map_err(|err| format!("serialize built-in url: {err}"))?;
     let script = format!("window.location.replace({url_json});");
     window
         .eval(&script)
@@ -391,9 +394,8 @@ fn load_refresh_token(path: &PathBuf) -> Result<Option<String>, AuthSessionError
     }
     let bytes = fs::read(path)?;
     let persisted: PersistedSession = serde_json::from_slice(&bytes)?;
-    let plaintext =
-        reveal_api_key(&persisted.salt_b64, &persisted.refresh_token_ciphertext_b64)
-            .map_err(|err| AuthSessionError::Crypto(err.to_string()))?;
+    let plaintext = reveal_api_key(&persisted.salt_b64, &persisted.refresh_token_ciphertext_b64)
+        .map_err(|err| AuthSessionError::Crypto(err.to_string()))?;
     Ok(Some(plaintext))
 }
 

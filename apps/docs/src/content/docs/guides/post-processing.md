@@ -24,4 +24,4 @@ Post-processing follows the same mode as your transcription setting:
 
 ## Disabling Post-Processing
 
-If you prefer raw transcriptions without any AI cleanup, you can select the **Light** style, which makes minimal changes, or disable post-processing entirely in settings.
+If you prefer raw transcriptions without any AI cleanup, select the **Verbatim** style, which returns exactly what you said with no editing. You can also disable post-processing entirely in settings.

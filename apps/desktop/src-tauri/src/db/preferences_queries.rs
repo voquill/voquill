@@ -309,9 +309,7 @@ pub async fn fetch_user_preferences(
             .try_get::<i64, _>("remote_receiver_auto_start")
             .map(|v| v != 0)
             .unwrap_or(false),
-        dictation_audio_dim: row
-            .try_get::<f64, _>("dictation_audio_dim")
-            .unwrap_or(1.0),
+        dictation_audio_dim: row.try_get::<f64, _>("dictation_audio_dim").unwrap_or(1.0),
         menu_bar_icon_hidden: row
             .try_get::<i64, _>("menu_bar_icon_hidden")
             .map(|v| v != 0)

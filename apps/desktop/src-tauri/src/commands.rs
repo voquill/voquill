@@ -1856,6 +1856,15 @@ pub fn set_menu_icon(
 
 #[tauri::command]
 #[specta::specta]
+pub fn rebuild_tray_menu(
+    app: AppHandle,
+    config: crate::system::tray::TrayMenuConfig,
+) -> Result<(), String> {
+    crate::system::tray::rebuild_tray_menu(&app, &config)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn set_tray_visible(app: AppHandle, visible: bool) -> Result<(), String> {
     use tauri::tray::TrayIconId;
     if let Some(tray) = app.tray_by_id(&TrayIconId::new("main")) {
@@ -1993,9 +2002,7 @@ pub async fn read_accessibility_field_values(
 /// an empty vec when the app is not running.
 #[tauri::command]
 #[specta::specta]
-pub async fn resolve_app_pids(
-    identity: AppIdentity,
-) -> Result<Vec<AppProcessMatch>, String> {
+pub async fn resolve_app_pids(identity: AppIdentity) -> Result<Vec<AppProcessMatch>, String> {
     tokio::time::timeout(
         std::time::Duration::from_secs(3),
         tauri::async_runtime::spawn_blocking(move || {

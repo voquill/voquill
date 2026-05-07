@@ -7,6 +7,7 @@ import { DictationSideEffects } from "./DictationSideEffects";
 import { KeyPressSideEffects } from "./KeyPressSideEffects";
 import { MigratorSideEffects } from "./MigratorSideEffects";
 import { SessionSideEffects } from "./SessionSideEffects";
+import { TrayMenuSideEffects } from "./TrayMenuSideEffects";
 import { LoadingApp } from "./LoadingApp";
 import { UpdateDialog } from "./UpdateDialog";
 import { getIsVoquillCloudUser } from "../../utils/member.utils";
@@ -20,6 +21,7 @@ export const AppWithLoading = () => {
     <>
       {hotkeyStrategy === "bridge" && <KeyPressSideEffects />}
       <AppSideEffects />
+      <TrayMenuSideEffects />
       <UpdateDialog />
       <MigratorSideEffects />
       <DictationSideEffects />

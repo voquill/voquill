@@ -5,14 +5,12 @@ import {
   EnterpriseLicense,
   Member,
   Nullable,
-  Term,
   User,
 } from "@voquill/types";
 import { getRec, listify } from "@voquill/utilities";
 import dayjs from "dayjs";
 import { isEqual } from "lodash-es";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useIntl } from "react-intl";
+import { useEffect, useRef, useState } from "react";
 import { combineLatest, from, Observable, of } from "rxjs";
 import { showErrorSnackbar, showSnackbar } from "../../actions/app.actions";
 import { ensureRustSessionSync } from "../../actions/login.actions";
@@ -46,7 +44,6 @@ import {
   getConfigRepo,
   getEnterpriseRepo,
   getMemberRepo,
-  getTermRepo,
   getUserRepo,
 } from "../../repos";
 import { HotkeyStrategy, PasteKeybindSupport } from "../../state/app.state";
@@ -61,10 +58,10 @@ import {
   loadEnterpriseTarget,
 } from "../../utils/enterprise.utils";
 import { getIsDevMode } from "../../utils/env.utils";
-import { createId } from "../../utils/id.utils";
+import { addSelectedTextToDictionary } from "../../actions/dictionary.actions";
 import { ADD_TO_DICTIONARY_HOTKEY } from "../../utils/keyboard.utils";
+import { DASHBOARD_SECTION_PATHS } from "../../utils/dashboard-navigation.utils";
 import { getLogger, initLogging } from "../../utils/log.utils";
-import { sendPillFlashMessage } from "../../utils/overlay.utils";
 import { isPermissionAuthorized } from "../../utils/permission.utils";
 import { getPlatform } from "../../utils/platform.utils";
 import { minutesToMilliseconds } from "../../utils/time.utils";
@@ -117,7 +114,6 @@ const TOKEN_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const ENTERPRISE_REFRESH_INTERVAL_MS = 1000 * 60;
 
 export const AppSideEffects = () => {
-  const intl = useIntl();
   const [authReady, setAuthReady] = useState(false);
   const [streamReady, setStreamReady] = useState(false);
   const [initReady, setInitReady] = useState(false);
@@ -552,44 +548,10 @@ export const AppSideEffects = () => {
     isEnterprise,
   ]);
 
-  const handleAddToDictionary = useCallback(async () => {
-    try {
-      const selectedText = await invoke<string | null>("get_selected_text");
-      console.log("selected text:", selectedText);
-      if (!selectedText?.trim()) {
-        return;
-      }
-
-      const text = selectedText.trim();
-      const newTerm: Term = {
-        id: createId(),
-        createdAt: new Date().toISOString(),
-        sourceValue: text,
-        destinationValue: "",
-        isReplacement: false,
-      };
-
-      produceAppState((draft) => {
-        draft.termById[newTerm.id] = newTerm;
-        draft.dictionary.termIds = [newTerm.id, ...draft.dictionary.termIds];
-      });
-
-      await getTermRepo().createTerm(newTerm);
-      sendPillFlashMessage(
-        intl.formatMessage(
-          { defaultMessage: 'Added "{text}" to dictionary' },
-          { text },
-        ),
-      );
-    } catch (error) {
-      getLogger().error(`Failed to add to dictionary: ${error}`);
-    }
-  }, [intl]);
-
   useHotkeyFire({
     actionName: ADD_TO_DICTIONARY_HOTKEY,
     isDisabled: false,
-    onFire: handleAddToDictionary,
+    onFire: addSelectedTextToDictionary,
   });
 
   // You cannot refresh the page in Tauri, here's a hotkey to help with that
@@ -609,8 +571,8 @@ export const AppSideEffects = () => {
     keys: [","],
     meta: true,
     callback: () => {
-      if (window.location.pathname !== "/dashboard/settings") {
-        window.location.href = "/dashboard/settings";
+      if (window.location.pathname !== DASHBOARD_SECTION_PATHS.settings) {
+        window.location.href = DASHBOARD_SECTION_PATHS.settings;
       }
     },
   });
@@ -624,10 +586,7 @@ export const AppSideEffects = () => {
         updateInitializedRef.current = true;
       }
 
-      const available = await checkForAppUpdates();
-      invoke("set_menu_icon", {
-        variant: available ? "update" : "default",
-      }).catch(console.error);
+      await checkForAppUpdates();
     },
     [],
   );

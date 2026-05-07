@@ -15,12 +15,13 @@ import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store";
 import { getIsAssistantModeEnabled } from "../../utils/assistant-mode.utils";
+import { DASHBOARD_SECTION_PATHS } from "../../utils/dashboard-navigation.utils";
 import { ListTile } from "../common/ListTile";
 import { DiscordListTile } from "./DiscordListTile";
 import { MobileAppListTile } from "./MobileAppListTile";
 import { UpdateListTile } from "./UpdateListTile";
 
-const settingsPath = "/dashboard/settings";
+const settingsPath = DASHBOARD_SECTION_PATHS.settings;
 
 type NavItem = {
   label: React.ReactNode;
@@ -50,22 +51,22 @@ export const DashboardMenu = ({ onChoose }: DashboardMenuProps) => {
     () => [
       {
         label: <FormattedMessage defaultMessage="Home" />,
-        path: "/dashboard",
+        path: DASHBOARD_SECTION_PATHS.home,
         icon: <HomeOutlined />,
       },
       {
         label: <FormattedMessage defaultMessage="History" />,
-        path: "/dashboard/transcriptions",
+        path: DASHBOARD_SECTION_PATHS.history,
         icon: <HistoryOutlined />,
       },
       {
         label: <FormattedMessage defaultMessage="Dictionary" />,
-        path: "/dashboard/dictionary",
+        path: DASHBOARD_SECTION_PATHS.dictionary,
         icon: <ClassOutlined />,
       },
       {
         label: <FormattedMessage defaultMessage="Styles" />,
-        path: "/dashboard/styling",
+        path: DASHBOARD_SECTION_PATHS.styles,
         icon: <PaletteOutlined />,
       },
       ...(assistantModeEnabled
