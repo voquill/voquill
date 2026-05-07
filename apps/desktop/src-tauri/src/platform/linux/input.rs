@@ -69,16 +69,29 @@ fn paste_via_clipboard(text: &str, keybind: Option<&str>) -> Result<(), String> 
         None => is_ctrl_shift_v_window(),
     };
 
+    // Press and hold Ctrl
     enigo.key_down(Key::Control);
+    thread::sleep(Duration::from_millis(10));
+
+    // Press and hold Shift if needed
     if use_shift {
         enigo.key_down(Key::Shift);
+        thread::sleep(Duration::from_millis(10));
     }
+
+    // Press 'v'
     enigo.key_down(Key::Layout('v'));
     thread::sleep(Duration::from_millis(15));
     enigo.key_up(Key::Layout('v'));
+
+    // Release Shift if pressed
     if use_shift {
+        thread::sleep(Duration::from_millis(10));
         enigo.key_up(Key::Shift);
     }
+
+    // Release Ctrl
+    thread::sleep(Duration::from_millis(10));
     enigo.key_up(Key::Control);
 
     if let Some(old) = previous {
@@ -130,6 +143,8 @@ const CTRL_SHIFT_V_WM_CLASSES: &[&str] = &[
 
 fn is_ctrl_shift_v_window() -> bool {
     let Some((res_name, res_class)) = get_focused_wm_class() else {
+        // If detection fails, use conservative Ctrl+V (works everywhere)
+        eprintln!("[voquill] focused window class detection failed, defaulting to Ctrl+V");
         return false;
     };
 

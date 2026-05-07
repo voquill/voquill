@@ -25,24 +25,39 @@ export class BatchTranscriptionSession implements TranscriptionSession {
     const rate = audio.sampleRate;
 
     if (rate == null || rate <= 0 || payloadSamples.length === 0) {
-      getLogger().warning(`Batch session: skipping transcription (rate=${rate}, samples=${payloadSamples.length})`);
+      const reason =
+        rate == null || rate <= 0
+          ? "invalid sample rate"
+          : "no audio samples captured";
+      getLogger().warning(
+        `Batch session: cannot transcribe - ${reason} (rate=${rate}, samples=${payloadSamples.length})`,
+      );
+      showErrorSnackbar(
+        rate == null || rate <= 0
+          ? "Recording failed: invalid audio format. Please check your microphone."
+          : "No audio was captured. Please check your microphone is working and try again.",
+      );
       return {
         rawTranscript: null,
         metadata: {},
-        warnings: [],
+        warnings: ["Recording produced no usable audio"],
       };
     }
 
     const warnings: string[] = [];
 
     try {
-      getLogger().info(`Batch transcription: ${payloadSamples.length} samples at ${rate}Hz`);
+      getLogger().info(
+        `Batch transcription: ${payloadSamples.length} samples at ${rate}Hz`,
+      );
       const result = await transcribeAudio({
         samples: payloadSamples,
         sampleRate: rate,
       });
 
-      getLogger().info(`Batch transcription result: ${result.rawTranscript.length} chars`);
+      getLogger().info(
+        `Batch transcription result: ${result.rawTranscript.length} chars`,
+      );
       return {
         rawTranscript: result.rawTranscript,
         metadata: result.metadata,
