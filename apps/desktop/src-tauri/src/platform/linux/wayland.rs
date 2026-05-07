@@ -2,6 +2,13 @@ use std::process::Command;
 use std::{thread, time::Duration};
 
 pub fn is_wayland() -> bool {
+    // Check GDK_BACKEND first - if explicitly set to x11, don't use Wayland
+    if let Ok(backend) = std::env::var("GDK_BACKEND") {
+        if backend.to_lowercase().contains("x11") {
+            return false;
+        }
+    }
+    // Then check WAYLAND_DISPLAY
     std::env::var("WAYLAND_DISPLAY").is_ok()
 }
 

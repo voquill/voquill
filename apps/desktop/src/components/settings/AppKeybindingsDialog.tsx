@@ -19,9 +19,7 @@ import { produceAppState, useAppStore } from "../../store";
 import { StorageImage } from "../common/StorageImage";
 
 export const AppKeybindingsDialog = () => {
-  const open = useAppStore(
-    (state) => state.settings.appKeybindingsDialogOpen,
-  );
+  const open = useAppStore((state) => state.settings.appKeybindingsDialogOpen);
   const appTargets = useAppStore((state) => state.appTargetById);
 
   const sortedTargets = useMemo(
@@ -90,10 +88,7 @@ const AppKeybindingRow = ({ target }: AppKeybindingRowProps) => {
 
   const handleChange = (event: SelectChangeEvent<string>) => {
     const value = event.target.value;
-    void setAppTargetPasteKeybind(
-      target.id,
-      value === "ctrl+v" ? null : value,
-    );
+    void setAppTargetPasteKeybind(target.id, value === "ctrl+v" ? null : value);
   };
 
   return (
@@ -103,7 +98,12 @@ const AppKeybindingRow = ({ target }: AppKeybindingRowProps) => {
       justifyContent="space-between"
       sx={{ backgroundColor: "level1", mb: 1, borderRadius: 1, px: 1.5, py: 1 }}
     >
-      <Stack direction="row" alignItems="center" spacing={1.5} sx={{ minWidth: 0 }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1.5}
+        sx={{ minWidth: 0 }}
+      >
         <Box
           sx={{
             overflow: "hidden",
@@ -120,7 +120,8 @@ const AppKeybindingRow = ({ target }: AppKeybindingRowProps) => {
             <StorageImage
               path={target.iconPath}
               alt={
-                target.name ?? intl.formatMessage({ defaultMessage: "App icon" })
+                target.name ??
+                intl.formatMessage({ defaultMessage: "App icon" })
               }
               size={32}
             />

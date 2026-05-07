@@ -10,7 +10,10 @@ import { FormattedMessage } from "react-intl";
 import { OidcProviders } from "./OidcProviders";
 import { setMode, submitSignIn } from "../../actions/login.actions";
 import { produceAppState, useAppStore } from "../../store";
-import { getCanSubmitLogin, getShouldShowEmailForm } from "../../utils/login.utils";
+import {
+  getCanSubmitLogin,
+  getShouldShowEmailForm,
+} from "../../utils/login.utils";
 import { useState } from "react";
 import { Visibility, VisibilityOff } from "@mui/icons-material";
 

@@ -78,9 +78,7 @@ export class OpenAICompatibleRepo extends BaseOllamaRepo {
       headers: getOllamaHeaders(this.apiKey),
     });
     if (!response.ok) {
-      throw new Error(
-        `Unable to fetch models (status ${response.status})`,
-      );
+      throw new Error(`Unable to fetch models (status ${response.status})`);
     }
 
     const payload = (await response.json()) as {

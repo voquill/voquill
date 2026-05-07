@@ -16,7 +16,10 @@ import {
   showUpgradePlanList,
 } from "../../actions/pricing.actions";
 import { useAppStore } from "../../store";
-import { getEffectivePlan, getIsPaidSubscriber } from "../../utils/member.utils";
+import {
+  getEffectivePlan,
+  getIsPaidSubscriber,
+} from "../../utils/member.utils";
 import { PricingPlan } from "../../utils/price.utils";
 import { LoginForm } from "../login/LoginForm";
 import { FormContainer } from "../onboarding/OnboardingShared";

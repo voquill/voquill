@@ -36,9 +36,7 @@ export const TranscriptionTextBlock = ({
             sx={{
               whiteSpace: "pre-wrap",
               wordBreak: "break-word",
-              fontFamily: monospace
-                ? '"Roboto Mono", monospace'
-                : undefined,
+              fontFamily: monospace ? '"Roboto Mono", monospace' : undefined,
             }}
           >
             {normalized}
@@ -46,9 +44,7 @@ export const TranscriptionTextBlock = ({
         </Box>
       ) : (
         <Typography variant="body2" color="text.secondary">
-          {placeholder ?? (
-            <FormattedMessage defaultMessage="Not provided." />
-          )}
+          {placeholder ?? <FormattedMessage defaultMessage="Not provided." />}
         </Typography>
       )}
     </Box>

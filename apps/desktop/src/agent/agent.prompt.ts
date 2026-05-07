@@ -9,7 +9,10 @@ import {
 } from "../types/agent.types";
 import { getMyUserName } from "../utils/user.utils";
 
-const extractSchema = (schema: ReturnType<typeof zodToJsonSchema>, name: string): Record<string, unknown> => {
+const extractSchema = (
+  schema: ReturnType<typeof zodToJsonSchema>,
+  name: string,
+): Record<string, unknown> => {
   return (schema.definitions?.[name] as Record<string, unknown>) ?? schema;
 };
 
@@ -17,13 +20,19 @@ const rawDecisionSchema = zodToJsonSchema(DecisionResponseSchema, {
   name: "DecisionResponse",
   $refStrategy: "none",
 });
-export const DECISION_JSON_SCHEMA = extractSchema(rawDecisionSchema, "DecisionResponse");
+export const DECISION_JSON_SCHEMA = extractSchema(
+  rawDecisionSchema,
+  "DecisionResponse",
+);
 
 const rawFinalResponseSchema = zodToJsonSchema(FinalResponseSchema, {
   name: "FinalResponse",
   $refStrategy: "none",
 });
-export const FINAL_RESPONSE_JSON_SCHEMA = extractSchema(rawFinalResponseSchema, "FinalResponse");
+export const FINAL_RESPONSE_JSON_SCHEMA = extractSchema(
+  rawFinalResponseSchema,
+  "FinalResponse",
+);
 
 const getCommonPromptContext = (): string => {
   const username = getMyUserName(getAppState());

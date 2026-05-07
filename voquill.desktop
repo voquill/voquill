@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Voquill
+Comment=AI Voice Dictation
+Exec=/usr/local/bin/voquill
+Icon=voquill
+Terminal=false
+Type=Application
+Categories=Utility;AudioVideo;
+StartupWMClass=Voquill

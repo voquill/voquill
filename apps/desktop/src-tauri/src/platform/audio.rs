@@ -347,7 +347,11 @@ impl RecordingManager {
         let samples = recording
             .buffer
             .lock()
-            .map(|buffer| buffer.clone())
+            .map(|buffer| {
+                let s = buffer.clone();
+                eprintln!("[recording] stop_recording: buffer has {} samples", s.len());
+                s
+            })
             .unwrap_or_default();
         let sample_rate = recording.sample_rate;
         let fallback_duration = recording.start.elapsed();
@@ -358,6 +362,8 @@ impl RecordingManager {
             fallback_duration
         };
         let size_bytes = samples.len() as u64 * std::mem::size_of::<f32>() as u64;
+
+        eprintln!("[recording] stop_recording: samples={}, sample_rate={}, duration={:?}", samples.len(), sample_rate, duration);
 
         drop(recording);
 
@@ -500,7 +506,9 @@ fn name_has_low_quality_keyword(name: &str) -> bool {
 fn ordered_host_ids() -> Vec<HostId> {
     let default_host = cpal::default_host();
     let default_id = default_host.id();
-    let mut others: Vec<HostId> = cpal::available_hosts()
+    let available = cpal::available_hosts();
+    eprintln!("[recording] available hosts: {:?}", available.iter().map(|id| (id.name(), host_rank(*id))).collect::<Vec<_>>());
+    let mut others: Vec<HostId> = available
         .into_iter()
         .filter(|id| *id != default_id)
         .collect();
@@ -509,6 +517,7 @@ fn ordered_host_ids() -> Vec<HostId> {
     let mut ordered = Vec::with_capacity(others.len() + 1);
     ordered.push(default_id);
     ordered.extend(others);
+    eprintln!("[recording] ordered host ids: {:?}", ordered.iter().map(|id| id.name()).collect::<Vec<_>>());
     ordered
 }
 
@@ -516,6 +525,7 @@ fn ordered_host_ids() -> Vec<HostId> {
 fn host_rank(id: HostId) -> u8 {
     match id.name() {
         "PulseAudio" => 0,
+        "PipeWire" => 0,  // Treat PipeWire like PulseAudio (default priority)
         "ALSA" => 1,
         "JACK" => 2,
         _ => 10,
@@ -665,7 +675,11 @@ fn start_recording_on_host(
         }
 
         let config = match device.default_input_config() {
-            Ok(cfg) => cfg,
+            Ok(cfg) => {
+                eprintln!("[recording] device '{label}' config: channels={}, sample_rate={:?}, format={:?}",
+                    cfg.channels(), cfg.sample_rate(), cfg.sample_format());
+                cfg
+            },
             Err(err) => {
                 eprintln!("[recording] device '{label}' rejected default config: {err}");
                 last_err = Some(RecordingError::StreamConfig(err.to_string()));
@@ -801,6 +815,8 @@ fn device_candidates_for_host(
             .as_deref()
             .map(|value| value.trim().to_ascii_lowercase())
             .unwrap_or_else(|| "<unknown>".to_string());
+
+        eprintln!("[recording] host {:?} default input: {:?}", host.id(), name);
 
         let matches_preferred = preferred_lower
             .as_ref()
@@ -1013,6 +1029,14 @@ where
 
                 if let Some(ref chunk_emitter) = chunk_emitter_ref {
                     chunk_emitter.emit(&mono_samples);
+                }
+
+                // Log first few callbacks to verify stream is receiving data
+                use std::sync::atomic::{AtomicU64, Ordering};
+                static CALLBACK_COUNT: AtomicU64 = AtomicU64::new(0);
+                let count = CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+                if count < 5 {
+                    eprintln!("[recording] stream callback #{}: {} samples", count, mono_samples.len());
                 }
 
                 if let Ok(mut shared_buffer) = callback_buffer.lock() {

@@ -22,7 +22,9 @@ export const DraftParamsSchema = z.object({
 export type DraftParams = z.infer<typeof DraftParamsSchema>;
 
 export const WriteToTextFieldParamsSchema = z.object({});
-export type WriteToTextFieldParams = z.infer<typeof WriteToTextFieldParamsSchema>;
+export type WriteToTextFieldParams = z.infer<
+  typeof WriteToTextFieldParamsSchema
+>;
 
 export const ToolParamsSchema = z.union([
   ShowToastParamsSchema,

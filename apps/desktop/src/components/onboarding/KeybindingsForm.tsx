@@ -132,9 +132,7 @@ export const KeybindingsForm = () => {
           <FormattedMessage
             defaultMessage="The {recommendedKey} key works great for most users."
             values={{
-              recommendedKey: (
-                <HotkeyBadge keys={defaultCombos[0] ?? []} />
-              ),
+              recommendedKey: <HotkeyBadge keys={defaultCombos[0] ?? []} />,
             }}
           />
         </Typography>

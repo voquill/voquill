@@ -24,6 +24,25 @@ fn main() {
     // CRITICAL: Initialize X11 threading before ANY other operations
     init_x11_threads();
 
+    // Force X11 backend on Linux to avoid GTK+Wayland issues on KDE Plasma
+    // Users can override with GDK_BACKEND environment variable
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        if std::env::var("GDK_BACKEND").is_err() {
+            // Check if running in a Wayland session
+            if std::env::var("WAYLAND_DISPLAY").is_ok() {
+                // Check desktop session type - if it's KDE Plasma, force X11
+                if let Ok(session) = std::env::var("XDG_CURRENT_DESKTOP") {
+                    if session.to_lowercase().contains("kde") || session.to_lowercase().contains("plasma") {
+                        std::env::set_var("GDK_BACKEND", "x11");
+                        eprintln!("[startup] KDE Plasma detected, forcing X11 backend");
+                    }
+                }
+            }
+        }
+    }
+
     // Initialize startup logging
     eprintln!("=== Voquill Startup ===");
     eprintln!("[startup] Version: {}", env!("CARGO_PKG_VERSION"));

@@ -40,7 +40,14 @@ type CursorToViewportParams = {
 export const cursorToViewportPosition = (
   params: CursorToViewportParams,
 ): { x: number; y: number } => {
-  const { cursorX, cursorY, visibleX, visibleY, visibleHeight, scaleFactor = 1 } = params;
+  const {
+    cursorX,
+    cursorY,
+    visibleX,
+    visibleY,
+    visibleHeight,
+    scaleFactor = 1,
+  } = params;
   const plt = getPlatform();
 
   if (plt === "macos") {
@@ -68,4 +75,3 @@ export const getOverlayBottomOffset = (): number => {
       return 12;
   }
 };
-

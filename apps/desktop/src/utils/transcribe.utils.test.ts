@@ -345,10 +345,7 @@ describe("mergeTranscriptions", () => {
     });
 
     it("should handle truncated word with single word overlap", () => {
-      const result = mergeTranscriptions([
-        "hello wor",
-        "world peace",
-      ]);
+      const result = mergeTranscriptions(["hello wor", "world peace"]);
       expect(result).toBe("hello world peace");
     });
 

@@ -106,13 +106,17 @@ IMPORTANT: If a tool succeeded, the task for that tool is COMPLETE. Do NOT call 
         );
 
         const lastTool = toolExecutions.at(-1);
-        const isLooping = lastTool?.didSucceed && lastTool.name === decision.choice;
+        const isLooping =
+          lastTool?.didSucceed && lastTool.name === decision.choice;
 
         if (decision.choice === "respond" || isLooping) {
           const reasoning = isLooping
             ? "Task complete - " + lastTool?.name + " succeeded"
             : decision.reasoning;
-          const response = await this.callFinalResponseLLM(userPrompt, reasoning);
+          const response = await this.callFinalResponseLLM(
+            userPrompt,
+            reasoning,
+          );
           this.history.push({
             type: "assistant",
             tools: toolExecutions,

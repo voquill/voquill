@@ -42,7 +42,9 @@ const getElevenLabsToken = async (apiKey: string): Promise<string> => {
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => "Unknown error");
-    throw new Error(`Failed to get ElevenLabs token: ${response.status} ${errorText}`);
+    throw new Error(
+      `Failed to get ElevenLabs token: ${response.status} ${errorText}`,
+    );
   }
 
   const data = await response.json();
@@ -93,7 +95,9 @@ const startElevenLabsStreaming = async (
     const getText = () => {
       return (
         finalTranscript +
-        (partialTranscript ? (finalTranscript ? " " : "") + partialTranscript : "")
+        (partialTranscript
+          ? (finalTranscript ? " " : "") + partialTranscript
+          : "")
       );
     };
 
@@ -264,14 +268,19 @@ const startElevenLabsStreaming = async (
 
     const audioFormat = `pcm_${sampleRate}`;
     const wsUrl = `${ELEVENLABS_WS_URL}?token=${encodeURIComponent(token)}&model_id=scribe_v2_realtime&audio_format=${audioFormat}&commit_strategy=vad`;
-    console.log("[ElevenLabs WebSocket] Connecting to:", wsUrl.replace(token, "***"));
+    console.log(
+      "[ElevenLabs WebSocket] Connecting to:",
+      wsUrl.replace(token, "***"),
+    );
     ws = new WebSocket(wsUrl);
 
     ws.onopen = async () => {
       console.log("[ElevenLabs WebSocket] Connected");
 
       try {
-        console.log("[ElevenLabs WebSocket] Setting up audio_chunk listener...");
+        console.log(
+          "[ElevenLabs WebSocket] Setting up audio_chunk listener...",
+        );
         unlisten = await listen<{ samples: number[] }>(
           "audio_chunk",
           (event) => {
@@ -324,8 +333,7 @@ const startElevenLabsStreaming = async (
         );
 
         if (messageType === "committed_transcript") {
-          finalTranscript +=
-            (finalTranscript ? " " : "") + (data.text || "");
+          finalTranscript += (finalTranscript ? " " : "") + (data.text || "");
           partialTranscript = "";
           console.log(
             "[ElevenLabs WebSocket] Committed transcript received:",

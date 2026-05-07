@@ -18,7 +18,9 @@ import {
 
 export const A11yPermsForm = () => {
   const [requesting, setRequesting] = useState(false);
-  const a11yPermission = useAppStore((state) => state.permissions.accessibility);
+  const a11yPermission = useAppStore(
+    (state) => state.permissions.accessibility,
+  );
   const isAuthorized = isPermissionAuthorized(a11yPermission?.state);
 
   const handleAllow = useCallback(async () => {

@@ -90,9 +90,7 @@ export class OpenClawClient {
         if (frame.ok) {
           pending.resolve(frame.payload);
         } else {
-          pending.reject(
-            new Error(frame.error?.message ?? "Request failed"),
-          );
+          pending.reject(new Error(frame.error?.message ?? "Request failed"));
         }
       }
     }
@@ -162,9 +160,7 @@ export class OpenClawClient {
     } else if (state === "error") {
       this.pendingChats.delete(runId);
       pending.reject(
-        new Error(
-          (payload?.errorMessage as string) ?? "Chat error",
-        ),
+        new Error((payload?.errorMessage as string) ?? "Chat error"),
       );
     } else if (state === "aborted") {
       this.pendingChats.delete(runId);

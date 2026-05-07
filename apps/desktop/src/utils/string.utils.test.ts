@@ -336,14 +336,14 @@ describe("applyReplacements", () => {
   it("should preserve leading punctuation when replacing words", () => {
     const rules = [{ sourceValue: "hello", destinationValue: "hi" }];
     expect(applyReplacements("(hello world", rules)).toBe("(hi world");
-    expect(applyReplacements("\"hello world", rules)).toBe("\"hi world");
+    expect(applyReplacements('"hello world', rules)).toBe('"hi world');
     expect(applyReplacements("'hello world", rules)).toBe("'hi world");
   });
 
   it("should preserve both leading and trailing punctuation", () => {
     const rules = [{ sourceValue: "hello", destinationValue: "hi" }];
     expect(applyReplacements("(hello)", rules)).toBe("(hi)");
-    expect(applyReplacements("\"hello\"", rules)).toBe("\"hi\"");
+    expect(applyReplacements('"hello"', rules)).toBe('"hi"');
     expect(applyReplacements("'hello'", rules)).toBe("'hi'");
     expect(applyReplacements("[hello]", rules)).toBe("[hi]");
   });
@@ -446,7 +446,9 @@ describe("applyReplacements", () => {
     expect(applyReplacements("こんにちは 世界", rules)).toBe("hello 世界");
     expect(applyReplacements("「こんにちは」", rules)).toBe("「hello」");
     // Without spaces, the entire string is one token and won't match
-    expect(applyReplacements("こんにちは、世界", rules)).toBe("こんにちは、世界");
+    expect(applyReplacements("こんにちは、世界", rules)).toBe(
+      "こんにちは、世界",
+    );
   });
 
   it("should handle Korean characters", () => {

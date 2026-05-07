@@ -38,7 +38,10 @@ const findOverlap = (first: string, second: string): OverlapResult => {
   const secondWords = second.trim().split(/\s+/);
 
   if (firstWords.length === 0 || secondWords.length === 0) {
-    return { wordsToKeepFromFirst: firstWords.length, wordsToSkipFromSecond: 0 };
+    return {
+      wordsToKeepFromFirst: firstWords.length,
+      wordsToSkipFromSecond: 0,
+    };
   }
 
   // Allow different limits for first and second to handle contraction expansion
@@ -123,7 +126,10 @@ const findOverlap = (first: string, second: string): OverlapResult => {
           Math.max(normalizedFirst.length, normalizedSecond.length);
         if (lengthRatio < 0.5) continue;
 
-        const similarity = getStringSimilarity(normalizedFirst, normalizedSecond);
+        const similarity = getStringSimilarity(
+          normalizedFirst,
+          normalizedSecond,
+        );
 
         if (similarity >= EXACT_MATCH_THRESHOLD && i === j) {
           // Found exact match after dropping last word - keep first without last word, skip overlap from second
@@ -138,7 +144,10 @@ const findOverlap = (first: string, second: string): OverlapResult => {
 
   // No overlap found - concatenate
   if (!best) {
-    return { wordsToKeepFromFirst: firstWords.length, wordsToSkipFromSecond: 0 };
+    return {
+      wordsToKeepFromFirst: firstWords.length,
+      wordsToSkipFromSecond: 0,
+    };
   }
 
   // Exact match: keep all of first (preserving its formatting), skip overlap from second
@@ -231,7 +240,9 @@ export const splitAudioTranscription = (args: {
   const { sampleRate, samples, segmentDurationSec, overlapDurationSec } = args;
 
   const segmentSamples = Math.floor(sampleRate * segmentDurationSec);
-  const stepSamples = Math.floor(sampleRate * (segmentDurationSec - overlapDurationSec));
+  const stepSamples = Math.floor(
+    sampleRate * (segmentDurationSec - overlapDurationSec),
+  );
 
   if (stepSamples <= 0) {
     throw new Error("Overlap duration must be less than segment duration");
@@ -253,4 +264,4 @@ export const splitAudioTranscription = (args: {
   }
 
   return segments;
-}
+};

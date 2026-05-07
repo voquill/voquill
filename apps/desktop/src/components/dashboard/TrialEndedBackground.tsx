@@ -73,7 +73,9 @@ const generateWavePath = (
 ): string => {
   const pts: { x: number; y: number }[] = [];
   for (let i = 0; i <= segments; i++) {
-    pts.push(sampleWavePoint(curve, i / segments, frequency, amplitude, timeOffset));
+    pts.push(
+      sampleWavePoint(curve, i / segments, frequency, amplitude, timeOffset),
+    );
   }
 
   const parts: string[] = [`M ${pts[0]!.x} ${pts[0]!.y}`];
@@ -120,7 +122,12 @@ export const TrialEndedBackground = () => {
       for (let i = 0; i < WAVE_FRAMES; i++) {
         const timeOffset = (i / WAVE_FRAMES) * Math.PI * 2;
         frames.push(
-          generateWavePath(curve, config.frequency, config.amplitude, timeOffset),
+          generateWavePath(
+            curve,
+            config.frequency,
+            config.amplitude,
+            timeOffset,
+          ),
         );
       }
       frames.push(frames[0]!);

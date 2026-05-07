@@ -843,6 +843,7 @@ pub async fn start_recording(
     match start_result {
         Ok(()) => {
             let reported_sample_rate = recorder.current_sample_rate().unwrap_or(16_000);
+            eprintln!("[recording] start_recording succeeded with sample_rate={reported_sample_rate}");
             Ok(StartRecordingResponse {
                 sample_rate: reported_sample_rate,
             })
@@ -850,12 +851,13 @@ pub async fn start_recording(
         Err((message, already_recording)) => {
             if already_recording {
                 let reported_sample_rate = recorder.current_sample_rate().unwrap_or(16_000);
+                eprintln!("[recording] start_recording: already recording, returning existing sample_rate={reported_sample_rate}");
                 return Ok(StartRecordingResponse {
                     sample_rate: reported_sample_rate,
                 });
             }
 
-            eprintln!("Failed to start recording via command: {message}");
+            eprintln!("[recording] Failed to start recording: {message}");
             Err(message)
         }
     }
@@ -871,6 +873,9 @@ pub async fn stop_recording(
     tauri::async_runtime::spawn_blocking(move || match recorder.stop() {
         Ok(result) => {
             let audio = result.audio;
+            if audio.samples.is_empty() {
+                eprintln!("[recording] warning: stopped recording with empty samples (rate={})", audio.sample_rate);
+            }
             Ok(StopRecordingResponse {
                 samples: audio.samples,
                 sample_rate: audio.sample_rate,
@@ -883,10 +888,8 @@ pub async fn stop_recording(
                 .unwrap_or(false);
 
             if not_recording {
-                return Ok(StopRecordingResponse {
-                    samples: Vec::new(),
-                    sample_rate: 0,
-                });
+                eprintln!("[recording] error: stop_recording called but no recording is active");
+                return Err("No recording is active. Please start a recording first.".to_string());
             }
 
             let message = err.to_string();

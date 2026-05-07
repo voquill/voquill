@@ -30,7 +30,11 @@ export const ResetPasswordForm = () => {
         <Typography variant="body2">
           <FormattedMessage defaultMessage="Contact your administrator to reset your password. They can either reset your password or delete your account and have you create a new one." />
         </Typography>
-        <Button size="small" startIcon={<ArrowBack />} onClick={handleClickBack}>
+        <Button
+          size="small"
+          startIcon={<ArrowBack />}
+          onClick={handleClickBack}
+        >
           <FormattedMessage defaultMessage="Back" />
         </Button>
       </Stack>

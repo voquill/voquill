@@ -20,11 +20,7 @@ export class OpenClawAgentStrategy extends BaseStrategy {
   private gatewayUrl: string;
   private token: string;
 
-  constructor(
-    context: StrategyContext,
-    gatewayUrl: string,
-    token: string,
-  ) {
+  constructor(context: StrategyContext, gatewayUrl: string, token: string) {
     super(context);
     this.gatewayUrl = gatewayUrl;
     this.token = token;
