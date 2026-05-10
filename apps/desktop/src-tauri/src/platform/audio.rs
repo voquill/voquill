@@ -582,7 +582,7 @@ mod cpal_impl {
             .map_err(|err| RecordingError::StreamConfig(err.to_string()))?;
 
         let sample_format = config.sample_format();
-        let stream_config: StreamConfig = config.into();
+        let stream_config = preferred_stream_config(device, &config);
         let sample_rate = stream_config.sample_rate.0;
         let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
 
@@ -669,7 +669,7 @@ mod cpal_impl {
             };
 
             let sample_format = config.sample_format();
-            let stream_config: StreamConfig = config.into();
+            let stream_config = preferred_stream_config(&device, &config);
             let sample_rate = stream_config.sample_rate.0;
             let buffer = Arc::new(Mutex::new(Vec::<f32>::new()));
 
@@ -917,6 +917,43 @@ mod cpal_impl {
             })
         });
         list
+    }
+
+    /// Try to obtain a `StreamConfig` at 16 kHz (Whisper's native rate) if the device
+    /// supports it; otherwise fall back to the device's default configuration.
+    fn preferred_stream_config(
+        device: &Device,
+        default_config: &cpal::SupportedStreamConfig,
+    ) -> StreamConfig {
+        const PREFERRED_RATE: cpal::SampleRate = cpal::SampleRate(16_000);
+        let desired_channels = default_config.channels();
+
+        if let Ok(supported) = device.supported_input_configs() {
+            for range in supported {
+                // Also verify channel count matches: a device can expose separate ranges
+                // for different channel counts, and using the wrong count causes stream failure.
+                if range.channels() == desired_channels
+                    && range.min_sample_rate() <= PREFERRED_RATE
+                    && range.max_sample_rate() >= PREFERRED_RATE
+                {
+                    log::debug!(
+                        "device supports 16 kHz at {} ch; requesting Whisper-native sample rate",
+                        desired_channels
+                    );
+                    return StreamConfig {
+                        channels: desired_channels,
+                        sample_rate: PREFERRED_RATE,
+                        buffer_size: cpal::BufferSize::Default,
+                    };
+                }
+            }
+        }
+
+        StreamConfig {
+            channels: default_config.channels(),
+            sample_rate: default_config.sample_rate(),
+            buffer_size: cpal::BufferSize::Default,
+        }
     }
 
     fn build_input_stream<T>(

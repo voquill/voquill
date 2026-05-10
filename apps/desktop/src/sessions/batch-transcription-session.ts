@@ -5,6 +5,7 @@ import {
   TranscriptionSession,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
+import { readAudioFromFile } from "../utils/audio.utils";
 import { getLogger } from "../utils/log.utils";
 
 /**
@@ -19,14 +20,11 @@ export class BatchTranscriptionSession implements TranscriptionSession {
   async finalize(
     audio: StopRecordingResponse,
   ): Promise<TranscriptionSessionResult> {
-    const payloadSamples = Array.isArray(audio.samples)
-      ? audio.samples
-      : Array.from(audio.samples ?? []);
     const rate = audio.sampleRate;
 
-    if (rate == null || rate <= 0 || payloadSamples.length === 0) {
+    if (rate == null || rate <= 0 || !audio.filePath || audio.sampleCount === 0) {
       getLogger().warning(
-        `Batch session: skipping transcription (rate=${rate}, samples=${payloadSamples.length})`,
+        `Batch session: skipping transcription (rate=${rate}, sampleCount=${audio.sampleCount})`,
       );
       return {
         rawTranscript: null,
@@ -39,10 +37,12 @@ export class BatchTranscriptionSession implements TranscriptionSession {
 
     try {
       getLogger().info(
-        `Batch transcription: ${payloadSamples.length} samples at ${rate}Hz`,
+        `Batch transcription: reading ${audio.sampleCount} samples at ${rate}Hz from file`,
       );
+      const { samples } = await readAudioFromFile(audio.filePath);
+
       const result = await transcribeAudio({
-        samples: payloadSamples,
+        samples,
         sampleRate: rate,
       });
 

@@ -1,6 +1,9 @@
 import { Nullable } from "@voquill/types";
 
-export type PermissionKind = "microphone" | "accessibility";
+export type PermissionKind =
+  | "microphone"
+  | "accessibility"
+  | "screen-recording";
 
 export type PermissionState =
   | "authorized"
@@ -15,3 +18,19 @@ export type PermissionStatus = {
 };
 
 export type PermissionMap = Record<PermissionKind, Nullable<PermissionStatus>>;
+
+export type PermissionRequestLifecycle = {
+  requestInFlight: boolean;
+  awaitingExternalApproval: boolean;
+};
+
+export type PermissionGateStateInput = PermissionRequestLifecycle & {
+  kind: PermissionKind;
+  status: Nullable<PermissionStatus>;
+};
+
+export type PermissionGateState = {
+  canRequest: boolean;
+  isAwaitingExternalApproval: boolean;
+  shouldOpenSettings: boolean;
+};

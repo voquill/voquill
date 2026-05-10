@@ -21,6 +21,7 @@ import {
   buildWaveFile,
   ensureFloat32Array,
   normalizeSamples,
+  resampleTo16kHz,
 } from "../utils/audio.utils";
 import { getEffectiveAuth } from "../utils/auth.utils";
 import { invokeEnterprise } from "../utils/enterprise.utils";
@@ -74,6 +75,10 @@ export type TranscribeSegmentInput = {
 };
 
 export abstract class BaseTranscribeAudioRepo extends BaseRepo {
+  supportsPromptHints(): boolean {
+    return false;
+  }
+
   /**
    * Maximum duration in seconds for a single audio segment.
    * Override in child classes based on provider limits.
@@ -101,6 +106,14 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
   ): Promise<TranscribeAudioOutput>;
 
   /**
+   * Whether to resample audio to 16kHz before transcription.
+   * API-based repos benefit from smaller payloads; local sidecar resamples internally.
+   */
+  protected shouldResampleTo16kHz(): boolean {
+    return true;
+  }
+
+  /**
    * Transcribes audio, automatically splitting long audio into segments
    * and merging the results.
    */
@@ -108,22 +121,28 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
     input: TranscribeAudioInput,
   ): Promise<TranscribeAudioOutput> {
     const normalizedSamples = normalizeSamples(input.samples);
-    const floatSamples = ensureFloat32Array(normalizedSamples);
+    let floatSamples = ensureFloat32Array(normalizedSamples);
+    let sampleRate = input.sampleRate;
 
     if (floatSamples.length === 0) {
       return { text: "", metadata: null };
     }
 
+    if (this.shouldResampleTo16kHz() && sampleRate !== 16000) {
+      floatSamples = resampleTo16kHz(floatSamples, sampleRate);
+      sampleRate = 16000;
+    }
+
     const segmentDurationSec = this.getSegmentDurationSec();
     const segmentSampleCount = Math.floor(
-      input.sampleRate * segmentDurationSec,
+      sampleRate * segmentDurationSec,
     );
 
     // If audio fits in a single segment, transcribe directly
     if (floatSamples.length <= segmentSampleCount) {
       return this.transcribeSegment({
         samples: floatSamples,
-        sampleRate: input.sampleRate,
+        sampleRate,
         prompt: input.prompt,
         language: input.language,
       });
@@ -131,7 +150,7 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
 
     // Split into overlapping segments
     const segments = splitAudioTranscription({
-      sampleRate: input.sampleRate,
+      sampleRate,
       samples: floatSamples,
       segmentDurationSec,
       overlapDurationSec: this.getOverlapDurationSec(),
@@ -142,7 +161,7 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
       (segmentSamples) => () =>
         this.transcribeSegment({
           samples: segmentSamples,
-          sampleRate: input.sampleRate,
+          sampleRate,
           prompt: input.prompt,
           language: input.language,
         }),
@@ -169,6 +188,15 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
 }
 
 export class LocalTranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  override supportsPromptHints(): boolean {
+    return true;
+  }
+
+  // Local sidecar resamples internally in Rust; skip JS-side resampling.
+  protected override shouldResampleTo16kHz(): boolean {
+    return false;
+  }
+
   // Local whisper can handle longer segments, but 60s is a safe default
   protected getSegmentDurationSec(): number {
     return 60;
@@ -274,6 +302,10 @@ export class GroqTranscribeAudioRepo extends BaseTranscribeAudioRepo {
     this.model = (model as TranscriptionModel) ?? "whisper-large-v3-turbo";
   }
 
+  override supportsPromptHints(): boolean {
+    return true;
+  }
+
   // Groq has 25MB limit, 60s segments are well within that
   protected getSegmentDurationSec(): number {
     return 60;
@@ -321,6 +353,10 @@ export class OpenAITranscribeAudioRepo extends BaseTranscribeAudioRepo {
     super();
     this.openaiApiKey = apiKey;
     this.model = (model as OpenAITranscriptionModel) ?? "whisper-1";
+  }
+
+  override supportsPromptHints(): boolean {
+    return true;
   }
 
   // OpenAI has 25MB limit, 60s segments are well within that
@@ -460,6 +496,10 @@ export class XaiTranscribeAudioRepo extends BaseTranscribeAudioRepo {
     this.model = (model as XaiTranscriptionModel) ?? "grok-stt";
   }
 
+  override supportsPromptHints(): boolean {
+    return true;
+  }
+
   protected getSegmentDurationSec(): number {
     return 60;
   }
@@ -482,6 +522,7 @@ export class XaiTranscribeAudioRepo extends BaseTranscribeAudioRepo {
       model: this.model,
       blob: wavBuffer,
       ext: "wav",
+      prompt: input.prompt ?? undefined,
       language: input.language,
     });
 
@@ -554,6 +595,10 @@ export class GeminiTranscribeAudioRepo extends BaseTranscribeAudioRepo {
     this.model = (model as GeminiTranscriptionModel) ?? "gemini-2.5-flash";
   }
 
+  override supportsPromptHints(): boolean {
+    return true;
+  }
+
   protected getSegmentDurationSec(): number {
     return 60;
   }
@@ -599,6 +644,10 @@ export class SpeachesTranscribeAudioRepo extends BaseTranscribeAudioRepo {
     super();
     this.baseUrl = baseUrl;
     this.model = model;
+  }
+
+  override supportsPromptHints(): boolean {
+    return true;
   }
 
   protected getSegmentDurationSec(): number {
@@ -648,6 +697,10 @@ export class OpenAICompatibleTranscribeAudioRepo extends BaseTranscribeAudioRepo
     this.baseUrl = baseUrl;
     this.model = model;
     this.apiKey = apiKey;
+  }
+
+  override supportsPromptHints(): boolean {
+    return true;
   }
 
   protected getSegmentDurationSec(): number {
@@ -800,6 +853,7 @@ export class NewServerTranscribeAudioRepo extends BaseTranscribeAudioRepo {
                 sampleRate: input.sampleRate,
                 glossary: entries.sources,
                 language: input.language,
+                prompt: input.prompt ?? undefined,
               }),
             );
             return;

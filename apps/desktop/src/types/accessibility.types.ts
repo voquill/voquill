@@ -18,3 +18,8 @@ export type ScreenContextInfo = {
   /** Text content gathered from other elements on the screen for context. Null if not available. */
   screenContext: string | null;
 };
+
+/**
+ * OCR text captured from the frontmost macOS window. Null if unavailable.
+ */
+export type ScreenCaptureContext = string | null;

@@ -32,5 +32,5 @@ pub use recording::{
 };
 pub use term::Term;
 pub use tone::Tone;
-pub use transcription::{Transcription, TranscriptionAudioSnapshot};
+pub use transcription::{DictationIntent, Transcription, TranscriptionAudioSnapshot};
 pub use user::User;

@@ -1,9 +1,80 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { collectDictionaryEntriesMock, getIdTokenMock, xaiTranscribeAudioMock } =
+  vi.hoisted(() => ({
+  collectDictionaryEntriesMock: vi.fn(() => ({
+    sources: ["Acme", "Voquill"],
+    replacements: [],
+  })),
+  getIdTokenMock: vi.fn(async () => "test-id-token"),
+  xaiTranscribeAudioMock: vi.fn(async () => ({
+    text: "xai transcript",
+    wordsUsed: 2,
+  })),
+}));
+
+vi.mock("@voquill/voice-ai", async () => {
+  const actual =
+    await vi.importActual<typeof import("@voquill/voice-ai")>(
+      "@voquill/voice-ai",
+    );
+
+  return {
+    ...actual,
+    xaiTranscribeAudio: xaiTranscribeAudioMock,
+  };
+});
+
+vi.mock("../store", () => ({
+  getAppState: () => ({}),
+}));
+
+vi.mock("../utils/auth.utils", () => ({
+  getEffectiveAuth: () => ({
+    currentUser: {
+      getIdToken: getIdTokenMock,
+    },
+  }),
+}));
+
+vi.mock("../utils/prompt.utils", () => ({
+  collectDictionaryEntries: collectDictionaryEntriesMock,
+}));
+
 import {
   BaseTranscribeAudioRepo,
+  GroqTranscribeAudioRepo,
+  NewServerTranscribeAudioRepo,
+  OpenAICompatibleTranscribeAudioRepo,
   TranscribeAudioOutput,
   TranscribeSegmentInput,
+  XaiTranscribeAudioRepo,
 } from "./transcribe-audio.repo";
+
+class MockWebSocket {
+  static instances: MockWebSocket[] = [];
+  static OPEN = 1;
+
+  public onopen: ((event: unknown) => void | Promise<void>) | null = null;
+  public onmessage: ((event: { data: string }) => void) | null = null;
+  public onerror: ((event: unknown) => void) | null = null;
+  public onclose: ((event: unknown) => void) | null = null;
+  public readonly sentMessages: unknown[] = [];
+  public readyState = MockWebSocket.OPEN;
+  public closed = false;
+
+  constructor(public readonly url: string) {
+    MockWebSocket.instances.push(this);
+  }
+
+  send(data: unknown): void {
+    this.sentMessages.push(data);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+}
 
 /**
  * Mock implementation that tracks calls and returns predictable text
@@ -149,6 +220,25 @@ describe("BaseTranscribeAudioRepo", () => {
 
       expect(result.text).toBe("Hello world Goodbye moon See you later");
     });
+
+    it("should prefer authoritative later segment text over fuzzy overlap guesses", async () => {
+      const repo = new MockTranscribeAudioRepo(10, 2, 3, (_input, index) => {
+        const transcripts = [
+          "I think that's rea",
+          "that is really helpful",
+          "really helpful for everyone",
+        ];
+        return transcripts[index] ?? "";
+      });
+      const sampleRate = 16000;
+      const samples = createSamples(25, sampleRate);
+
+      const result = await repo.transcribeAudio({ samples, sampleRate });
+
+      expect(result.text).toBe(
+        "I think that is really helpful for everyone",
+      );
+    });
   });
 
   describe("batching behavior", () => {
@@ -276,5 +366,119 @@ describe("BaseTranscribeAudioRepo", () => {
         "In the beginning there was silence and then came the sound of voices speaking softly in the distance growing louder with each passing moment",
       );
     });
+  });
+});
+
+describe("NewServerTranscribeAudioRepo", () => {
+  beforeEach(() => {
+    MockWebSocket.instances = [];
+    getIdTokenMock.mockClear();
+    collectDictionaryEntriesMock.mockClear();
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("includes the transcription prompt in the websocket config after authentication", async () => {
+    const repo = new NewServerTranscribeAudioRepo();
+    const transcriptionPromise = repo.transcribeAudio({
+      samples: new Float32Array([0.1, -0.1, 0.2]),
+      sampleRate: 16000,
+      prompt: "Glossary: Acme",
+      language: "en",
+    });
+
+    const ws = MockWebSocket.instances[0];
+    expect(ws?.url).toContain("/v1/transcribe-raw");
+
+    await ws?.onopen?.({});
+
+    expect(getIdTokenMock).toHaveBeenCalledTimes(1);
+    expect(ws?.sentMessages[0]).toBe(
+      JSON.stringify({
+        type: "auth",
+        idToken: "test-id-token",
+      }),
+    );
+
+    ws?.onmessage?.({
+      data: JSON.stringify({ type: "authenticated" }),
+    });
+
+    expect(collectDictionaryEntriesMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(ws?.sentMessages[1] as string)).toMatchObject({
+      type: "config",
+      sampleRate: 16000,
+      glossary: ["Acme", "Voquill"],
+      language: "en",
+      prompt: "Glossary: Acme",
+    });
+
+    ws?.onmessage?.({
+      data: JSON.stringify({ type: "ready" }),
+    });
+    ws?.onmessage?.({
+      data: JSON.stringify({ type: "transcript", text: "done" }),
+    });
+
+    await expect(transcriptionPromise).resolves.toEqual({
+      text: "done",
+      metadata: {
+        transcriptionMode: "cloud",
+      },
+    });
+  });
+
+  it("treats fallback websocket transcription as prompt-fallback only, while xAI, Groq, and OpenAI-compatible paths support prompt hints", () => {
+    const fallbackRepo = new NewServerTranscribeAudioRepo() as {
+      supportsPromptHints?: () => boolean;
+    };
+    const xaiRepo = new XaiTranscribeAudioRepo("test-api-key", "grok-stt") as {
+      supportsPromptHints?: () => boolean;
+    };
+    const groqRepo = new GroqTranscribeAudioRepo(
+      "test-api-key",
+      "whisper-large-v3-turbo",
+    ) as {
+      supportsPromptHints?: () => boolean;
+    };
+    const compatibleRepo = new OpenAICompatibleTranscribeAudioRepo(
+      "https://example.com",
+      "whisper-1",
+      "test-api-key",
+    ) as {
+      supportsPromptHints?: () => boolean;
+    };
+
+    expect(fallbackRepo.supportsPromptHints?.()).toBe(false);
+    expect(xaiRepo.supportsPromptHints?.()).toBe(true);
+    expect(groqRepo.supportsPromptHints?.()).toBe(true);
+    expect(compatibleRepo.supportsPromptHints?.()).toBe(true);
+  });
+});
+
+describe("XaiTranscribeAudioRepo", () => {
+  it("passes prompt and language to the xAI transcription request", async () => {
+    const repo = new XaiTranscribeAudioRepo("test-api-key", "grok-stt");
+
+    await repo.transcribeAudio({
+      samples: new Float32Array([0.1, -0.1, 0.2]),
+      sampleRate: 16000,
+      prompt: "Glossary: Acme",
+      language: "en",
+    });
+
+    expect(xaiTranscribeAudioMock).toHaveBeenCalledTimes(1);
+    expect(xaiTranscribeAudioMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: "test-api-key",
+        model: "grok-stt",
+        ext: "wav",
+        prompt: "Glossary: Acme",
+        language: "en",
+      }),
+    );
   });
 });

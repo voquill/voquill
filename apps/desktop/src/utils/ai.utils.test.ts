@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { unwrapNestedLlmResponse, extractJsonFromMarkdown } from "./ai.utils";
+import {
+  unwrapNestedLlmResponse,
+  extractJsonFromMarkdown,
+  recoverPlainTextFromLLMResponse,
+} from "./ai.utils";
 
 describe("unwrapNestedLlmResponse", () => {
   it("should return original object when value is already a string", () => {
@@ -426,5 +430,67 @@ Example 2:
       const result = extractJsonFromMarkdown(input);
       expect(result).toContain('{"text": "value with \\');
     });
+  });
+});
+
+describe("recoverPlainTextFromLLMResponse", () => {
+  it("returns null for empty string", () => {
+    expect(recoverPlainTextFromLLMResponse("")).toBeNull();
+  });
+
+  it("returns null for whitespace-only string", () => {
+    expect(recoverPlainTextFromLLMResponse("   ")).toBeNull();
+  });
+
+  it("returns plain text directly when no JSON braces present", () => {
+    expect(recoverPlainTextFromLLMResponse("Hello, world!")).toBe(
+      "Hello, world!",
+    );
+  });
+
+  it("trims surrounding whitespace from plain text", () => {
+    expect(recoverPlainTextFromLLMResponse("  corrected transcript  ")).toBe(
+      "corrected transcript",
+    );
+  });
+
+  it("strips SYSTEM_INSTRUCTIONS leakage from plain text", () => {
+    const input =
+      "Good text <SYSTEM_INSTRUCTIONS>secret prompt</SYSTEM_INSTRUCTIONS> after";
+    expect(recoverPlainTextFromLLMResponse(input)).toBe("Good text  after");
+  });
+
+  it("returns null when response is only SYSTEM_INSTRUCTIONS content", () => {
+    const input =
+      "<SYSTEM_INSTRUCTIONS>full secret</SYSTEM_INSTRUCTIONS>    ";
+    expect(recoverPlainTextFromLLMResponse(input)).toBeNull();
+  });
+
+  it("extracts result field from valid JSON envelope", () => {
+    const input = '{"result": "corrected text here"}';
+    expect(recoverPlainTextFromLLMResponse(input)).toBe("corrected text here");
+  });
+
+  it("unescapes \\n sequences in extracted JSON result", () => {
+    const input = '{"result": "line one\\nline two"}';
+    expect(recoverPlainTextFromLLMResponse(input)).toBe("line one\nline two");
+  });
+
+  it("unescapes escaped quotes in extracted JSON result", () => {
+    const input = '{"result": "he said \\"hello\\""}';
+    expect(recoverPlainTextFromLLMResponse(input)).toBe('he said "hello"');
+  });
+
+  it("returns null for JSON object with no result field", () => {
+    expect(recoverPlainTextFromLLMResponse('{"other": "value"}')).toBeNull();
+  });
+
+  it("returns null for an array (no useful text extractable)", () => {
+    expect(recoverPlainTextFromLLMResponse("[1, 2, 3]")).toBeNull();
+  });
+
+  it("extracts result from JSON with extra whitespace around colon", () => {
+    const input = '{"result"  :  "spaced value"}';
+    expect(recoverPlainTextFromLLMResponse(input)).toBe("spaced value");
   });
 });

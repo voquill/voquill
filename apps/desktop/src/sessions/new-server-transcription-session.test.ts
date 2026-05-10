@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createNewServerTranscriptState,
   getNewServerTranscriptDelta,
   getRecoveredNewServerTranscriptResult,
 } from "./new-server-transcription-session";
@@ -39,6 +40,29 @@ describe("getRecoveredNewServerTranscriptResult", () => {
       text: "",
       source: "",
       warnings: ["socket closed unexpectedly"],
+    });
+  });
+});
+
+describe("createNewServerTranscriptState", () => {
+  it("preserves the best-known streamed transcript cleanly during fallback recovery", () => {
+    const transcriptState = createNewServerTranscriptState();
+
+    transcriptState.applyStreamEvent({
+      text: "hello wor",
+      isFinal: true,
+    });
+    transcriptState.applyStreamEvent({
+      text: "hello world",
+      isFinal: true,
+    });
+
+    expect(
+      transcriptState.toRecoveredResult("finalize timed out"),
+    ).toEqual({
+      text: "hello world",
+      source: "New Server (Recovered Stream)",
+      warnings: ["finalize timed out"],
     });
   });
 });

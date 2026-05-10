@@ -101,10 +101,17 @@ impl TranscriptionEngine {
             return Err("no finite samples provided".to_string());
         }
 
-        let processed = resample_to_16khz(&filtered_samples, input.sample_rate);
-        if processed.is_empty() {
+        let resampled = resample_to_16khz(&filtered_samples, input.sample_rate);
+        if resampled.is_empty() {
             return Err("unable to resample audio".to_string());
         }
+
+        let processed = {
+            const SILENCE_THRESHOLD: f32 = 0.01; // RMS energy below which a frame is silent
+            const SILENCE_FRAME_MS: u32 = 20; // analysis frame size in milliseconds
+            const SILENCE_PAD_MS: u32 = 200; // context padding to preserve each side
+            trim_silence(&resampled, 16_000, SILENCE_THRESHOLD, SILENCE_FRAME_MS, SILENCE_PAD_MS).to_vec()
+        };
 
         let device = self.resolve_device_blocking(input.device_id.as_deref())?;
         let context = self.context_for_model(&input.model_path, &device)?;
@@ -348,6 +355,49 @@ fn collect_transcription(state: &whisper_rs::WhisperState) -> Result<String, Str
     Ok(transcript.trim().to_string())
 }
 
+/// Removes leading and trailing silence, keeping `pad_ms` ms of context on each side.
+/// `threshold` is the RMS energy level below which a 20 ms frame is considered silent.
+fn trim_silence(samples: &[f32], sample_rate: u32, threshold: f32, frame_ms: u32, pad_ms: u32) -> &[f32] {
+    let frame_size = ((sample_rate as u64 * frame_ms as u64) / 1000) as usize;
+    if frame_size == 0 || samples.len() < frame_size * 2 {
+        return samples;
+    }
+
+    let rms = |frame: &[f32]| -> f32 {
+        let sum_sq: f32 = frame.iter().map(|s| s * s).sum();
+        (sum_sq / frame.len() as f32).sqrt()
+    };
+
+    let frames: Vec<&[f32]> = samples.chunks(frame_size).collect();
+    let total_frames = frames.len();
+
+    let start_frame = frames.iter().position(|f| rms(f) > threshold).unwrap_or(0);
+    let end_frame = frames
+        .iter()
+        .rposition(|f| rms(f) > threshold)
+        .map(|i| i + 1)
+        .unwrap_or(total_frames);
+
+    // Compute pad in frames (same unit as start_frame/end_frame), not samples.
+    // Example: 200 ms / 20 ms per frame = 10 frames of padding each side.
+    let pad_frames = (pad_ms / frame_ms) as usize;
+    let padded_start = start_frame.saturating_sub(pad_frames);
+    let padded_end = (end_frame + pad_frames).min(total_frames);
+
+    if padded_start >= padded_end {
+        return samples;
+    }
+
+    let start_sample = padded_start * frame_size;
+    let end_sample = if padded_end == total_frames {
+        samples.len()
+    } else {
+        padded_end * frame_size
+    };
+
+    &samples[start_sample..end_sample]
+}
+
 fn resample_to_16khz(samples: &[f32], sample_rate: u32) -> Vec<f32> {
     const TARGET_RATE: u32 = 16_000;
 
@@ -467,4 +517,70 @@ unsafe fn c_string(ptr: *const std::os::raw::c_char) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trim_silence;
+
+    const RATE: u32 = 16_000;
+
+    fn sine_frame(len: usize, amplitude: f32) -> Vec<f32> {
+        (0..len)
+            .map(|i| amplitude * (i as f32 * 0.1).sin())
+            .collect()
+    }
+
+    fn silent_frame(len: usize) -> Vec<f32> {
+        vec![0.0f32; len]
+    }
+
+    #[test]
+    fn trim_silence_removes_leading_and_trailing_silence() {
+        let frame = RATE as usize * 20 / 1000; // 20 ms frame at 16 kHz = 320 samples
+        let silence = silent_frame(frame * 10); // 200 ms of silence
+        let speech = sine_frame(frame * 50, 0.5); // 1 s of speech
+        let mut audio = silence.clone();
+        audio.extend_from_slice(&speech);
+        audio.extend_from_slice(&silence);
+
+        let trimmed = trim_silence(&audio, RATE, 0.01, 20, 0);
+        // Should have removed the leading/trailing silent frames
+        assert!(trimmed.len() < audio.len(), "should shorten audio");
+        assert!(trimmed.len() >= speech.len(), "should keep speech");
+    }
+
+    #[test]
+    fn trim_silence_preserves_padding() {
+        let frame = RATE as usize * 20 / 1000; // 320 samples per 20 ms frame
+        let silence = silent_frame(frame * 15); // 300 ms silence (15 frames)
+        let speech = sine_frame(frame * 25, 0.5); // 500 ms speech
+        let mut audio = silence.clone();
+        audio.extend_from_slice(&speech);
+        audio.extend_from_slice(&silence);
+
+        let no_pad = trim_silence(&audio, RATE, 0.01, 20, 0).len();
+        let with_pad = trim_silence(&audio, RATE, 0.01, 20, 200).len();
+
+        // 200 ms / 20 ms per frame = 10 frames each side = 20 frames * 320 samples = 6400 extra samples
+        let pad_frames = 200 / 20;
+        let expected_extra = pad_frames * 2 * frame;
+        assert!(with_pad >= no_pad + expected_extra, "padding should add ~200 ms each side");
+        // Padded result must still be shorter than the full audio (trimming actually happened)
+        assert!(with_pad < audio.len(), "padded result should still be shorter than full audio");
+    }
+
+    #[test]
+    fn trim_silence_returns_full_slice_when_all_silent() {
+        let audio = silent_frame(RATE as usize); // 1 s silence
+        let trimmed = trim_silence(&audio, RATE, 0.01, 20, 200);
+        assert_eq!(trimmed.len(), audio.len());
+    }
+
+    #[test]
+    fn trim_silence_returns_full_slice_when_too_short() {
+        let audio = vec![0.0f32; 10];
+        let trimmed = trim_silence(&audio, RATE, 0.01, 20, 200);
+        assert_eq!(trimmed.len(), audio.len());
+    }
 }

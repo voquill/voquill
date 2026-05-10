@@ -16,6 +16,14 @@ pub(crate) fn request_accessibility_permission() -> Result<PermissionStatus, Str
     check_accessibility_permission()
 }
 
+pub(crate) fn check_screen_recording_permission() -> Result<PermissionStatus, String> {
+    Ok(authorized_status(PermissionKind::ScreenRecording))
+}
+
+pub(crate) fn request_screen_recording_permission() -> Result<PermissionStatus, String> {
+    check_screen_recording_permission()
+}
+
 fn authorized_status(kind: PermissionKind) -> PermissionStatus {
     PermissionStatus {
         kind,

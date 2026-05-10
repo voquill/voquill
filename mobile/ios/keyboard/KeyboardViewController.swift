@@ -1245,16 +1245,16 @@ class KeyboardViewController: UIInputViewController {
                                     system: buildSystemPostProcessingPrompt(),
                                     prompt: buildPostProcessingPrompt(
                                         transcript: rawTranscript,
-                                        tonePromptTemplate: tone.promptTemplate
+                                        tonePromptTemplate: tone.promptTemplate,
+                                        termIds: self.termIds,
+                                        termById: self.termById
                                     ),
                                     jsonResponse: postProcessingJsonResponse
                                 )
-                                if let data = raw.data(using: .utf8),
-                                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                                   let processed = json["processedTranscription"] as? String {
+                                if let processed = extractPostProcessingResult(from: raw) {
                                     finalText = processed.trimmingCharacters(in: .whitespacesAndNewlines)
                                 } else {
-                                    self.dbg("Could not parse processedTranscription from JSON, using raw")
+                                    self.dbg("Could not parse result from post-processing JSON, using raw")
                                     finalText = raw
                                 }
                             }

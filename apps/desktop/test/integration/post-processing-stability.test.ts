@@ -1,37 +1,163 @@
-import { expect, test, vi } from "vitest";
-import {
-  getGroqGentextRepo,
-  getWritingStyle,
-  postProcess,
-} from "../helpers/eval.utils";
+import { INITIAL_APP_STATE } from "../../src/state/app.state";
+import { afterEach, expect, test, vi } from "vitest";
 
-vi.setConfig({ testTimeout: 30000 });
+const { routeTranscriptOutput, postProcessTranscript } = vi.hoisted(() => ({
+  routeTranscriptOutput: vi.fn().mockResolvedValue({
+    delivered: false,
+    remote: false,
+  }),
+  postProcessTranscript: vi.fn().mockResolvedValue({
+    transcript: "Polished launch summary",
+    warnings: [],
+    metadata: {},
+  }),
+}));
 
-vi.mock("../../src/i18n/intl", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/i18n/intl")>();
+vi.mock("../../src/utils/output-routing.utils", () => ({
+  routeTranscriptOutput,
+}));
+
+vi.mock("../../src/actions/transcribe.actions", () => ({
+  postProcessTranscript,
+}));
+
+vi.mock("../../src/utils/log.utils", () => ({
+  getLogger: () => ({
+    verbose: vi.fn(),
+    info: vi.fn(),
+    warning: vi.fn(),
+    error: vi.fn(),
+  }),
+}));
+
+vi.mock("../../src/store", () => {
+  let state: Record<string, unknown> = {};
+
   return {
-    ...actual,
-    getIntl: () => ({
-      formatMessage: (descriptor: { defaultMessage: string }) =>
-        descriptor.defaultMessage,
-    }),
+    getAppState: () => state,
+    setAppState: (nextState: Record<string, unknown>) => {
+      state = nextState;
+    },
   };
 });
 
-test(
-  "stability1",
-  async () => {
-    const repo = getGroqGentextRepo();
-    for (let i = 0; i < 10; i++) {
-      await expect(
-        postProcess({
-          repo,
-          tone: getWritingStyle("default"),
-          transcription:
-            "Hey, I need you to make it so on the settings page you see that manage subscription button. That should only show up if you're not on trial. Like, it should only show up if you're truly on the pro plan and not a trial. I think there's some utilities that you can use for that. Use your utilities, remember utilities, I believe. So yeah, that should only show up if you're on trial. If you're on trial, I still want to show up with an upgrade button, but I want it to be basically, let me say pay for pro. So you pay for pro, you come up with the vocabulary for that, but it's technically still on pro plan. What I want to do is basically, yeah, so if you're on pro plan, you're still on trial, so what I want it to do is you can click a button, and it should be in the header, and it should be on the settings page, replacing a manage subscription button. And what you should do is when you click on it, it should basically take you to the payment flow where you're going to convert to a real Pro account, you need to update this tribe services. Now come back. To accommodate this tribe service when you subscribe needs to says on trial to false and it only needs to mark your trial as it basically. You're effectively finishing your trial and converting to a real pro user. And yeah, so basically just like a way to get it out of a trial and convert over to a real pro user. That's the functionality we want. I need you to come up with a vocabulary for that.",
-        }),
-      ).resolves.not.toThrow();
-    }
-  },
-  1000 * 60,
-);
+vi.mock("../../src/utils/tone.utils", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../src/utils/tone.utils")>();
+  return {
+    ...actual,
+    getToneIdToUse: () => actual.VERBATIM_TONE_ID,
+  };
+});
+
+const { setAppState } = await import("../../src/store");
+const { DictationStrategy } =
+  await import("../../src/strategies/dictation.strategy");
+
+afterEach(() => {
+  routeTranscriptOutput.mockClear();
+  postProcessTranscript.mockClear();
+  setAppState({ ...INITIAL_APP_STATE });
+});
+
+test("streamed dictation inserts live deltas and only appends the final tail", async () => {
+  setAppState({
+    ...INITIAL_APP_STATE,
+    userPrefs: {
+      realtimeOutputEnabled: true,
+      remoteOutputEnabled: false,
+      remoteTargetDeviceId: null,
+    } as never,
+  });
+
+  const strategy = new DictationStrategy();
+
+  strategy.handleInterimSegment("hello");
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(routeTranscriptOutput).toHaveBeenCalledTimes(1);
+  expect(routeTranscriptOutput).toHaveBeenNthCalledWith(1, {
+    text: "hello ",
+    mode: "dictation",
+    currentAppId: null,
+  });
+
+  const result = await strategy.handleTranscript({
+    rawTranscript: "hello world",
+    processedTranscript: null,
+    toneId: null,
+    a11yInfo: null,
+    currentApp: null,
+    loadingToken: null,
+    audio: { samples: [], sampleRate: 16000 },
+    transcriptionMetadata: {},
+    transcriptionWarnings: [],
+  });
+
+  expect(routeTranscriptOutput).toHaveBeenCalledTimes(2);
+  expect(routeTranscriptOutput).toHaveBeenNthCalledWith(2, {
+    text: "world ",
+    mode: "dictation",
+    currentAppId: null,
+  });
+  expect(result.transcript).toBe("hello world");
+  expect(result.sanitizedTranscript).toBe("hello world");
+});
+
+test("bulk dictation forwards merged screen context into post-processing", async () => {
+  setAppState({
+    ...INITIAL_APP_STATE,
+    userPrefs: {
+      realtimeOutputEnabled: false,
+      remoteOutputEnabled: false,
+      remoteTargetDeviceId: null,
+    } as never,
+  });
+
+  const strategy = new DictationStrategy();
+  const mergedScreenContext =
+    "Accessibility context: Release dashboard Screen capture OCR: Draft launch checklist";
+
+  const result = await strategy.handleTranscript({
+    rawTranscript: "update the summary",
+    processedTranscript: null,
+    toneId: "professional",
+    a11yInfo: null,
+    currentApp: {
+      id: "notion",
+      name: "Notion",
+    } as never,
+    currentEditor: {
+      id: "focused-text-field",
+      name: "Focused text field",
+    },
+    selectedText: "launch summary",
+    screenContext: mergedScreenContext,
+    loadingToken: null,
+    audio: { samples: [], sampleRate: 16000 },
+    transcriptionMetadata: {},
+    transcriptionWarnings: [],
+  });
+
+  expect(postProcessTranscript).toHaveBeenCalledWith(
+    expect.objectContaining({
+      currentApp: {
+        id: "notion",
+        name: "Notion",
+      },
+      currentEditor: {
+        id: "focused-text-field",
+        name: "Focused text field",
+      },
+      selectedText: "launch summary",
+      screenContext: mergedScreenContext,
+    }),
+  );
+  expect(routeTranscriptOutput).toHaveBeenCalledWith({
+    text: "Polished launch summary ",
+    mode: "dictation",
+    currentAppId: "notion",
+  });
+  expect(result.transcript).toBe("Polished launch summary");
+});

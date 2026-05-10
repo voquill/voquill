@@ -1,16 +1,22 @@
+import type { DictationContextTarget, DictationIntent } from "@voquill/types";
 import {
   PostProcessMetadata,
   TranscribeAudioMetadata,
 } from "../actions/transcribe.actions";
 
 export type StopRecordingResponse = {
-  samples: number[] | Float32Array;
-  sampleRate?: number;
+  filePath: string;
+  sampleRate: number;
+  sampleCount: number;
 };
 
 export type TranscriptionSessionResult = {
   rawTranscript: string | null;
   processedTranscript?: string | null;
+  authoritativeTranscript?: string | null;
+  isAuthoritative?: boolean | null;
+  isFinalized?: boolean | null;
+  dictationIntent?: DictationIntent | null;
   metadata: TranscribeAudioMetadata;
   postProcessMetadata?: PostProcessMetadata;
   warnings: string[];
@@ -19,6 +25,10 @@ export type TranscriptionSessionResult = {
 export type TranscriptionSessionFinalizeOptions = {
   toneId?: string | null;
   a11yInfo?: unknown;
+  currentApp?: DictationContextTarget | null;
+  currentEditor?: DictationContextTarget | null;
+  selectedText?: string | null;
+  screenContext?: string | null;
 };
 
 export type InterimResultCallback = (segment: string) => void;

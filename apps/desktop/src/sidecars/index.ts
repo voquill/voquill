@@ -151,6 +151,17 @@ class LocalTranscriptionSidecarFacade {
     }
   }
 
+  async warmupModel({
+    model,
+    preferGpu,
+  }: {
+    model: LocalWhisperModel;
+    preferGpu: boolean;
+  }): Promise<void> {
+    const sidecar = await this.resolveRuntime(preferGpu);
+    await sidecar.warmupModel(model);
+  }
+
   private async resolveRuntime(
     preferGpu: boolean,
   ): Promise<LocalTranscriptionSidecar> {

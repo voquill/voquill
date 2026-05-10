@@ -14,6 +14,7 @@ pub enum PermissionState {
 pub enum PermissionKind {
     Microphone,
     Accessibility,
+    ScreenRecording,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

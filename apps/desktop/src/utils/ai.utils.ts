@@ -24,6 +24,42 @@ export const unwrapNestedLlmResponse = <T extends Record<string, unknown>>(
   return parsed;
 };
 
+export const parseStructuredJsonResponse = <TKey extends string>(
+  text: string,
+  key: TKey,
+): Record<TKey, unknown> => {
+  const extractedJson = extractJsonFromMarkdown(text);
+  const parsed = JSON.parse(extractedJson) as Record<TKey, unknown>;
+  return unwrapNestedLlmResponse(parsed, key);
+};
+
+/**
+ * When an LLM returns plain text instead of the expected JSON envelope, extract
+ * the text from common patterns rather than discarding the output entirely.
+ * Returns null when the raw output appears to be malformed JSON with no useful text.
+ */
+export const recoverPlainTextFromLLMResponse = (raw: string): string | null => {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  // If it doesn't look like JSON at all, treat the whole thing as the transcript.
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    // Strip any <SYSTEM_INSTRUCTIONS>…</SYSTEM_INSTRUCTIONS> leakage
+    const stripped = trimmed
+      .replace(/<SYSTEM_INSTRUCTIONS>[\s\S]*?<\/SYSTEM_INSTRUCTIONS>/g, "")
+      .trim();
+    return stripped || null;
+  }
+
+  // Try extracting a "result" field without a full JSON parse
+  const match = trimmed.match(/"result"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (match) {
+    return match[1].replace(/\\n/g, "\n").replace(/\\"/g, '"').trim();
+  }
+
+  return null;
+};
+
 export const extractJsonFromMarkdown = (text: string): string => {
   // Try to extract JSON from markdown code blocks
   const jsonBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);

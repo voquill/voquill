@@ -1,3 +1,4 @@
+import { createTranscriptReconciler } from "@voquill/dictation-core";
 import { getStringSimilarity } from "./string.utils";
 
 /**
@@ -9,6 +10,28 @@ const normalizeText = (text: string): string => {
     .toLowerCase()
     .replace(/[.,!?;:'"()[\]{}-]/g, "") // Remove punctuation including hyphens
     .replace(/\s+/g, " ") // Normalize whitespace
+    .trim();
+};
+
+const CONTRACTION_OVERLAP_EXPANSIONS: Array<[RegExp, string]> = [
+  [/\bthat's\b/g, "that is"],
+  [/\bdon't\b/g, "do not"],
+  [/\bi'm\b/g, "i am"],
+  [/\bit's\b/g, "it is"],
+  [/\bwe're\b/g, "we are"],
+  [/\bthey're\b/g, "they are"],
+  [/\bcan't\b/g, "cannot"],
+];
+
+const normalizeContractionOverlapText = (text: string): string => {
+  const expandedText = CONTRACTION_OVERLAP_EXPANSIONS.reduce(
+    (current, [pattern, replacement]) => current.replace(pattern, replacement),
+    text.toLowerCase(),
+  );
+
+  return expandedText
+    .replace(/[.,!?;:'"()[\]{}-]/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 };
 
@@ -27,6 +50,58 @@ type OverlapResult = {
 
 /** Threshold for considering a match "exact" (same word count, very high similarity) */
 const EXACT_MATCH_THRESHOLD = 0.9;
+
+const findExpandedContractionOverlap = (
+  firstWords: string[],
+  secondWords: string[],
+): OverlapResult | null => {
+  const maxIToCheck = Math.min(firstWords.length, 30);
+  const maxJToCheck = Math.min(secondWords.length, 30);
+  let best: {
+    i: number;
+    j: number;
+    similarity: number;
+  } | null = null;
+
+  for (let i = 1; i <= maxIToCheck; i++) {
+    const normalizedFirst = normalizeContractionOverlapText(
+      firstWords.slice(-i).join(" "),
+    );
+    if (!normalizedFirst.includes(" ")) {
+      continue;
+    }
+
+    for (let j = 1; j <= maxJToCheck; j++) {
+      const normalizedSecond = normalizeContractionOverlapText(
+        secondWords.slice(0, j).join(" "),
+      );
+
+      const lengthRatio =
+        Math.min(normalizedFirst.length, normalizedSecond.length) /
+        Math.max(normalizedFirst.length, normalizedSecond.length);
+      if (lengthRatio < 0.5) continue;
+
+      const similarity = getStringSimilarity(normalizedFirst, normalizedSecond);
+      if (similarity < SIMILARITY_THRESHOLD) continue;
+
+      const score = j * 10 + similarity;
+      const bestScore = best ? best.j * 10 + best.similarity : 0;
+
+      if (!best || score > bestScore) {
+        best = { i, j, similarity };
+      }
+    }
+  }
+
+  if (!best) {
+    return null;
+  }
+
+  return {
+    wordsToKeepFromFirst: firstWords.length - best.i,
+    wordsToSkipFromSecond: 0,
+  };
+};
 
 /**
  * Finds the best overlap between two transcriptions using fuzzy string matching.
@@ -142,6 +217,16 @@ const findOverlap = (first: string, second: string): OverlapResult => {
     }
   }
 
+  if (!best) {
+    const contractionOverlap = findExpandedContractionOverlap(
+      firstWords,
+      secondWords,
+    );
+    if (contractionOverlap) {
+      return contractionOverlap;
+    }
+  }
+
   // No overlap found - concatenate
   if (!best) {
     return {
@@ -177,6 +262,18 @@ const mergeTwoTranscriptions = (first: string, second: string): string => {
   if (!trimmedFirst) return trimmedSecond;
   if (!trimmedSecond) return trimmedFirst;
 
+  const normalizedFirst = normalizeText(trimmedFirst);
+  const normalizedSecond = normalizeText(trimmedSecond);
+  if (
+    normalizedFirst &&
+    normalizedSecond.startsWith(normalizedFirst) &&
+    normalizedSecond.length > normalizedFirst.length
+  ) {
+    const reconciler = createTranscriptReconciler();
+    reconciler.applyPartial({ text: trimmedFirst });
+    return reconciler.applyFinal({ text: trimmedSecond });
+  }
+
   const firstWords = trimmedFirst.split(/\s+/);
   const secondWords = trimmedSecond.split(/\s+/);
 
@@ -189,10 +286,15 @@ const mergeTwoTranscriptions = (first: string, second: string): string => {
   const firstPart = firstWords.slice(0, wordsToKeepFromFirst).join(" ");
   const secondPart = secondWords.slice(wordsToSkipFromSecond).join(" ");
 
-  if (!firstPart) return trimmedSecond;
-  if (!secondPart) return firstPart;
+  const mergedText = !firstPart
+    ? trimmedSecond
+    : !secondPart
+      ? firstPart
+      : `${firstPart} ${secondPart}`;
 
-  return `${firstPart} ${secondPart}`;
+  const reconciler = createTranscriptReconciler();
+  reconciler.applyPartial({ text: trimmedFirst });
+  return reconciler.applyFinal({ text: mergedText });
 };
 
 /**

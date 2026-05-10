@@ -15,6 +15,7 @@ import {
   type LocalSidecarStreamingSession,
   getLocalTranscriptionSidecarManager,
 } from "../sidecars";
+import { readAudioFromFile } from "../utils/audio.utils";
 import { getLogger } from "../utils/log.utils";
 import {
   buildLocalizedTranscriptionPrompt,
@@ -151,14 +152,11 @@ export class LocalTranscriptionSession implements TranscriptionSession {
     audio: StopRecordingResponse,
     warnings: string[],
   ): Promise<TranscriptionSessionResult> {
-    const payloadSamples = Array.isArray(audio.samples)
-      ? audio.samples
-      : Array.from(audio.samples ?? []);
     const rate = audio.sampleRate;
 
-    if (rate == null || rate <= 0 || payloadSamples.length === 0) {
+    if (rate == null || rate <= 0 || !audio.filePath || audio.sampleCount === 0) {
       getLogger().warning(
-        `[local-stream-session] batch fallback: skipping transcription (rate=${rate}, samples=${payloadSamples.length})`,
+        `[local-stream-session] batch fallback: skipping transcription (rate=${rate}, sampleCount=${audio.sampleCount})`,
       );
       return {
         rawTranscript: null,
@@ -171,10 +169,12 @@ export class LocalTranscriptionSession implements TranscriptionSession {
     }
 
     getLogger().info(
-      `[local-stream-session] batch fallback: transcribing ${payloadSamples.length} samples at ${rate}Hz`,
+      `[local-stream-session] batch fallback: reading ${audio.sampleCount} samples at ${rate}Hz from file`,
     );
+    const { samples } = await readAudioFromFile(audio.filePath);
+
     const result = await transcribeAudio({
-      samples: payloadSamples,
+      samples,
       sampleRate: rate,
     });
     getLogger().info(

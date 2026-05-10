@@ -1,4 +1,5 @@
 import { listen } from "@tauri-apps/api/event";
+import { createTranscriptReconciler } from "@voquill/dictation-core";
 import { getAppState } from "../store";
 import {
   StopRecordingResponse,
@@ -10,9 +11,11 @@ import { getEffectiveAuth } from "../utils/auth.utils";
 import { getLogger } from "../utils/log.utils";
 import { NEW_SERVER_URL } from "../utils/new-server.utils";
 import {
+  buildDictationContext,
   buildPostProcessingPrompt,
   buildSystemPostProcessingTonePrompt,
   collectDictionaryEntries,
+  collectDictionaryTerms,
 } from "../utils/prompt.utils";
 import { getToneById, getToneConfig } from "../utils/tone.utils";
 import {
@@ -39,6 +42,18 @@ type FinalizeOptions = {
 type NewServerStreamingSession = {
   finalize: (options?: FinalizeOptions) => Promise<TranscriptResult>;
   cleanup: () => void;
+};
+
+type NewServerTranscriptState = {
+  applyStreamEvent: (event: {
+    text?: string | null;
+    isFinal?: boolean;
+  }) => {
+    delta: string;
+    authoritativeText: string;
+  };
+  applyAuthoritativeTranscript: (text?: string | null) => string;
+  toRecoveredResult: (warning: string) => TranscriptResult;
 };
 
 export const getNewServerTranscriptDelta = (
@@ -84,6 +99,35 @@ export const getRecoveredNewServerTranscriptResult = (
   };
 };
 
+export const createNewServerTranscriptState = (): NewServerTranscriptState => {
+  const reconciler = createTranscriptReconciler();
+
+  const applyAuthoritativeTranscript = (text?: string | null): string => {
+    return reconciler.applyFinal({ text: String(text ?? "") });
+  };
+
+  return {
+    applyStreamEvent: ({ text, isFinal }) => {
+      const nextText = String(text ?? "");
+      const previousText = reconciler.getAuthoritativeTranscript();
+      const authoritativeText = isFinal
+        ? reconciler.applyFinal({ text: nextText })
+        : reconciler.applyPartial({ text: nextText });
+
+      return {
+        delta: getNewServerTranscriptDelta(previousText, authoritativeText),
+        authoritativeText,
+      };
+    },
+    applyAuthoritativeTranscript,
+    toRecoveredResult: (warning) =>
+      getRecoveredNewServerTranscriptResult(
+        reconciler.getAuthoritativeTranscript(),
+        warning,
+      ),
+  };
+};
+
 const startNewServerStreaming = async (
   sampleRate: number,
   glossary: string[],
@@ -97,7 +141,7 @@ const startNewServerStreaming = async (
   let isReady = false;
   let sentChunkCount = 0;
   let droppedChunkCount = 0;
-  let committedTranscript = "";
+  const transcriptState = createNewServerTranscriptState();
   const bufferedChunks: Float32Array[] = [];
 
   const unlisten = await listen<{ samples: number[] }>(
@@ -176,15 +220,14 @@ const startNewServerStreaming = async (
           `[NewServer WebSocket] Finalize called (wsState=${ws?.readyState}, sent=${sentChunkCount}, dropped=${droppedChunkCount})`,
         );
 
-        if (isFinalized) {
-          resolveFinalize(
-            getRecoveredNewServerTranscriptResult(
-              committedTranscript,
-              "Streaming session was already finalized",
-            ),
-          );
-          return;
-        }
+          if (isFinalized) {
+            resolveFinalize(
+              transcriptState.toRecoveredResult(
+                "Streaming session was already finalized",
+              ),
+            );
+            return;
+          }
 
         isFinalized = true;
         finalizeResolver = resolveFinalize;
@@ -211,10 +254,7 @@ const startNewServerStreaming = async (
             );
             if (finalizeRejecter) {
               settleFinalize(
-                getRecoveredNewServerTranscriptResult(
-                  committedTranscript,
-                  warning,
-                ),
+                transcriptState.toRecoveredResult(warning),
               );
             }
           }, timeoutMs);
@@ -225,7 +265,7 @@ const startNewServerStreaming = async (
             `[NewServer WebSocket] Socket not open at finalize, using recovered transcript if available (wsState=${ws?.readyState})`,
           );
           settleFinalize(
-            getRecoveredNewServerTranscriptResult(committedTranscript, warning),
+            transcriptState.toRecoveredResult(warning),
           );
         }
       });
@@ -268,8 +308,7 @@ const startNewServerStreaming = async (
           const error = new Error(`${msg.code}: ${msg.message}`);
           if (finalizeRejecter) {
             settleFinalize(
-              getRecoveredNewServerTranscriptResult(
-                committedTranscript,
+              transcriptState.toRecoveredResult(
                 `New server returned an error during finalize: ${error.message}`,
               ),
             );
@@ -325,16 +364,14 @@ const startNewServerStreaming = async (
         }
 
         if (msg.type === "partial_transcript") {
-          if (msg.is_final && msg.text) {
-            const nextTranscript = String(msg.text).trim();
-            const newText = getNewServerTranscriptDelta(
-              committedTranscript,
-              nextTranscript,
-            );
-            committedTranscript = nextTranscript;
+          if (msg.text) {
+            const { delta } = transcriptState.applyStreamEvent({
+              text: msg.text,
+              isFinal: msg.is_final,
+            });
 
-            if (newText) {
-              interimCallback?.(newText);
+            if (msg.is_final && delta) {
+              interimCallback?.(delta);
             }
           }
           return;
@@ -354,8 +391,11 @@ const startNewServerStreaming = async (
             finalizeTimeout = null;
           }
           if (finalizeResolver) {
+            const authoritativeText = transcriptState.applyAuthoritativeTranscript(
+              msg.text || "",
+            );
             settleFinalize({
-              text: msg.text || "",
+              text: authoritativeText,
               source: msg.source || "",
               durationMs: msg.durationMs,
               processed: msg.processed
@@ -388,8 +428,7 @@ const startNewServerStreaming = async (
       );
       if (finalizeRejecter) {
         settleFinalize(
-          getRecoveredNewServerTranscriptResult(
-            committedTranscript,
+          transcriptState.toRecoveredResult(
             "Streaming connection closed unexpectedly; using recovered stream transcript if available",
           ),
         );
@@ -464,6 +503,13 @@ export class NewServerTranscriptionSession implements TranscriptionSession {
       return {
         rawTranscript: result.text || null,
         processedTranscript: result.processed?.text || null,
+        authoritativeTranscript: result.text || null,
+        isAuthoritative: true,
+        isFinalized: true,
+        dictationIntent: {
+          kind: "dictation",
+          format: result.processed ? "clean" : "verbatim",
+        },
         metadata: {
           inferenceDevice: `Cloud • ${result.source || "New Server"}`,
           transcriptionMode: "cloud",
@@ -509,11 +555,24 @@ export class NewServerTranscriptionSession implements TranscriptionSession {
 
     const toneConfig = getToneConfig(state, toneId);
     const dictationLanguage = await loadMyEffectiveDictationLanguage(state);
+    const context = buildDictationContext({
+      dictationLanguage,
+      intent: {
+        kind: "dictation",
+        format: tone?.shouldDisablePostProcessing ? "verbatim" : "clean",
+      },
+      terms: collectDictionaryTerms(state),
+      currentApp: options?.currentApp ?? null,
+      currentEditor: options?.currentEditor ?? null,
+      selectedText: options?.selectedText ?? null,
+      screenContext: options?.screenContext ?? null,
+    });
     const promptInput = {
       transcript: "{{transcript}}",
       userName: getMyUserName(state),
       dictationLanguage,
       tone: toneConfig,
+      context,
     };
 
     return {

@@ -1,8 +1,9 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getAppState } from "../store";
 import { AudioSamples } from "../types/audio.types";
 import { isLinux, isMacOS, isWindows11 } from "./env.utils";
 import { getMyUser } from "./user.utils";
+import { getLogger } from "./log.utils";
 
 const writeString = (view: DataView, offset: number, text: string) => {
   for (let index = 0; index < text.length; index += 1) {
@@ -56,6 +57,24 @@ export const buildWaveFile = (
 export const normalizeSamples = (samples: AudioSamples): number[] =>
   Array.isArray(samples) ? samples : Array.from(samples ?? []);
 
+export const resampleTo16kHz = (
+  samples: Float32Array,
+  fromRate: number,
+): Float32Array => {
+  if (fromRate === 16000) return samples;
+  const ratio = fromRate / 16000;
+  const outputLength = Math.floor(samples.length / ratio);
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i++) {
+    const srcIdx = i * ratio;
+    const srcFloor = Math.floor(srcIdx);
+    const srcCeil = Math.min(srcFloor + 1, samples.length - 1);
+    const frac = srcIdx - srcFloor;
+    output[i] = (samples[srcFloor] ?? 0) * (1 - frac) + (samples[srcCeil] ?? 0) * frac;
+  }
+  return output;
+};
+
 export type AudioClip =
   | "start_recording_clip"
   | "stop_recording_clip"
@@ -92,4 +111,86 @@ function getAlertClip(): AudioClip {
 export function playAlertSound(): void {
   const clip = getAlertClip();
   tryPlayAudioChime(clip);
+}
+
+/**
+ * Read a WAV file from disk via the Tauri asset protocol and parse it
+ * into Float32Array samples. The file must be within the asset protocol scope.
+ */
+export async function readAudioFromFile(
+  filePath: string,
+): Promise<{ samples: Float32Array; sampleRate: number }> {
+  const assetUrl = convertFileSrc(filePath);
+  const response = await fetch(assetUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to read audio file: ${response.status}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  return parseWavBuffer(arrayBuffer);
+}
+
+/**
+ * Read a WAV file from disk as a raw ArrayBuffer (for direct API upload).
+ */
+export async function readAudioFileAsBuffer(
+  filePath: string,
+): Promise<ArrayBuffer> {
+  const assetUrl = convertFileSrc(filePath);
+  const response = await fetch(assetUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to read audio file: ${response.status}`);
+  }
+  return response.arrayBuffer();
+}
+
+/** Parse a standard PCM WAV buffer into Float32Array samples. */
+function parseWavBuffer(buffer: ArrayBuffer): {
+  samples: Float32Array;
+  sampleRate: number;
+} {
+  if (buffer.byteLength < 44) {
+    throw new Error(
+      `Invalid WAV file: too small (${buffer.byteLength} bytes, minimum 44)`,
+    );
+  }
+
+  const view = new DataView(buffer);
+  const sampleRate = view.getUint32(24, true);
+  const bitsPerSample = view.getUint16(34, true);
+  const dataSize = view.getUint32(40, true);
+
+  if (bitsPerSample !== 16) {
+    getLogger().warning(
+      `[audio] unexpected bits per sample: ${bitsPerSample}, expected 16`,
+    );
+  }
+
+  const bytesPerSample = bitsPerSample / 8;
+  const sampleCount = Math.floor(dataSize / bytesPerSample);
+  const requiredSize = 44 + dataSize;
+  if (buffer.byteLength < requiredSize) {
+    throw new Error(
+      `WAV data truncated: expected ${requiredSize} bytes, got ${buffer.byteLength}`,
+    );
+  }
+
+  const samples = new Float32Array(sampleCount);
+  const dataOffset = 44;
+
+  for (let i = 0; i < sampleCount; i++) {
+    const int16 = view.getInt16(dataOffset + i * 2, true);
+    samples[i] = int16 / 32768;
+  }
+
+  return { samples, sampleRate };
+}
+
+/** Delete a temporary recording file via Rust command. */
+export async function cleanupAudioFile(filePath: string): Promise<void> {
+  if (!filePath) return;
+  try {
+    await invoke("cleanup_audio_file", { filePath });
+  } catch (error) {
+    getLogger().verbose(`[audio] cleanup_audio_file failed: ${error}`);
+  }
 }

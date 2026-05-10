@@ -410,6 +410,19 @@ export class LocalTranscriptionSidecar extends BaseSidecar {
     this.readyModels.delete(model);
   }
 
+  /**
+   * Pre-warm the sidecar for a given model so that the first dictation has
+   * zero sidecar-spawn latency. Only runs if the model is already downloaded;
+   * never triggers a download.
+   */
+  async warmupModel(model: LocalWhisperModel): Promise<void> {
+    const status = await this.getModelStatus(model, false);
+    if (!status.downloaded) {
+      return;
+    }
+    this.readyModels.set(model, Promise.resolve());
+  }
+
   // --- Private helpers ---
 
   private async transcribeInternal(

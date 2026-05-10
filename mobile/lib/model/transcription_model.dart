@@ -11,6 +11,10 @@ class Transcription with EquatableMixin {
   final String id;
   final String text;
   final String rawTranscript;
+  final String? authoritativeTranscript;
+  final bool? isAuthoritative;
+  final bool? isFinalized;
+  final Map<String, dynamic>? dictationIntent;
   final String? toneId;
   final String? toneName;
   final String createdAt;
@@ -20,6 +24,10 @@ class Transcription with EquatableMixin {
     required this.id,
     required this.text,
     required this.rawTranscript,
+    this.authoritativeTranscript,
+    this.isAuthoritative,
+    this.isFinalized,
+    this.dictationIntent,
     this.toneId,
     this.toneName,
     required this.createdAt,
@@ -37,6 +45,10 @@ class Transcription with EquatableMixin {
     id,
     text,
     rawTranscript,
+    authoritativeTranscript,
+    isAuthoritative,
+    isFinalized,
+    dictationIntent,
     toneId,
     toneName,
     createdAt,

@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { createTranscriptReconciler } from "@voquill/dictation-core";
 import type { Nullable } from "@voquill/types";
 import { showErrorSnackbar, showSnackbar } from "../actions/app.actions";
 import { tryRegisterCurrentAppTarget } from "../actions/app-target.actions";
@@ -33,8 +34,11 @@ import { BaseStrategy } from "./base.strategy";
 export class DictationStrategy extends BaseStrategy {
   private streamedSegmentCount = 0;
   private streamedProcessedText = "";
+  private streamedInsertedText = "";
+  private streamedTranscriptReconciler = createTranscriptReconciler();
   private pasteQueue: Promise<void> = Promise.resolve();
   private currentAppId: string | null = null;
+  private streamedOutputOutOfSync = false;
 
   shouldStoreTranscript(): boolean {
     return true;
@@ -52,6 +56,74 @@ export class DictationStrategy extends BaseStrategy {
     return prefs.remoteTargetDeviceId;
   }
 
+  private async routeFinalTranscriptOutput(
+    transcript: string,
+    currentAppId: string | null,
+  ): Promise<{
+    remoteStatus: "sent" | null;
+    remoteDeviceId: string | null;
+  }> {
+    const remoteDeviceId = this.getActiveRemoteTargetDeviceId();
+    let remoteStatus: "sent" | null = null;
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    try {
+      getLogger().verbose(
+        `Routing transcript output (${transcript.length} chars, app=${currentAppId ?? "none"})`,
+      );
+
+      const textToPaste = transcript.trim() + " ";
+      const result = await routeTranscriptOutput({
+        text: textToPaste,
+        mode: "dictation",
+        currentAppId,
+      });
+      if (result.remote && result.delivered) {
+        remoteStatus = "sent";
+        showSnackbar("Transcript sent to paired receiver.", {
+          mode: "success",
+        });
+      }
+
+      getLogger().info("Transcript output routed successfully");
+    } catch (error) {
+      getLogger().error(`Failed to route transcription output: ${error}`);
+      showErrorSnackbar("Unable to insert transcription.");
+    }
+
+    return {
+      remoteStatus,
+      remoteDeviceId: remoteStatus ? remoteDeviceId : null,
+    };
+  }
+
+  private getStreamedTranscriptTail(transcript: string | null): string {
+    const nextTranscript = transcript?.trim() ?? "";
+    const streamedTranscript = this.streamedInsertedText.trim();
+
+    if (!nextTranscript) {
+      return "";
+    }
+
+    if (!streamedTranscript) {
+      return nextTranscript;
+    }
+
+    if (nextTranscript.startsWith(streamedTranscript)) {
+      return nextTranscript.slice(streamedTranscript.length).trim();
+    }
+
+    getLogger().warning(
+      "Skipping final streamed reinsertion because the authoritative transcript diverged from live output",
+    );
+    return "";
+  }
+
+  private appendStreamedText(currentText: string, nextText: string): string {
+    return currentText ? `${currentText} ${nextText}` : nextText;
+  }
+
   handleInterimSegment(segment: string): void {
     const state = getAppState();
 
@@ -67,21 +139,34 @@ export class DictationStrategy extends BaseStrategy {
       return;
     }
 
-    const isFirst = this.streamedSegmentCount === 0;
     this.streamedSegmentCount++;
 
     this.pasteQueue = this.pasteQueue.then(async () => {
       const text = sanitized;
-      const textToPaste = text + " ";
-      this.streamedProcessedText += (isFirst ? "" : " ") + text;
+      this.streamedProcessedText = this.appendStreamedText(
+        this.streamedProcessedText,
+        text,
+      );
+      this.streamedTranscriptReconciler.applyPartial({
+        text: this.streamedProcessedText,
+      });
+
+      if (this.streamedOutputOutOfSync) {
+        return;
+      }
 
       try {
         await routeTranscriptOutput({
-          text: textToPaste,
+          text: `${text} `,
           mode: "dictation",
           currentAppId: this.currentAppId,
         });
+        this.streamedInsertedText = this.appendStreamedText(
+          this.streamedInsertedText,
+          text,
+        );
       } catch (error) {
+        this.streamedOutputOutOfSync = true;
         getLogger().error(`Failed to paste interim segment: ${error}`);
       }
     });
@@ -143,10 +228,32 @@ export class DictationStrategy extends BaseStrategy {
     args: HandleTranscriptParams,
   ): Promise<HandleTranscriptResult> {
     const sanitizedTranscript = this.sanitizeTranscript(args.rawTranscript);
+    let remoteStatus: "sent" | null = null;
+    let remoteDeviceId: string | null = null;
 
     await this.pasteQueue;
 
-    const transcript = this.streamedProcessedText || sanitizedTranscript;
+    if (sanitizedTranscript) {
+      this.streamedTranscriptReconciler.applyFinal({
+        text: sanitizedTranscript,
+      });
+    }
+
+    const transcript =
+      this.streamedTranscriptReconciler.getAuthoritativeTranscript() ||
+      sanitizedTranscript;
+
+    const tailToRoute = this.getStreamedTranscriptTail(transcript);
+
+    if (tailToRoute) {
+      const routed = await this.routeFinalTranscriptOutput(
+        tailToRoute,
+        args.currentApp?.id ?? this.currentAppId,
+      );
+      remoteStatus = routed.remoteStatus;
+      remoteDeviceId = routed.remoteDeviceId;
+    }
+
     getLogger().verbose(
       `Streaming dictation complete (${this.streamedSegmentCount} segments)`,
     );
@@ -157,8 +264,8 @@ export class DictationStrategy extends BaseStrategy {
       sanitizedTranscript,
       postProcessMetadata: {},
       postProcessWarnings: [],
-      remoteStatus: null,
-      remoteDeviceId: null,
+      remoteStatus,
+      remoteDeviceId,
     };
   }
 
@@ -170,7 +277,7 @@ export class DictationStrategy extends BaseStrategy {
     let postProcessMetadata: PostProcessMetadata = {};
     let postProcessWarnings: string[] = [];
     let remoteStatus: "sent" | null = null;
-    const remoteDeviceId = this.getActiveRemoteTargetDeviceId();
+    let remoteDeviceId: string | null = null;
 
     try {
       sanitizedTranscript = this.sanitizeTranscript(args.rawTranscript);
@@ -182,6 +289,16 @@ export class DictationStrategy extends BaseStrategy {
           const result = await postProcessTranscript({
             rawTranscript: sanitizedTranscript,
             toneId: args.toneId,
+            currentApp: args.currentApp
+              ? {
+                  id: args.currentApp.id,
+                  name: args.currentApp.name,
+                }
+              : null,
+            currentEditor: args.currentEditor ?? null,
+            selectedText: args.selectedText ?? null,
+            screenContext: args.screenContext ?? null,
+            clipboardContext: args.clipboardContext ?? null,
           });
 
           transcript = result.transcript;
@@ -191,30 +308,12 @@ export class DictationStrategy extends BaseStrategy {
       }
 
       if (transcript) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 20));
-        try {
-          getLogger().verbose(
-            `Routing transcript output (${transcript.length} chars, app=${args.currentApp?.id ?? "none"})`,
-          );
-
-          const textToPaste = transcript.trim() + " ";
-          const result = await routeTranscriptOutput({
-            text: textToPaste,
-            mode: "dictation",
-            currentAppId: args.currentApp?.id ?? null,
-          });
-          if (result.remote && result.delivered) {
-            remoteStatus = "sent";
-            showSnackbar("Transcript sent to paired receiver.", {
-              mode: "success",
-            });
-          }
-
-          getLogger().info("Transcript output routed successfully");
-        } catch (error) {
-          getLogger().error(`Failed to route transcription output: ${error}`);
-          showErrorSnackbar("Unable to insert transcription.");
-        }
+        const routed = await this.routeFinalTranscriptOutput(
+          transcript,
+          args.currentApp?.id ?? null,
+        );
+        remoteStatus = routed.remoteStatus;
+        remoteDeviceId = routed.remoteDeviceId;
       }
     } catch (error) {
       getLogger().error(`Failed to process transcription: ${error}`);
@@ -251,6 +350,12 @@ export class DictationStrategy extends BaseStrategy {
   }
 
   async cleanup(): Promise<void> {
-    // Nothing to clean up for dictation
+    this.streamedSegmentCount = 0;
+    this.streamedProcessedText = "";
+    this.streamedInsertedText = "";
+    this.streamedTranscriptReconciler.reset();
+    this.pasteQueue = Promise.resolve();
+    this.currentAppId = null;
+    this.streamedOutputOutOfSync = false;
   }
 }

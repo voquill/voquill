@@ -68,6 +68,7 @@ Future<void> syncDictionaryToKeyboard() async {
   for (final entry in state.termById.entries) {
     termById[entry.key] = SharedTerm(
       sourceValue: entry.value.sourceValue,
+      destinationValue: entry.value.destinationValue,
       isReplacement: entry.value.isReplacement,
     );
   }

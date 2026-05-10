@@ -1,8 +1,13 @@
+import { satisfiesCapabilityRequirement } from "@voquill/dictation-core";
 import { getRec } from "@voquill/utilities";
 import { getAppState } from "../store";
 import { TranscriptionSession } from "../types/transcription-session.types";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
-import { TranscriptionPrefs } from "../utils/user.utils";
+import {
+  getDesktopDictationCapabilityRequirement,
+  getTranscriptionProviderCapability,
+  TranscriptionPrefs,
+} from "../utils/user.utils";
 import { AssemblyAITranscriptionSession } from "./assemblyai-transcription-session";
 import { AzureTranscriptionSession } from "./azure-transcription-session";
 import { BatchTranscriptionSession } from "./batch-transcription-session";
@@ -22,7 +27,18 @@ export { NewServerTranscriptionSession } from "./new-server-transcription-sessio
 export const createTranscriptionSession = (
   prefs: TranscriptionPrefs,
 ): TranscriptionSession => {
+  const state = getAppState();
+  const requiredCapabilities = getDesktopDictationCapabilityRequirement(state);
+  const providerCapability = getTranscriptionProviderCapability(prefs);
+  const canUseRealtimePath =
+    providerCapability &&
+    satisfiesCapabilityRequirement(providerCapability, requiredCapabilities);
+
   if (prefs.mode === "api") {
+    if (!canUseRealtimePath) {
+      return new BatchTranscriptionSession();
+    }
+
     switch (prefs.provider) {
       case "assemblyai":
         return new AssemblyAITranscriptionSession(prefs.apiKeyValue);
@@ -31,7 +47,6 @@ export const createTranscriptionSession = (
       case "elevenlabs":
         return new ElevenLabsTranscriptionSession(prefs.apiKeyValue);
       case "azure": {
-        const state = getAppState();
         const apiKeyRecord = getRec(state.apiKeyById, prefs.apiKeyId);
         const region = apiKeyRecord?.azureRegion || "eastus";
         return new AzureTranscriptionSession(prefs.apiKeyValue, region);
@@ -39,11 +54,7 @@ export const createTranscriptionSession = (
     }
   }
 
-  if (
-    prefs.mode === "cloud" &&
-    !getIsEnterpriseEnabled() &&
-    !getAppState().local.accurateDictationEnabled
-  ) {
+  if (prefs.mode === "cloud" && !getIsEnterpriseEnabled() && canUseRealtimePath) {
     return new NewServerTranscriptionSession();
   }
 

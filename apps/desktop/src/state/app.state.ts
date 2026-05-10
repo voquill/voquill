@@ -26,7 +26,11 @@ import {
 import { AuthUser } from "../types/auth.types";
 import { Vector2 } from "../types/math.types";
 import { OverlayPhase } from "../types/overlay.types";
-import { PermissionMap } from "../types/permission.types";
+import {
+  PermissionKind,
+  PermissionMap,
+  PermissionRequestLifecycle,
+} from "../types/permission.types";
 
 import { AgentRunState } from "./agent.state";
 import { ChatState, INITIAL_CHAT_STATE } from "./chat.state";
@@ -69,6 +73,8 @@ export type StreamingMessageState = {
 
 export type RecordingMode = "dictate" | "agent";
 
+type PermissionRequestMap = Record<PermissionKind, PermissionRequestLifecycle>;
+
 export type AssistantInputMode = "voice" | "type";
 
 export type PriceValue = HandlerOutput<"stripe/getPrices">["prices"];
@@ -89,6 +95,7 @@ export type AppState = {
   overlayPhase: OverlayPhase;
   audioLevels: number[];
   permissions: PermissionMap;
+  permissionRequests: PermissionRequestMap;
   confettiCounter: number;
   userPrefs: Nullable<UserPreferences>;
   localStorageCache: Record<string, unknown>;
@@ -181,6 +188,25 @@ export const INITIAL_APP_STATE: AppState = {
   permissions: {
     microphone: null,
     accessibility: null,
+    "screen-recording": {
+      kind: "screen-recording",
+      state: "not-determined",
+      promptShown: false,
+    },
+  },
+  permissionRequests: {
+    microphone: {
+      requestInFlight: false,
+      awaitingExternalApproval: false,
+    },
+    accessibility: {
+      requestInFlight: false,
+      awaitingExternalApproval: false,
+    },
+    "screen-recording": {
+      requestInFlight: false,
+      awaitingExternalApproval: false,
+    },
   },
   hotkeyById: {},
   auth: null,

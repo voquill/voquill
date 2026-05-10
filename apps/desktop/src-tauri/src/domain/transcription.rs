@@ -2,6 +2,25 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub enum DictationFormat {
+    Verbatim,
+    Clean,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DictationIntent {
+    Dictation {
+        format: DictationFormat,
+    },
+    Command {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct TranscriptionAudioSnapshot {
     pub file_path: String,
     pub duration_ms: i64,
@@ -21,6 +40,14 @@ pub struct Transcription {
     pub inference_device: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_transcript: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authoritative_transcript: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_authoritative: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_finalized: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation_intent: Option<DictationIntent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sanitized_transcript: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

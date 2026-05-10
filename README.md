@@ -36,9 +36,23 @@ Voquill is an open-source, cross-platform AI voice typing app that lets you dict
 - Voice input everywhere: overlay, hotkeys, and system integrations work across macOS, Windows, and Linux.
 - Choose your engine: run Whisper locally (with optional GPU acceleration) or point to a cloud provider of your choice.
 - AI text cleanup: remove filler words and false starts automatically.
+- Context-aware dictation: prompts can incorporate the active app/editor, selected text, and nearby on-screen accessibility context to improve final wording.
 - Personal dictionary: create glossary terms and replacement rules so recurring names and phrases stay accurate.
 - Batteries included: Tauri auto-updates, Firebase functions for billing and demos, and shared utilities/types.
 - Privacy first: You have full control over your data. Run Voquill against any backend you wish, even offline.
+
+## Dictation accuracy pipeline
+
+The current desktop and mobile work shares a common dictation contract and context assembly flow. Highlights:
+
+- Shared `@voquill/dictation-core` logic normalizes dictation context, glossary terms, and replacement rules across platforms.
+- Desktop finalization persists raw, authoritative, and sanitized transcript fields so downstream cleanup works from a stable transcript contract.
+- Provider-aware STT hints can incorporate active-app, editor, selected-text, and screen-context signals when a provider supports prompt guidance.
+- Post-processing now receives richer dictation context, which improves entity spelling, formatting, and intent preservation.
+- Streaming and final transcript reconciliation are aligned so live insertion and finalized text stay consistent.
+- macOS local testing includes a safer permission gate and a dedicated local-install path for `/Applications/Voquill (local).app`.
+
+See [docs/dictation-accuracy.md](docs/dictation-accuracy.md) for the detailed feature breakdown, mobile reuse notes, and the follow-up screen-capture context track.
 
 ## Screenshots
 

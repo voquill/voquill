@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AppTarget } from "@voquill/types";
 import { delayed } from "@voquill/utilities";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
@@ -23,7 +22,10 @@ import {
   resolveToolPermission,
   setToolAlwaysAllow,
 } from "../../actions/tool.actions";
-import { storeTranscription } from "../../actions/transcribe.actions";
+import {
+  resolveDesktopDictationContext,
+  storeTranscription,
+} from "../../actions/transcribe.actions";
 import { recordStreak } from "../../actions/user.actions";
 import {
   useHotkeyFire,
@@ -39,7 +41,10 @@ import { getAppState, produceAppState, useAppStore } from "../../store";
 import { AgentStrategy } from "../../strategies/agent.strategy";
 import { BaseStrategy } from "../../strategies/base.strategy";
 import { DictationStrategy } from "../../strategies/dictation.strategy";
-import { TextFieldInfo } from "../../types/accessibility.types";
+import {
+  ScreenContextInfo,
+  TextFieldInfo,
+} from "../../types/accessibility.types";
 import type { OverlayResolvePermissionPayload } from "../../types/overlay.types";
 import {
   StopRecordingResponse,
@@ -55,7 +60,11 @@ import {
   trackDictationStart,
 } from "../../utils/analytics.utils";
 import { getIsAssistantModeEnabled } from "../../utils/assistant-mode.utils";
-import { playAlertSound, tryPlayAudioChime } from "../../utils/audio.utils";
+import {
+  cleanupAudioFile,
+  playAlertSound,
+  tryPlayAudioChime,
+} from "../../utils/audio.utils";
 import {
   DEFAULT_DICTATION_LIMIT_MINUTES,
   getDictationRecordingTimerDurations,
@@ -75,6 +84,8 @@ import {
   syncHotkeyCombosToNative,
 } from "../../utils/keyboard.utils";
 import { getLogger } from "../../utils/log.utils";
+import { mergeScreenContexts } from "../../utils/prompt.utils";
+import { getScreenCaptureContext } from "../../utils/screen-context-provider";
 import {
   getActiveManualToneIds,
   getManuallySelectedToneId,
@@ -116,6 +127,10 @@ export const DictationSideEffects = () => {
   const recordingAutoStopTimerRef = useRef<NodeJS.Timeout | null>(null);
   const cancelPromptTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isStoppingRef = useRef(false);
+  const earlyOcrRef = useRef<{
+    ocrText: string | null;
+    startedAt: number;
+  } | null>(null);
   const [isStopping, setIsStopping] = useState(false);
   const assistantModeEnabled = useAppStore(getIsAssistantModeEnabled);
 
@@ -279,50 +294,108 @@ export const DictationSideEffects = () => {
     clearRecordingTimers();
     restoreSystemVolume();
 
-    const [audio, a11yInfo, appTarget] = await getLogger().stopwatch(
-      "stopRecording",
-      async () => {
-        let audio: StopRecordingResponse | null = null;
-        let a11yInfo: TextFieldInfo | null = null;
-        let appTarget: AppTarget | null = null;
-        try {
-          tryPlayAudioChime("stop_recording_clip");
+    const t0 = performance.now();
 
-          getLogger().verbose("Invoking stop_recording and fetching a11y info");
-          const [, outAudio, outA11yInfo, outAppTarget] = await Promise.all([
-            strategyRef.current?.setPhase("loading"),
-            invoke<StopRecordingResponse>("stop_recording"),
-            invoke<TextFieldInfo>("get_text_field_info").catch((error) => {
-              getLogger().verbose(`Failed to get text field info: ${error}`);
-              return null;
-            }),
-            tryRegisterCurrentAppTarget().catch((error) => {
-              getLogger().verbose(`Failed to get current app target: ${error}`);
-              return null;
-            }),
-          ]);
+    // Start audio recording stop and context collection in parallel
+    const audioPromise = (async () => {
+      try {
+        tryPlayAudioChime("stop_recording_clip");
+        await strategyRef.current?.setPhase("loading");
+        const audio = await invoke<StopRecordingResponse>("stop_recording");
+        getLogger().verbose(
+          `Recording stopped (filePath=${audio?.filePath ? "yes" : "none"})`,
+        );
+        return audio;
+      } catch (error) {
+        getLogger().error(`Failed to stop recording: ${error}`);
+        showToast({
+          message: intl.formatMessage({
+            defaultMessage: "Failed to stop recording",
+          }),
+          toastType: "error",
+          duration: 8_000,
+        });
+        return null;
+      }
+    })();
 
-          audio = outAudio;
-          a11yInfo = outA11yInfo;
-          appTarget = outAppTarget;
-          getLogger().verbose(
-            `Recording stopped (hasSamples=${!!audio?.samples})`,
-          );
-        } catch (error) {
-          getLogger().error(`Failed to stop recording: ${error}`);
-          showToast({
-            message: intl.formatMessage({
-              defaultMessage: "Failed to stop recording",
-            }),
-            toastType: "error",
-            duration: 8_000,
-          });
-        }
+    // Context collection in parallel — use cached OCR if available (Fix 3)
+    const contextPromise = (async () => {
+      getLogger().verbose("Fetching finalize-time context (parallel)");
 
-        return [audio, a11yInfo, appTarget];
-      },
-    );
+      const OCR_STALE_MS = 30_000;
+      const cachedOcr = earlyOcrRef.current;
+      const ocrIsFresh =
+        cachedOcr != null && Date.now() - cachedOcr.startedAt < OCR_STALE_MS;
 
+      const screenCapturePromise = ocrIsFresh
+        ? Promise.resolve(cachedOcr.ocrText)
+        : getScreenCaptureContext();
+
+      if (ocrIsFresh) {
+        getLogger().verbose(
+          `[perf] using cached OCR (age=${Date.now() - cachedOcr.startedAt}ms)`,
+        );
+      }
+
+      const [
+        a11yInfo,
+        accessibilityScreenContext,
+        screenCaptureContext,
+        clipboardText,
+        appTarget,
+      ] = await Promise.all([
+        invoke<TextFieldInfo>("get_text_field_info").catch((error) => {
+          getLogger().verbose(`Failed to get text field info: ${error}`);
+          return null;
+        }),
+        invoke<ScreenContextInfo>("get_screen_context")
+          .then((result) => result.screenContext)
+          .catch((error) => {
+            getLogger().verbose(`Failed to get screen context: ${error}`);
+            return null;
+          }),
+        screenCapturePromise,
+        Promise.race([
+          navigator.clipboard.readText().catch(() => null),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 500)),
+        ]).catch((error) => {
+          getLogger().verbose(`Failed to read clipboard: ${error}`);
+          return null;
+        }),
+        tryRegisterCurrentAppTarget().catch((error) => {
+          getLogger().verbose(`Failed to get current app target: ${error}`);
+          return null;
+        }),
+      ]);
+
+      earlyOcrRef.current = null;
+
+      getLogger().verbose(
+        `[context] screenCaptureContext=${screenCaptureContext ? `${screenCaptureContext.length} chars` : "null"}`,
+      );
+      getLogger().verbose(
+        `[context] accessibilityScreenContext=${accessibilityScreenContext ? `${accessibilityScreenContext.length} chars` : "null"}`,
+      );
+
+      const screenContext = mergeScreenContexts({
+        accessibilityContext: accessibilityScreenContext,
+        screenCaptureContext,
+      });
+
+      getLogger().verbose(
+        `[context] screenContext (merged)=${screenContext ? `${screenContext.length} chars` : "null"}`,
+      );
+      getLogger().verbose(`[context] appTarget=${appTarget?.name ?? "null"}`);
+
+      const t1 = performance.now();
+      getLogger().info(`[perf] context: ${(t1 - t0).toFixed(0)}ms`);
+
+      return { a11yInfo, screenContext, clipboardText, appTarget };
+    })();
+
+    // Wait for audio first (fast path)
+    const audio = await audioPromise;
     if (!audio) {
       getLogger().warning("stopRecordingRaw: no audio data received");
       return {
@@ -331,25 +404,32 @@ export const DictationSideEffects = () => {
       };
     }
 
-    getLogger().info("Finalizing transcription session");
-    trackAppUsed(appTarget?.name ?? "Unknown");
+    // Ensure temp file cleanup on all exit paths (success, error, early return)
+    try {
+    const t1 = performance.now();
+    getLogger().info(`[perf] audio-stop: ${(t1 - t0).toFixed(0)}ms`);
 
-    if (appTarget) {
-      saveManualStyleForApp(appTarget);
-    }
-
-    const toneId = getToneIdToUse(getAppState(), {
-      currentAppToneId: appTarget?.toneId ?? null,
-    });
+    // Start transcription immediately with audio only
+    getLogger().info(
+      "Finalizing transcription session (STT starting immediately)",
+    );
 
     const transcribeResult = await sessionRef.current?.finalize(audio, {
-      toneId,
-      a11yInfo,
+      toneId: null,
+      a11yInfo: null,
+      currentApp: null,
+      currentEditor: null,
+      selectedText: null,
+      screenContext: null,
     });
     const rawTranscript = transcribeResult?.rawTranscript;
+
+    const t2 = performance.now();
+    getLogger().info(`[perf] stt: ${(t2 - t1).toFixed(0)}ms`);
     getLogger().verbose(
-      `Transcription result: rawTranscript=${rawTranscript ? `${rawTranscript.length} chars` : "empty"}, toneId=${toneId ?? "none"}, app=${appTarget?.name ?? "unknown"}`,
+      `Transcription result: rawTranscript=${rawTranscript ? `${rawTranscript.length} chars` : "empty"}`,
     );
+
     if (!rawTranscript) {
       getLogger().warning("stopRecordingRaw: no rawTranscript from finalize");
       return {
@@ -368,11 +448,42 @@ export const DictationSideEffects = () => {
       };
     }
 
+    // Now wait for context (if not already ready)
+    getLogger().verbose("Waiting for context to apply to transcript");
+    const { a11yInfo, screenContext, clipboardText, appTarget } =
+      await contextPromise;
+
+    trackAppUsed(appTarget?.name ?? "Unknown");
+
+    if (appTarget) {
+      saveManualStyleForApp(appTarget);
+    }
+
+    const toneId = getToneIdToUse(getAppState(), {
+      currentAppToneId: appTarget?.toneId ?? null,
+    });
+    const desktopContext = resolveDesktopDictationContext({
+      currentApp: appTarget
+        ? {
+            id: appTarget.id,
+            name: appTarget.name,
+          }
+        : null,
+      a11yInfo,
+      screenContext,
+    });
+    getLogger().verbose(
+      `[context] desktopContext.screenContext=${desktopContext.screenContext ? `${desktopContext.screenContext.length} chars` : "null"}`,
+    );
+    getLogger().verbose(
+      `[context] desktopContext.currentApp=${desktopContext.currentApp?.name ?? "null"}`,
+    );
+
     if (getAppState().activeRecordingMode === "agent") {
       await strategy.setPhase("idle");
     }
 
-    getLogger().info("Post-processing transcript");
+    getLogger().info("Post-processing transcript with context");
     const result = await strategy.handleTranscript({
       rawTranscript,
       processedTranscript: transcribeResult.processedTranscript,
@@ -380,11 +491,18 @@ export const DictationSideEffects = () => {
       toneId,
       a11yInfo,
       currentApp: appTarget,
+      currentEditor: desktopContext.currentEditor,
+      selectedText: desktopContext.selectedText,
+      screenContext: desktopContext.screenContext,
+      clipboardContext: clipboardText,
       loadingToken: null,
       audio,
       transcriptionMetadata: transcribeResult.metadata,
       transcriptionWarnings: transcribeResult.warnings,
     });
+
+    const t3 = performance.now();
+    getLogger().info(`[perf] post-process: ${(t3 - t2).toFixed(0)}ms`);
 
     const transcript = result.transcript;
     const sanitizedTranscript = result.sanitizedTranscript;
@@ -401,6 +519,11 @@ export const DictationSideEffects = () => {
         rawTranscript: rawTranscript ?? null,
         sanitizedTranscript,
         transcript,
+        authoritativeTranscript:
+          transcribeResult.authoritativeTranscript ?? rawTranscript ?? null,
+        isAuthoritative: transcribeResult.isAuthoritative ?? undefined,
+        isFinalized: transcribeResult.isFinalized ?? undefined,
+        dictationIntent: transcribeResult.dictationIntent ?? undefined,
         transcriptionMetadata: transcribeResult.metadata,
         postProcessMetadata,
         warnings: [...transcribeResult.warnings, ...postProcessWarnings],
@@ -409,10 +532,18 @@ export const DictationSideEffects = () => {
       });
     }
 
+    const t4 = performance.now();
+    getLogger().info(`[perf] paste: ${(t4 - t3).toFixed(0)}ms`);
+    getLogger().info(`[perf] total: ${(t4 - t0).toFixed(0)}ms`);
+
     refreshMember();
     return {
       shouldContinue: result.shouldContinue,
     };
+    } finally {
+      // Clean up temp recording file on all paths (success + error)
+      if (audio.filePath) cleanupAudioFile(audio.filePath);
+    }
   }, [restoreSystemVolume]);
 
   const stopRecording = useCallback(async () => {
@@ -576,6 +707,17 @@ export const DictationSideEffects = () => {
           abortRecording();
           return;
         }
+
+        // Pre-collect OCR context while recording (Fix 3: saves 670-3700ms at stop time)
+        earlyOcrRef.current = null;
+        getScreenCaptureContext()
+          .then((ocrText) => {
+            earlyOcrRef.current = { ocrText, startedAt: Date.now() };
+            getLogger().verbose(
+              `[perf] early OCR collected: ${ocrText ? `${ocrText.length} chars` : "null"}`,
+            );
+          })
+          .catch(() => {});
 
         startRecordingTimers();
         dimSystemVolume();

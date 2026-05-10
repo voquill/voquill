@@ -1,11 +1,15 @@
 import { ArrowForward, Check, OpenInNew } from "@mui/icons-material";
 import { Box, Button, Stack, Typography } from "@mui/material";
-import { useCallback, useState } from "react";
+import { useCallback, useMemo } from "react";
 import { FormattedMessage } from "react-intl";
 import { goToOnboardingPage } from "../../actions/onboarding.actions";
 import enableMicVideo from "../../assets/enable-mic.mp4";
 import { produceAppState, useAppStore } from "../../store";
 import { trackButtonClick } from "../../utils/analytics.utils";
+import {
+  derivePermissionGateState,
+  resolvePermissionRequestLifecycle,
+} from "../../utils/permission-flow.utils";
 import {
   isPermissionAuthorized,
   requestMicrophonePermission,
@@ -17,28 +21,63 @@ import {
 } from "./OnboardingCommon";
 
 export const MicPermsForm = () => {
-  const [requesting, setRequesting] = useState(false);
   const micPermission = useAppStore((state) => state.permissions.microphone);
+  const requestLifecycle = useAppStore(
+    (state) => state.permissionRequests.microphone,
+  );
+  const gateState = useMemo(
+    () =>
+      derivePermissionGateState({
+        kind: "microphone",
+        status: micPermission,
+        requestInFlight: requestLifecycle.requestInFlight,
+        awaitingExternalApproval: requestLifecycle.awaitingExternalApproval,
+      }),
+    [micPermission, requestLifecycle],
+  );
   const isAuthorized = isPermissionAuthorized(micPermission?.state);
 
   const handleAllow = useCallback(async () => {
-    if (requesting || isAuthorized) {
+    const latestState = useAppStore.getState();
+    const latestGateState = derivePermissionGateState({
+      kind: "microphone",
+      status: latestState.permissions.microphone,
+      requestInFlight:
+        latestState.permissionRequests.microphone.requestInFlight,
+      awaitingExternalApproval:
+        latestState.permissionRequests.microphone.awaitingExternalApproval,
+    });
+
+    if (!latestGateState.canRequest) {
       return;
     }
 
     trackButtonClick("onboarding_mic_allow_access");
-    setRequesting(true);
+    produceAppState((draft) => {
+      draft.permissionRequests.microphone.requestInFlight = true;
+    });
     try {
       const result = await requestMicrophonePermission();
       produceAppState((draft) => {
         draft.permissions.microphone = result;
+        draft.permissionRequests.microphone = resolvePermissionRequestLifecycle(
+          {
+            kind: "microphone",
+            status: result,
+            requestInFlight:
+              draft.permissionRequests.microphone.requestInFlight,
+            awaitingExternalApproval:
+              draft.permissionRequests.microphone.awaitingExternalApproval,
+          },
+        );
       });
     } catch (error) {
       console.error("Failed to request microphone permission", error);
-    } finally {
-      setRequesting(false);
+      produceAppState((draft) => {
+        draft.permissionRequests.microphone.requestInFlight = false;
+      });
     }
-  }, [requesting, isAuthorized]);
+  }, []);
 
   const handleContinue = () => {
     trackButtonClick("onboarding_mic_perms_continue");
@@ -83,11 +122,19 @@ export const MicPermsForm = () => {
           <Button
             variant="outlined"
             onClick={() => void handleAllow()}
-            disabled={requesting}
-            endIcon={<OpenInNew />}
+            disabled={!gateState.canRequest}
+            endIcon={
+              requestLifecycle.requestInFlight ? undefined : <OpenInNew />
+            }
             sx={{ alignSelf: "flex-start" }}
           >
-            <FormattedMessage defaultMessage="Allow access" />
+            {requestLifecycle.requestInFlight ? (
+              <FormattedMessage defaultMessage="Requesting" />
+            ) : gateState.shouldOpenSettings ? (
+              <FormattedMessage defaultMessage="Open settings" />
+            ) : (
+              <FormattedMessage defaultMessage="Allow access" />
+            )}
           </Button>
         )}
       </Stack>

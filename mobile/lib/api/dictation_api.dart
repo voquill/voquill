@@ -14,17 +14,48 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 final _logger = createNamedLogger('dictation_api');
+const _defaultDictationIntent = {'kind': 'dictation', 'format': 'clean'};
 
 // ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 
+class DictationTranscriptEvent {
+  final String text;
+  final String authoritativeText;
+  final bool isAuthoritative;
+  final bool isFinal;
+  final Map<String, dynamic> intent;
+
+  const DictationTranscriptEvent({
+    required this.text,
+    String? authoritativeText,
+    this.isAuthoritative = false,
+    this.isFinal = false,
+    Map<String, dynamic>? intent,
+  }) : authoritativeText = authoritativeText ?? text,
+       intent = intent ?? _defaultDictationIntent;
+}
+
 class DictationResult {
   final String text;
+  final String authoritativeText;
+  final bool isAuthoritative;
+  final bool isFinalized;
+  final Map<String, dynamic> dictationIntent;
   final String? source;
   final int? durationMs;
 
-  const DictationResult({required this.text, this.source, this.durationMs});
+  const DictationResult({
+    required this.text,
+    String? authoritativeText,
+    this.isAuthoritative = true,
+    this.isFinalized = true,
+    Map<String, dynamic>? dictationIntent,
+    this.source,
+    this.durationMs,
+  }) : authoritativeText = authoritativeText ?? text,
+       dictationIntent = dictationIntent ?? _defaultDictationIntent;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,6 +73,7 @@ abstract class DictationSession {
 
   Future<DictationResult> finalize({String? prompt, String? systemPrompt});
 
+  Stream<DictationTranscriptEvent> get transcriptEvents;
   Stream<String> get partialTranscripts;
 
   void dispose();
@@ -95,10 +127,14 @@ class CloudDictationSession implements DictationSession {
   Completer<DictationResult>? _finalizeCompleter;
   Timer? _finalizeTimeout;
   String _committedTranscript = '';
-  final _partialController = StreamController<String>.broadcast();
+  final _eventController = StreamController<DictationTranscriptEvent>.broadcast();
 
   @override
-  Stream<String> get partialTranscripts => _partialController.stream;
+  Stream<DictationTranscriptEvent> get transcriptEvents => _eventController.stream;
+
+  @override
+  Stream<String> get partialTranscripts =>
+      transcriptEvents.map((event) => event.text);
 
   @override
   Future<void> start({
@@ -127,7 +163,7 @@ class CloudDictationSession implements DictationSession {
         'type': 'config',
         'sampleRate': sampleRate,
         'glossary': glossary,
-        'language': ?language,
+        if (language != null) 'language': language,
       }),
     );
 
@@ -162,7 +198,12 @@ class CloudDictationSession implements DictationSession {
     String? systemPrompt,
   }) async {
     if (_ws == null || _isDisposed) {
-      return DictationResult(text: _committedTranscript);
+      return DictationResult(
+        text: _committedTranscript,
+        authoritativeText: _committedTranscript,
+        isAuthoritative: _committedTranscript.isNotEmpty,
+        isFinalized: _committedTranscript.isNotEmpty,
+      );
     }
 
     _finalizeCompleter = Completer<DictationResult>();
@@ -170,8 +211,8 @@ class CloudDictationSession implements DictationSession {
     _ws!.add(
       jsonEncode({
         'type': 'finalize',
-        'prompt': ?prompt,
-        'systemPrompt': ?systemPrompt,
+        if (prompt != null) 'prompt': prompt,
+        if (systemPrompt != null) 'systemPrompt': systemPrompt,
       }),
     );
 
@@ -183,7 +224,12 @@ class CloudDictationSession implements DictationSession {
       if (!(_finalizeCompleter?.isCompleted ?? true)) {
         _logger.w('Finalize timed out, returning committed transcript');
         _finalizeCompleter!.complete(
-          DictationResult(text: _committedTranscript),
+          DictationResult(
+            text: _committedTranscript,
+            authoritativeText: _committedTranscript,
+            isAuthoritative: _committedTranscript.isNotEmpty,
+            isFinalized: _committedTranscript.isNotEmpty,
+          ),
         );
       }
     });
@@ -199,12 +245,10 @@ class CloudDictationSession implements DictationSession {
 
     switch (type) {
       case 'authenticated':
-        _readyCompleter?.complete();
-        _readyCompleter = null;
-
       case 'ready':
         _readyCompleter?.complete();
         _readyCompleter = null;
+        break;
 
       case 'partial_transcript':
         final text = msg['text'] as String? ?? '';
@@ -212,18 +256,33 @@ class CloudDictationSession implements DictationSession {
         if (isFinal && text.isNotEmpty) {
           _committedTranscript = text;
         }
-        _partialController.add(text);
+        final authoritativeText = _committedTranscript.isNotEmpty
+            ? _committedTranscript
+            : text;
+        _eventController.add(
+          DictationTranscriptEvent(
+            text: text,
+            authoritativeText: authoritativeText,
+            isAuthoritative: isFinal,
+            isFinal: isFinal,
+          ),
+        );
+        break;
 
       case 'transcript':
         _finalizeTimeout?.cancel();
         final result = DictationResult(
           text: msg['text'] as String? ?? _committedTranscript,
+          authoritativeText: msg['text'] as String? ?? _committedTranscript,
+          isAuthoritative: true,
+          isFinalized: true,
           source: msg['source'] as String?,
           durationMs: msg['durationMs'] as int?,
         );
         if (!(_finalizeCompleter?.isCompleted ?? true)) {
           _finalizeCompleter!.complete(result);
         }
+        break;
 
       case 'error':
         final message = msg['message'] as String? ?? 'Unknown error';
@@ -234,6 +293,7 @@ class CloudDictationSession implements DictationSession {
         if (!(_finalizeCompleter?.isCompleted ?? true)) {
           _finalizeCompleter!.completeError(Exception(message));
         }
+        break;
     }
   }
 
@@ -254,7 +314,14 @@ class CloudDictationSession implements DictationSession {
       );
     }
     if (!(_finalizeCompleter?.isCompleted ?? true)) {
-      _finalizeCompleter!.complete(DictationResult(text: _committedTranscript));
+      _finalizeCompleter!.complete(
+        DictationResult(
+          text: _committedTranscript,
+          authoritativeText: _committedTranscript,
+          isAuthoritative: _committedTranscript.isNotEmpty,
+          isFinalized: _committedTranscript.isNotEmpty,
+        ),
+      );
     }
   }
 
@@ -262,7 +329,7 @@ class CloudDictationSession implements DictationSession {
   void dispose() {
     _isDisposed = true;
     _finalizeTimeout?.cancel();
-    _partialController.close();
+    _eventController.close();
     _ws?.close().catchError((_) {});
     _ws = null;
     _bufferedChunks.clear();
@@ -277,10 +344,14 @@ class CloudFunctionDictationSession implements DictationSession {
   final _audioChunks = <Uint8List>[];
   int _sampleRate = 16000;
   String? _language;
-  final _partialController = StreamController<String>.broadcast();
+  final _eventController = StreamController<DictationTranscriptEvent>.broadcast();
 
   @override
-  Stream<String> get partialTranscripts => _partialController.stream;
+  Stream<DictationTranscriptEvent> get transcriptEvents => _eventController.stream;
+
+  @override
+  Stream<String> get partialTranscripts =>
+      transcriptEvents.map((event) => event.text);
 
   @override
   Future<void> start({
@@ -371,7 +442,7 @@ class CloudFunctionDictationSession implements DictationSession {
 
   @override
   void dispose() {
-    _partialController.close();
+    _eventController.close();
     _audioChunks.clear();
   }
 }
@@ -398,10 +469,14 @@ class ByokDictationSession implements DictationSession {
   final _audioChunks = <Uint8List>[];
   int _sampleRate = 16000;
   String? _language;
-  final _partialController = StreamController<String>.broadcast();
+  final _eventController = StreamController<DictationTranscriptEvent>.broadcast();
 
   @override
-  Stream<String> get partialTranscripts => _partialController.stream;
+  Stream<DictationTranscriptEvent> get transcriptEvents => _eventController.stream;
+
+  @override
+  Stream<String> get partialTranscripts =>
+      transcriptEvents.map((event) => event.text);
 
   String get _effectiveModel {
     if (model != null && model!.isNotEmpty) return model!;
@@ -452,17 +527,22 @@ class ByokDictationSession implements DictationSession {
     switch (provider) {
       case ApiKeyProvider.groq:
         apiUrl = 'https://api.groq.com/openai/v1/audio/transcriptions';
+        break;
       case ApiKeyProvider.speaches:
         final base = (baseUrl ?? '').replaceAll(RegExp(r'/+$'), '');
         apiUrl = '$base/v1/audio/transcriptions';
+        break;
       case ApiKeyProvider.ollama:
         final base = (baseUrl ?? 'http://localhost:11434').replaceAll(RegExp(r'/+$'), '');
         apiUrl = '$base/v1/audio/transcriptions';
+        break;
       case ApiKeyProvider.openaiCompatible:
         final base = (baseUrl ?? '').replaceAll(RegExp(r'/+$'), '');
         apiUrl = '$base/audio/transcriptions';
+        break;
       default:
         apiUrl = 'https://api.openai.com/v1/audio/transcriptions';
+        break;
     }
 
     final request = http.MultipartRequest('POST', Uri.parse(apiUrl))
@@ -606,7 +686,7 @@ class ByokDictationSession implements DictationSession {
 
   @override
   void dispose() {
-    _partialController.close();
+    _eventController.close();
     _audioChunks.clear();
   }
 }

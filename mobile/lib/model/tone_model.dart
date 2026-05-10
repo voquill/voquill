@@ -19,12 +19,18 @@ class SharedTone {
 
 class SharedTerm {
   final String sourceValue;
+  final String destinationValue;
   final bool isReplacement;
 
-  const SharedTerm({required this.sourceValue, required this.isReplacement});
+  const SharedTerm({
+    required this.sourceValue,
+    required this.destinationValue,
+    required this.isReplacement,
+  });
 
   Map<String, dynamic> toMap() => {
     'sourceValue': sourceValue,
+    'destinationValue': destinationValue,
     'isReplacement': isReplacement,
   };
 }

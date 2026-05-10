@@ -6,5 +6,7 @@
     <string>Voquill records your microphone so you can transcribe and insert speech anywhere.</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>Voquill requests accessibility permission so it can monitor your hotkeys across the system.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Voquill can optionally read on-screen text to improve dictation accuracy.</string>
   </dict>
 </plist>

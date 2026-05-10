@@ -1,0 +1,34 @@
+{
+  "name": "@voquill/dictation-core",
+  "version": "0.3.12",
+  "description": "Shared core dictation contracts and utilities",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/voquill/voquill.git",
+    "directory": "packages/dictation-core"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "check-types": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@voquill/types": "workspace:*"
+  },
+  "devDependencies": {
+    "@voquill/typescript-config": "workspace:*",
+    "typescript": "5.9.2",
+    "vite": "^7.3.2",
+    "vitest": "^4.1.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -6,10 +6,14 @@ import type {
   PermissionStatus,
 } from "../types/permission.types";
 
-export const REQUIRED_PERMISSIONS: PermissionKind[] = [
+export const REQUIRED_PERMISSIONS = [
   "microphone",
   "accessibility",
-];
+] as const satisfies readonly PermissionKind[];
+
+export const ENHANCEMENT_PERMISSIONS = [
+  "screen-recording",
+] as const satisfies readonly PermissionKind[];
 
 export const checkMicrophonePermission =
   async (): Promise<PermissionStatus> => {
@@ -19,6 +23,16 @@ export const checkMicrophonePermission =
 export const requestMicrophonePermission =
   async (): Promise<PermissionStatus> => {
     return invoke<PermissionStatus>("request_microphone_permission");
+  };
+
+export const checkScreenRecordingPermission =
+  async (): Promise<PermissionStatus> => {
+    return invoke<PermissionStatus>("check_screen_recording_permission");
+  };
+
+export const requestScreenRecordingPermission =
+  async (): Promise<PermissionStatus> => {
+    return invoke<PermissionStatus>("request_screen_recording_permission");
   };
 
 export const checkAccessibilityPermission =
@@ -37,12 +51,32 @@ export const isPermissionAuthorized = (
   return state === "authorized";
 };
 
+export const isPermissionDenied = (
+  state: PermissionState | null | undefined,
+): boolean => {
+  return state === "denied";
+};
+
+export const isPermissionRestricted = (
+  state: PermissionState | null | undefined,
+): boolean => {
+  return state === "restricted";
+};
+
+export const isPermissionRequestActionable = (
+  _kind: PermissionKind,
+): boolean => {
+  return true;
+};
+
 export const getPermissionLabel = (kind: PermissionKind): string => {
   switch (kind) {
     case "microphone":
       return "Microphone access";
     case "accessibility":
       return "Accessibility";
+    case "screen-recording":
+      return "Screen recording";
     default:
       return kind;
   }
@@ -61,6 +95,13 @@ export const getPermissionInstructions = (kind: PermissionKind): string => {
     return "Allow microphone access in your system audio settings.";
   }
 
+  if (kind === "screen-recording") {
+    if (platform === "macos") {
+      return "System Settings → Privacy & Security → Screen Recording";
+    }
+    return "Allow screen recording in your system privacy settings.";
+  }
+
   if (platform === "macos") {
     return "System Settings → Privacy & Security → Accessibility";
   }
@@ -75,7 +116,7 @@ export const describePermissionState = (state: PermissionState): string => {
     case "authorized":
       return "Authorized";
     case "not-determined":
-      return "Awaiting approval";
+      return "Not granted yet";
     case "restricted":
       return "Restricted by system";
     case "denied":

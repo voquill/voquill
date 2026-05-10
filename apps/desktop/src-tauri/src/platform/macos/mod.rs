@@ -9,6 +9,7 @@ pub mod monitor;
 pub mod overlay;
 pub mod permissions;
 pub mod position;
+pub mod screen_capture;
 pub mod volume;
 pub mod window;
 

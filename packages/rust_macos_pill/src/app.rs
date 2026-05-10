@@ -397,7 +397,9 @@ fn perform_tick() {
             let entry_hidden: BOOL = msg_send![entry, isHidden];
             if is_typing && entry_hidden != NO {
                 let _: () = msg_send![entry, setHidden:NO];
-                let _: () = msg_send![ctx.window, makeKeyWindow];
+                // Don't call makeKeyWindow — it can activate the app and steal focus
+                // from the user's target application. makeFirstResponder is sufficient
+                // for keyboard input in a non-activating panel.
                 let _: () = msg_send![ctx.window, makeFirstResponder:entry];
             } else if !is_typing && entry_hidden == NO {
                 let _: () = msg_send![entry, setHidden:YES];

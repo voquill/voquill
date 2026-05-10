@@ -1,8 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  DictationContext,
+  DictationContextTarget,
+  DictationIntent,
   Nullable,
   Transcription,
   TranscriptionAudioSnapshot,
+  toStoredTranscriptionContract,
 } from "@voquill/types";
 import { countWords, dedup } from "@voquill/utilities";
 import dayjs from "dayjs";
@@ -12,12 +16,13 @@ import {
   getTranscriptionRepo,
 } from "../repos";
 import { getAppState, produceAppState } from "../store";
+import type { TextFieldInfo } from "../types/accessibility.types";
 import { PostProcessingMode, TranscriptionMode } from "../types/ai.types";
 import { AudioSamples } from "../types/audio.types";
 import { StopRecordingResponse } from "../types/transcription-session.types";
 import {
-  extractJsonFromMarkdown,
-  unwrapNestedLlmResponse,
+  parseStructuredJsonResponse,
+  recoverPlainTextFromLLMResponse,
 } from "../utils/ai.utils";
 import { createId } from "../utils/id.utils";
 import {
@@ -26,10 +31,12 @@ import {
 } from "../utils/language.utils";
 import { getLogger } from "../utils/log.utils";
 import {
+  buildDictationContext,
   buildLocalizedTranscriptionPrompt,
   buildPostProcessingPrompt,
   buildSystemPostProcessingTonePrompt,
-  collectDictionaryEntries,
+  collectDictionaryTerms,
+  mergeScreenContexts,
   PostProcessingPromptInput,
   PROCESSED_TRANSCRIPTION_JSON_SCHEMA,
   PROCESSED_TRANSCRIPTION_SCHEMA,
@@ -43,10 +50,16 @@ import {
 import { showErrorSnackbar } from "./app.actions";
 import { addWordsToCurrentUser } from "./user.actions";
 
+export { planDesktopTranscriptionSelection } from "../utils/user.utils";
+
 export type TranscribeAudioInput = {
   samples: AudioSamples;
   sampleRate: number;
   dictationLanguage?: string;
+  currentApp?: DictationContextTarget | null;
+  currentEditor?: DictationContextTarget | null;
+  selectedText?: string | null;
+  screenContext?: string | null;
 };
 
 export type TranscribeAudioMetadata = {
@@ -68,6 +81,11 @@ export type PostProcessInput = {
   rawTranscript: string;
   toneId: Nullable<string>;
   dictationLanguage?: string;
+  currentApp?: DictationContextTarget | null;
+  currentEditor?: DictationContextTarget | null;
+  selectedText?: string | null;
+  screenContext?: string | null;
+  clipboardContext?: string | null;
 };
 
 export type PostProcessMetadata = {
@@ -84,11 +102,111 @@ export type PostProcessResult = {
   metadata: PostProcessMetadata;
 };
 
+export type ResolveDesktopDictationContextInput = {
+  currentApp?: DictationContextTarget | null;
+  currentEditor?: DictationContextTarget | null;
+  a11yInfo?: TextFieldInfo | null;
+  screenContext?: string | null;
+};
+
+export type ResolvedDesktopDictationContext = {
+  currentApp: DictationContextTarget | null;
+  currentEditor: DictationContextTarget | null;
+  selectedText: string | null;
+  screenContext: string | null;
+};
+
+const FOCUSED_TEXT_FIELD_TARGET: DictationContextTarget = {
+  id: "focused-text-field",
+  name: "Focused text field",
+};
+
+const hasFocusedTextFieldInfo = (a11yInfo?: TextFieldInfo | null): boolean =>
+  Boolean(
+    a11yInfo &&
+    (typeof a11yInfo.cursorPosition === "number" ||
+      typeof a11yInfo.selectionLength === "number" ||
+      a11yInfo.textContent),
+  );
+
+const deriveSelectedTextFromA11yInfo = (
+  a11yInfo?: TextFieldInfo | null,
+): string | null => {
+  if (!a11yInfo?.textContent) {
+    return null;
+  }
+
+  const { cursorPosition, selectionLength, textContent } = a11yInfo;
+  if (
+    cursorPosition == null ||
+    selectionLength == null ||
+    selectionLength <= 0
+  ) {
+    return null;
+  }
+
+  const start = Math.max(0, Math.min(cursorPosition, textContent.length));
+  const end = Math.max(
+    start,
+    Math.min(start + selectionLength, textContent.length),
+  );
+  return textContent.slice(start, end) || null;
+};
+
+export const resolveDesktopDictationContext = ({
+  currentApp = null,
+  currentEditor = null,
+  a11yInfo = null,
+  screenContext = null,
+}: ResolveDesktopDictationContextInput): ResolvedDesktopDictationContext => ({
+  currentApp,
+  currentEditor:
+    currentEditor ??
+    (hasFocusedTextFieldInfo(a11yInfo) ? FOCUSED_TEXT_FIELD_TARGET : null),
+  selectedText: deriveSelectedTextFromA11yInfo(a11yInfo),
+  screenContext: mergeScreenContexts({
+    accessibilityContext: screenContext,
+    // screenCaptureContext (OCR) is collected by callers at finalize-time
+    // via DictationSideEffects.tsx; this utility path serves server-side
+    // transcription sessions which do not have OCR available.
+  }),
+});
+
 // Combined metadata type for storage compatibility
 export type TranscriptionMetadata = TranscribeAudioMetadata &
   PostProcessMetadata & {
     rawTranscript?: string | null;
   };
+
+const buildPromptDictionaryEntries = (
+  context: DictationContext,
+): Parameters<typeof buildLocalizedTranscriptionPrompt>[0]["entries"] => ({
+  sources: context.glossaryTerms,
+  replacements: Object.entries(context.replacementMap).map(
+    ([source, destination]) => ({
+      source,
+      destination,
+    }),
+  ),
+});
+
+const buildContextAwareTranscriptionPrompt = (args: {
+  context: DictationContext;
+  dictationLanguage: Parameters<
+    typeof buildLocalizedTranscriptionPrompt
+  >[0]["dictationLanguage"];
+  state: ReturnType<typeof getAppState>;
+}): string => {
+  // Whisper's initial_prompt is prior-transcript text, not an instruction channel.
+  // Vocabulary terms (glossary + replacement destinations) are sufficient for
+  // phonetic biasing. Context hints with labelled keys ("App: X", "Screen: Y")
+  // read as instruction text and risk hallucination — omit them entirely.
+  return buildLocalizedTranscriptionPrompt({
+    entries: buildPromptDictionaryEntries(args.context),
+    dictationLanguage: args.dictationLanguage,
+    state: args.state,
+  });
+};
 
 /**
  * Transcribe audio samples to text.
@@ -98,6 +216,10 @@ export const transcribeAudio = async ({
   samples,
   sampleRate,
   dictationLanguage: dictationLanguageOverride,
+  currentApp = null,
+  currentEditor = null,
+  selectedText = null,
+  screenContext = null,
 }: TranscribeAudioInput): Promise<TranscribeAudioResult> => {
   const state = getAppState();
 
@@ -121,9 +243,20 @@ export const transcribeAudio = async ({
     `Transcribing audio: language=${dictationLanguage}, whisper=${whisperLanguage}, sampleRate=${sampleRate}`,
   );
 
-  const dictionaryEntries = collectDictionaryEntries(state);
-  const transcriptionPrompt = buildLocalizedTranscriptionPrompt({
-    entries: dictionaryEntries,
+  const context = buildDictationContext({
+    dictationLanguage,
+    intent: {
+      kind: "dictation",
+      format: "clean",
+    },
+    terms: collectDictionaryTerms(state),
+    currentApp,
+    currentEditor,
+    selectedText,
+    screenContext,
+  });
+  const transcriptionPrompt = buildContextAwareTranscriptionPrompt({
+    context,
     dictationLanguage,
     state,
   });
@@ -168,6 +301,8 @@ export const transcribeAudio = async ({
   };
 };
 
+
+
 /**
  * Post-process a raw transcript using LLM.
  * This is the second step - cleans up and formats the transcript based on tone.
@@ -176,6 +311,11 @@ export const postProcessTranscript = async ({
   rawTranscript,
   toneId,
   dictationLanguage: dictationLanguageOverride,
+  currentApp = null,
+  currentEditor = null,
+  selectedText = null,
+  screenContext = null,
+  clipboardContext = null,
 }: PostProcessInput): Promise<PostProcessResult> => {
   const state = getAppState();
 
@@ -206,6 +346,19 @@ export const postProcessTranscript = async ({
       ? coerceToDictationLanguage(dictationLanguageOverride)
       : await loadMyEffectiveDictationLanguage(state);
     const toneConfig = getToneConfig(state, toneId);
+    const context = buildDictationContext({
+      dictationLanguage,
+      intent: {
+        kind: "dictation",
+        format: toneProcessingDisabled ? "verbatim" : "clean",
+      },
+      terms: collectDictionaryTerms(state),
+      currentApp,
+      currentEditor,
+      selectedText,
+      screenContext,
+      clipboardContext,
+    });
     getLogger().verbose(
       "Post-process language:",
       dictationLanguage,
@@ -218,6 +371,7 @@ export const postProcessTranscript = async ({
       userName: getMyUserName(state),
       dictationLanguage,
       tone: toneConfig,
+      context,
     };
     const ppSystem = buildSystemPostProcessingTonePrompt(promptInput);
     const ppPrompt = buildPostProcessingPrompt(promptInput);
@@ -226,6 +380,12 @@ export const postProcessTranscript = async ({
       ppPrompt.length,
       "system length:",
       ppSystem.length,
+    );
+    getLogger().verbose(
+      `[postprocess] system prompt length=${ppSystem.length}, prompt length=${ppPrompt.length}`,
+    );
+    getLogger().verbose(
+      `[postprocess] context.screenContext=${context.screenContext ? `${context.screenContext.length} chars` : "null"}, context.currentApp=${context.currentApp?.name ?? "null"}`,
     );
 
     const postprocessStart = performance.now();
@@ -248,21 +408,28 @@ export const postProcessTranscript = async ({
     getLogger().verbose("LLM raw output length:", genOutput.text.length);
 
     try {
-      const extractedJson = extractJsonFromMarkdown(genOutput.text);
-      const parsed = unwrapNestedLlmResponse(
-        JSON.parse(extractedJson),
-        "processedTranscription",
-      );
+      const parsed = parseStructuredJsonResponse(genOutput.text, "result");
 
       const validationResult = PROCESSED_TRANSCRIPTION_SCHEMA.safeParse(parsed);
       if (!validationResult.success) {
         getLogger().warning(
-          "Post-processing validation failed:",
+          "Post-processing Zod validation failed:",
           validationResult.error.message,
         );
-        warnings.push(
-          `Post-processing response validation failed: ${validationResult.error.message}`,
-        );
+        const rescued = recoverPlainTextFromLLMResponse(genOutput.text);
+        if (rescued) {
+          getLogger().warning(
+            "Post-processing Zod validation failed: recovered plain text from LLM response",
+          );
+          processedTranscript = rescued;
+        } else {
+          getLogger().error(
+            "Post-processing Zod validation failed: no rescue possible, using raw STT transcript",
+          );
+          warnings.push(
+            `Post-processing response validation failed: ${validationResult.error.message}`,
+          );
+        }
       } else {
         processedTranscript = validationResult.data.result.trim();
         getLogger().verbose(
@@ -271,10 +438,21 @@ export const postProcessTranscript = async ({
         );
       }
     } catch (e) {
-      getLogger().error("Failed to parse post-processing response:", e);
-      warnings.push(
-        `Failed to parse post-processing response: ${(e as Error).message}`,
-      );
+      getLogger().error("Post-processing JSON parse exception:", e);
+      const rescued = recoverPlainTextFromLLMResponse(genOutput.text);
+      if (rescued) {
+        getLogger().warning(
+          "Post-processing JSON parse exception: recovered plain text from LLM response",
+        );
+        processedTranscript = rescued;
+      } else {
+        getLogger().error(
+          "Post-processing JSON parse exception: no rescue possible, using raw STT transcript",
+        );
+        warnings.push(
+          `Failed to parse post-processing response: ${(e as Error).message}`,
+        );
+      }
     }
 
     metadata.postProcessPrompt = ppPrompt;
@@ -304,6 +482,10 @@ export type StoreTranscriptionInput = {
   rawTranscript: string | null;
   sanitizedTranscript: string | null;
   transcript: string | null;
+  authoritativeTranscript?: string | null;
+  isAuthoritative?: boolean | null;
+  isFinalized?: boolean | null;
+  dictationIntent?: DictationIntent | null;
   transcriptionMetadata: TranscribeAudioMetadata;
   postProcessMetadata: PostProcessMetadata;
   warnings: string[];
@@ -321,22 +503,7 @@ export const storeTranscription = async (
 ): Promise<StoreTranscriptionOutput> => {
   getLogger().verbose("Storing transcription record");
   const rate = input.audio.sampleRate;
-
-  const sampleCount = (() => {
-    const samples = input.audio.samples as unknown;
-    if (Array.isArray(samples)) {
-      return samples.length;
-    }
-
-    if (
-      samples &&
-      typeof (samples as { length?: number }).length === "number"
-    ) {
-      return (samples as { length: number }).length;
-    }
-
-    return 0;
-  })();
+  const sampleCount = input.audio.sampleCount ?? 0;
 
   if (rate == null || Number.isNaN(rate)) {
     getLogger().error("Received audio payload without sample rate");
@@ -371,25 +538,16 @@ export const storeTranscription = async (
     return { transcription: null, wordCount: wordsAdded };
   }
 
-  const payloadSamples = Array.isArray(input.audio.samples)
-    ? input.audio.samples
-    : Array.from(input.audio.samples ?? []);
-
-  if (rate <= 0 || payloadSamples.length === 0) {
-    return { transcription: null, wordCount: 0 };
-  }
-
   const transcriptionId = createId();
 
   let audioSnapshot: TranscriptionAudioSnapshot | undefined;
-  if (!incognitoEnabled) {
+  if (!incognitoEnabled && input.audio.filePath) {
     try {
       audioSnapshot = await invoke<TranscriptionAudioSnapshot>(
-        "store_transcription_audio",
+        "store_transcription_audio_from_file",
         {
           id: transcriptionId,
-          samples: payloadSamples,
-          sampleRate: rate,
+          filePath: input.audio.filePath,
         },
       );
     } catch (error) {
@@ -399,19 +557,36 @@ export const storeTranscription = async (
 
   const transcriptionFailed =
     input.rawTranscript === null && input.warnings.length > 0;
+  const storedTranscript = !transcriptionFailed
+    ? (input.transcript ?? "")
+    : "[Transcription Failed]";
+  const storedRawTranscript = input.rawTranscript ?? input.transcript ?? "";
+  const storedContract = toStoredTranscriptionContract({
+    text: storedTranscript,
+    rawTranscript: storedRawTranscript,
+    authoritativeTranscript:
+      input.authoritativeTranscript ?? storedRawTranscript,
+    isAuthoritative: input.isAuthoritative ?? true,
+    isFinalized: input.isFinalized ?? true,
+    ...(input.dictationIntent !== undefined
+      ? { dictationIntent: input.dictationIntent }
+      : {}),
+  });
 
   const transcription: Transcription = {
     id: transcriptionId,
-    transcript: !transcriptionFailed
-      ? (input.transcript ?? "")
-      : "[Transcription Failed]",
+    transcript: storedContract.text,
     createdAt: dayjs().toISOString(),
     createdByUserId: getMyEffectiveUserId(state),
     isDeleted: false,
     audio: audioSnapshot,
     modelSize: input.transcriptionMetadata.modelSize ?? null,
     inferenceDevice: input.transcriptionMetadata.inferenceDevice ?? null,
-    rawTranscript: input.rawTranscript ?? input.transcript ?? "",
+    rawTranscript: storedContract.rawTranscript,
+    authoritativeTranscript: storedContract.authoritativeTranscript,
+    isAuthoritative: storedContract.isAuthoritative,
+    isFinalized: storedContract.isFinalized,
+    dictationIntent: storedContract.dictationIntent,
     sanitizedTranscript: input.sanitizedTranscript ?? null,
     transcriptionPrompt:
       input.transcriptionMetadata.transcriptionPrompt ?? null,

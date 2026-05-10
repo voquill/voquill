@@ -73,9 +73,15 @@ import { sendPillFlashMessage } from "../../utils/overlay.utils";
 import { isPermissionAuthorized } from "../../utils/permission.utils";
 import { getPlatform } from "../../utils/platform.utils";
 import { minutesToMilliseconds } from "../../utils/time.utils";
+import { getLocalTranscriptionSidecarManager } from "../../sidecars";
+import {
+  isGpuPreferredTranscriptionDevice,
+  normalizeLocalWhisperModel,
+} from "../../utils/local-transcription.utils";
 import {
   getEffectivePillVisibility,
   getMyUserPreferences,
+  getTranscriptionPrefs,
   LOCAL_USER_ID,
 } from "../../utils/user.utils";
 import {
@@ -156,6 +162,9 @@ export const AppSideEffects = () => {
   );
 
   const hotkeyStrategy = useAppStore((state) => state.hotkeyStrategy);
+  const transcriptionMode = useAppStore(
+    (state) => getTranscriptionPrefs(state).mode,
+  );
 
   useAsyncEffect(async () => {
     const [strategy, appDetection, pasteKeybinds] = await Promise.all([
@@ -447,6 +456,32 @@ export const AppSideEffects = () => {
       });
     }
   }, [streamReady, initReady, initialized, enterpriseReady]);
+
+  useEffect(() => {
+    if (!initialized) {
+      return;
+    }
+
+    const prefs = getTranscriptionPrefs(getAppState());
+    if (prefs.mode !== "local") {
+      getLogger().info(`Skipping STT warmup in ${prefs.mode} mode`);
+      return;
+    }
+
+    const model = normalizeLocalWhisperModel(prefs.transcriptionModelSize);
+    const preferGpu = isGpuPreferredTranscriptionDevice(
+      prefs.transcriptionDevice ?? null,
+    );
+
+    getLogger().info(
+      `Pre-warming local STT model (${model}, gpu=${preferGpu})`,
+    );
+    void getLocalTranscriptionSidecarManager()
+      .warmupModel({ model, preferGpu })
+      .catch((err) => {
+        getLogger().warning(`Model warmup failed (non-critical): ${err}`);
+      });
+  }, [initialized, transcriptionMode]);
 
   const isMigratingLocalUserRef = useRef(false);
   const memberPlan = member?.plan;

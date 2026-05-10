@@ -40,6 +40,13 @@ class TranscriptionRepo {
             "id": id,
             "text": text.trimmingCharacters(in: .whitespacesAndNewlines),
             "rawTranscript": rawTranscript,
+            "authoritativeTranscript": rawTranscript,
+            "isAuthoritative": true,
+            "isFinalized": true,
+            "dictationIntent": [
+                "kind": "dictation",
+                "format": "clean"
+            ],
             "createdAt": ISO8601DateFormatter().string(from: Date()),
         ]
         if let toneId = toneId { record["toneId"] = toneId }

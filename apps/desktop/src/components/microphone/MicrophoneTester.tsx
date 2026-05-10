@@ -1,35 +1,22 @@
 import { LoadingButton } from "@mui/lab";
 import { Alert, Box, Button, Stack, useTheme } from "@mui/material";
 import { Nullable } from "@voquill/types";
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FormattedMessage } from "react-intl";
 import { produceAppState, useAppStore } from "../../store";
-import { buildWaveFile, ensureFloat32Array } from "../../utils/audio.utils";
+import { cleanupAudioFile } from "../../utils/audio.utils";
 import { AudioWaveform } from "../common/AudioWaveform";
 
 type StopRecordingResponse = {
-  samples: number[] | Float32Array;
-  sampleRate?: number;
+  filePath: string;
+  sampleRate: number;
+  sampleCount: number;
 };
 
-const createPreviewUrl = (
-  rawSamples: number[] | Float32Array,
-  sampleRate: number,
-): string | null => {
-  if (!sampleRate || !Number.isFinite(sampleRate) || sampleRate <= 0) {
-    return null;
-  }
-
-  const samples = ensureFloat32Array(rawSamples ?? []);
-
-  if (!samples || samples.length === 0) {
-    return null;
-  }
-
-  const wavBuffer = buildWaveFile(samples, sampleRate);
-  const blob = new Blob([wavBuffer], { type: "audio/wav" });
-  return URL.createObjectURL(blob);
+const createPreviewUrl = (filePath: string): string | null => {
+  if (!filePath) return null;
+  return convertFileSrc(filePath);
 };
 
 export type MicrophoneTesterProps = {
@@ -174,14 +161,10 @@ export const MicrophoneTester = ({
       try {
         const response = await invoke<StopRecordingResponse>("stop_recording");
         const rate = response.sampleRate ?? 0;
-        const samplesArray =
-          response.samples instanceof Float32Array
-            ? Array.from(response.samples)
-            : response.samples;
 
         if (!opts?.silent) {
-          const url = createPreviewUrl(samplesArray ?? [], rate);
-          if (url) {
+          if (response.filePath && rate > 0 && response.sampleCount > 0) {
+            const url = createPreviewUrl(response.filePath);
             updatePreviewUrl(url);
           } else {
             updatePreviewUrl(null);
@@ -191,6 +174,11 @@ export const MicrophoneTester = ({
           }
         } else {
           updatePreviewUrl(null);
+        }
+
+        // Clean up temp recording file (preview URL uses asset protocol, not a blob)
+        if (response.filePath) {
+          cleanupAudioFile(response.filePath);
         }
       } catch (error) {
         console.error("Failed to stop microphone test", error);

@@ -1,5 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
+  satisfiesCapabilityRequirement,
+  selectBestAccuracyPath,
+  type DictationCapabilityRequirement,
+  type ProviderCapability,
+} from "@voquill/dictation-core";
+import {
+  ApiKey,
   ApiKeyProvider,
   DictationPillVisibility,
   Nullable,
@@ -223,10 +230,209 @@ export type TranscriptionPrefs =
   | LocalTranscriptionPrefs
   | ApiTranscriptionPrefs;
 
+type PlannedDesktopTranscriptionSelection = {
+  apiKeyId: string;
+  provider: ApiKeyProvider;
+  model: string | null;
+};
+
+type DesktopTranscriptionCapability = ProviderCapability & {
+  apiKeyId: string;
+};
+
+const NO_KEY_REQUIRED_PROVIDERS: ApiKeyProvider[] = [
+  "speaches",
+  "ollama",
+  "openai-compatible",
+];
+
+const TRANSCRIPTION_PROVIDER_CAPABILITIES: Partial<
+  Record<
+    ApiKeyProvider | "cloud" | "local",
+    Omit<ProviderCapability, "provider" | "model">
+  >
+> = {
+  assemblyai: {
+    supportsStreaming: true,
+    supportsPrompt: false,
+    priority: 60,
+  },
+  azure: {
+    supportsStreaming: true,
+    supportsPrompt: false,
+    priority: 50,
+  },
+  deepgram: {
+    supportsStreaming: true,
+    supportsPrompt: true,
+    priority: 100,
+  },
+  elevenlabs: {
+    supportsStreaming: true,
+    supportsPrompt: false,
+    priority: 70,
+  },
+  aldea: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 55,
+  },
+  gemini: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 65,
+  },
+  groq: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 65,
+  },
+  openai: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 65,
+  },
+  "openai-compatible": {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 60,
+  },
+  speaches: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 60,
+  },
+  xai: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 60,
+  },
+  cloud: {
+    supportsStreaming: true,
+    supportsPrompt: false,
+    priority: 80,
+  },
+  local: {
+    supportsStreaming: false,
+    supportsPrompt: true,
+    priority: 40,
+  },
+};
+
+const canUseApiKeyForTranscription = (apiKey: ApiKey): boolean =>
+  !!apiKey.keyFull || NO_KEY_REQUIRED_PROVIDERS.includes(apiKey.provider);
+
+const getDesktopTranscriptionCapabilityForApiKey = (
+  apiKey: ApiKey,
+): DesktopTranscriptionCapability | null => {
+  const capability = TRANSCRIPTION_PROVIDER_CAPABILITIES[apiKey.provider];
+  if (!capability || !canUseApiKeyForTranscription(apiKey)) {
+    return null;
+  }
+
+  return {
+    apiKeyId: apiKey.id,
+    provider: apiKey.provider,
+    model: apiKey.transcriptionModel ?? undefined,
+    ...capability,
+  };
+};
+
+export const getDesktopDictationCapabilityRequirement = (
+  state: AppState,
+): DictationCapabilityRequirement =>
+  state.local.accurateDictationEnabled
+    ? { streaming: true, prompt: true }
+    : { streaming: true };
+
+export const getTranscriptionProviderCapability = (
+  prefs: TranscriptionPrefs,
+): ProviderCapability | null => {
+  if (prefs.mode === "api") {
+    const capability = TRANSCRIPTION_PROVIDER_CAPABILITIES[prefs.provider];
+    if (!capability) {
+      return null;
+    }
+
+    return {
+      provider: prefs.provider,
+      model: prefs.transcriptionModel ?? undefined,
+      ...capability,
+    };
+  }
+
+  if (prefs.mode === "cloud") {
+    return {
+      provider: "cloud",
+      ...TRANSCRIPTION_PROVIDER_CAPABILITIES.cloud!,
+    };
+  }
+
+  return {
+    provider: "local",
+    model: prefs.transcriptionModelSize ?? undefined,
+    ...TRANSCRIPTION_PROVIDER_CAPABILITIES.local!,
+  };
+};
+
+export const planDesktopTranscriptionSelection = (
+  state: AppState,
+): PlannedDesktopTranscriptionSelection | null => {
+  if (getEffectiveTranscriptionMode(state) !== "api") {
+    return null;
+  }
+
+  const selectedApiKeyId = state.settings.aiTranscription.selectedApiKeyId;
+  const selectedApiKey = getRec(state.apiKeyById, selectedApiKeyId);
+  if (!selectedApiKey) {
+    return null;
+  }
+
+  const fallbackSelection: PlannedDesktopTranscriptionSelection = {
+    apiKeyId: selectedApiKey.id,
+    provider: selectedApiKey.provider,
+    model: selectedApiKey.transcriptionModel ?? null,
+  };
+
+  if (!state.local.accurateDictationEnabled) {
+    return fallbackSelection;
+  }
+
+  const requiredCapabilities = getDesktopDictationCapabilityRequirement(state);
+  const selectedCapability =
+    getDesktopTranscriptionCapabilityForApiKey(selectedApiKey);
+  if (
+    selectedCapability &&
+    satisfiesCapabilityRequirement(selectedCapability, requiredCapabilities)
+  ) {
+    return fallbackSelection;
+  }
+
+  const candidates = Object.values(state.apiKeyById)
+    .map((apiKey) => getDesktopTranscriptionCapabilityForApiKey(apiKey))
+    .filter((candidate): candidate is DesktopTranscriptionCapability =>
+      Boolean(candidate),
+    );
+
+  try {
+    const bestMatch = selectBestAccuracyPath({
+      required: requiredCapabilities,
+      candidates,
+    }) as DesktopTranscriptionCapability;
+
+    return {
+      apiKeyId: bestMatch.apiKeyId,
+      provider: bestMatch.provider as ApiKeyProvider,
+      model: bestMatch.model ?? null,
+    };
+  } catch {
+    return fallbackSelection;
+  }
+};
+
 export const getTranscriptionPrefs = (state: AppState): TranscriptionPrefs => {
   const config = state.settings.aiTranscription;
   const mode = getEffectiveTranscriptionMode(state);
-  const apiKey = getRec(state.apiKeyById, config.selectedApiKeyId)?.keyFull;
   const cloudAvailable = getHasCloudAccess(state);
   const exceedsLimits = getMemberExceedsLimitByState(state);
   const warnings: string[] = [];
@@ -247,24 +453,32 @@ export const getTranscriptionPrefs = (state: AppState): TranscriptionPrefs => {
   }
 
   if (mode === "api") {
-    const selectedApiKey = getRec(state.apiKeyById, config.selectedApiKeyId);
-    const provider = selectedApiKey?.provider;
-    const noKeyRequired =
-      provider === "speaches" ||
-      provider === "ollama" ||
-      provider === "openai-compatible";
-    if (apiKey || noKeyRequired) {
-      return {
-        mode: "api",
-        provider: provider ?? "groq",
-        apiKeyId: config.selectedApiKeyId!,
-        apiKeyValue: apiKey ?? "",
-        transcriptionModel: selectedApiKey?.transcriptionModel ?? null,
-        warnings,
-      };
-    } else {
+    const plannedSelection = planDesktopTranscriptionSelection(state);
+    const selectedApiKey = getRec(
+      state.apiKeyById,
+      plannedSelection?.apiKeyId ?? config.selectedApiKeyId,
+    );
+    const provider = plannedSelection?.provider ?? selectedApiKey?.provider;
+    const apiKey = selectedApiKey?.keyFull;
+    const noKeyRequired = provider
+      ? NO_KEY_REQUIRED_PROVIDERS.includes(provider)
+      : false;
+
+    // Return API mode even if key is missing - respect user's configured mode
+    // Let transcription fail later with clear error instead of silently falling back to local
+    if (!apiKey && !noKeyRequired) {
       warnings.push("No API key configured for API transcription.");
     }
+
+    return {
+      mode: "api",
+      provider: provider ?? "groq",
+      apiKeyId: selectedApiKey?.id ?? config.selectedApiKeyId!,
+      apiKeyValue: apiKey ?? "",
+      transcriptionModel:
+        plannedSelection?.model ?? selectedApiKey?.transcriptionModel ?? null,
+      warnings,
+    };
   }
 
   return {

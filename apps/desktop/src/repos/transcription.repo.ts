@@ -1,4 +1,5 @@
 import {
+  DictationIntent,
   PostProcessingMode,
   Transcription,
   TranscriptionAudioSnapshot,
@@ -20,6 +21,10 @@ type LocalTranscription = {
   modelSize?: string | null;
   inferenceDevice?: string | null;
   rawTranscript?: string | null;
+  authoritativeTranscript?: string | null;
+  isAuthoritative?: boolean | null;
+  isFinalized?: boolean | null;
+  dictationIntent?: DictationIntent | null;
   sanitizedTranscript?: string | null;
   transcriptionPrompt?: string | null;
   postProcessPrompt?: string | null;
@@ -60,6 +65,10 @@ const toLocalTranscription = (
   modelSize: transcription.modelSize ?? null,
   inferenceDevice: transcription.inferenceDevice ?? null,
   rawTranscript: transcription.rawTranscript ?? null,
+  authoritativeTranscript: transcription.authoritativeTranscript ?? null,
+  isAuthoritative: transcription.isAuthoritative ?? null,
+  isFinalized: transcription.isFinalized ?? null,
+  dictationIntent: transcription.dictationIntent ?? null,
   sanitizedTranscript: transcription.sanitizedTranscript ?? null,
   transcriptionPrompt: transcription.transcriptionPrompt ?? null,
   postProcessPrompt: transcription.postProcessPrompt ?? null,
@@ -92,6 +101,10 @@ const fromLocalTranscription = (
   modelSize: transcription.modelSize ?? undefined,
   inferenceDevice: transcription.inferenceDevice ?? undefined,
   rawTranscript: transcription.rawTranscript ?? undefined,
+  authoritativeTranscript: transcription.authoritativeTranscript ?? undefined,
+  isAuthoritative: transcription.isAuthoritative ?? undefined,
+  isFinalized: transcription.isFinalized ?? undefined,
+  dictationIntent: transcription.dictationIntent ?? undefined,
   sanitizedTranscript: transcription.sanitizedTranscript ?? undefined,
   transcriptionPrompt: transcription.transcriptionPrompt ?? undefined,
   postProcessPrompt: transcription.postProcessPrompt ?? undefined,

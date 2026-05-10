@@ -85,6 +85,9 @@ importers:
       '@voquill/desktop-utils':
         specifier: workspace:*
         version: link:../../packages/desktop-utils
+      '@voquill/dictation-core':
+        specifier: workspace:*
+        version: link:../../packages/dictation-core
       '@voquill/functions':
         specifier: workspace:*
         version: link:../../packages/functions
@@ -518,6 +521,25 @@ importers:
       typescript:
         specifier: 5.9.2
         version: 5.9.2
+
+  packages/dictation-core:
+    dependencies:
+      '@voquill/types':
+        specifier: workspace:*
+        version: link:../types
+    devDependencies:
+      '@voquill/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
+      typescript:
+        specifier: 5.9.2
+        version: 5.9.2
+      vite:
+        specifier: ^7.3.2
+        version: 7.3.2(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3)
+      vitest:
+        specifier: ^4.1.2
+        version: 4.1.2(@opentelemetry/api@1.9.0)(@types/node@25.5.2)(vite@7.3.2(@types/node@25.5.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.3))
 
   packages/eslint-config:
     devDependencies:

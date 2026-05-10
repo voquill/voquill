@@ -38,6 +38,7 @@ export type XaiTranscriptionArgs = {
   model?: XaiTranscriptionModel;
   blob: ArrayBuffer | Buffer;
   ext: string;
+  prompt?: string;
   language?: string;
 };
 
@@ -51,6 +52,7 @@ export const xaiTranscribeAudio = async ({
   model = "grok-stt",
   blob,
   ext,
+  prompt,
   language,
 }: XaiTranscriptionArgs): Promise<XaiTranscribeAudioOutput> => {
   return retry({
@@ -63,6 +65,9 @@ export const xaiTranscribeAudio = async ({
       formData.append("file", audioBlob, `audio.${ext}`);
       formData.append("model", model);
       formData.append("format", "json");
+      if (prompt) {
+        formData.append("prompt", prompt);
+      }
       if (language && language !== "auto") {
         formData.append("language", language);
       }

@@ -11,6 +11,7 @@ import {
   Box,
   Chip,
   Dialog,
+  DialogActions,
   DialogContent,
   DialogTitle,
   Stack,
@@ -22,13 +23,22 @@ import { FormattedMessage, useIntl } from "react-intl";
 import { produceAppState, useAppStore } from "../../store";
 import type { PermissionKind } from "../../types/permission.types";
 import {
+  canRequestPermission,
+  derivePermissionsDialogViewState,
+  derivePermissionGateState,
+  resolvePermissionRequestLifecycle,
+} from "../../utils/permission-flow.utils";
+import {
+  ENHANCEMENT_PERMISSIONS,
   REQUIRED_PERMISSIONS,
   describePermissionState,
   getPermissionInstructions,
   getPermissionLabel,
   isPermissionAuthorized,
+  isPermissionRequestActionable,
   requestAccessibilityPermission,
   requestMicrophonePermission,
+  requestScreenRecordingPermission,
 } from "../../utils/permission.utils";
 import { useLocation } from "react-router-dom";
 import { setGotStartedAtNow } from "../../actions/user.actions";
@@ -48,6 +58,10 @@ const getPurposeDescription = (
       defaultMessage:
         "Lets you trigger dictation hotkeys while using other applications.",
     }),
+    "screen-recording": intl.formatMessage({
+      defaultMessage:
+        "Optional enhancement for OCR and screen context support. Enables Voquill to read on-screen text to improve dictation accuracy.",
+    }),
   };
   return descriptions[kind];
 };
@@ -55,15 +69,49 @@ const getPurposeDescription = (
 const PermissionRow = ({ kind }: { kind: PermissionKind }) => {
   const intl = useIntl();
   const status = useAppStore((state) => state.permissions[kind]);
-  const [requesting, setRequesting] = useState(false);
+  const requestLifecycle = useAppStore(
+    (state) => state.permissionRequests[kind],
+  );
+  const gateState = useMemo(
+    () =>
+      derivePermissionGateState({
+        kind,
+        status,
+        requestInFlight: requestLifecycle.requestInFlight,
+        awaitingExternalApproval: requestLifecycle.awaitingExternalApproval,
+      }),
+    [kind, requestLifecycle, status],
+  );
+  const isRequestActionable = isPermissionRequestActionable(kind);
+  const canRequest = canRequestPermission({ kind, gateState });
 
   const { icon, color, chipColor, chipLabel } = useMemo(() => {
-    if (!status) {
+    if (!isRequestActionable) {
       return {
         icon: <PendingOutlined sx={{ fontSize: ICON_SIZE }} />,
         color: "text.secondary" as const,
         chipColor: "default" as const,
-        chipLabel: intl.formatMessage({ defaultMessage: "Checking" }),
+        chipLabel: intl.formatMessage({ defaultMessage: "Coming soon" }),
+      };
+    }
+
+    if (!status || requestLifecycle.requestInFlight) {
+      return {
+        icon: <PendingOutlined sx={{ fontSize: ICON_SIZE }} />,
+        color: "text.secondary" as const,
+        chipColor: "default" as const,
+        chipLabel: requestLifecycle.requestInFlight
+          ? intl.formatMessage({ defaultMessage: "Requesting" })
+          : intl.formatMessage({ defaultMessage: "Checking" }),
+      };
+    }
+
+    if (gateState.isAwaitingExternalApproval) {
+      return {
+        icon: <PendingOutlined sx={{ fontSize: ICON_SIZE }} />,
+        color: "warning.main" as const,
+        chipColor: "warning" as const,
+        chipLabel: intl.formatMessage({ defaultMessage: "Awaiting approval" }),
       };
     }
 
@@ -84,35 +132,74 @@ const PermissionRow = ({ kind }: { kind: PermissionKind }) => {
       chipColor: "error" as const,
       chipLabel: describePermissionState(status.state),
     };
-  }, [status, intl]);
+  }, [
+    gateState.isAwaitingExternalApproval,
+    isRequestActionable,
+    intl,
+    requestLifecycle.requestInFlight,
+    status,
+  ]);
 
-  const instructions = getPermissionInstructions(kind);
+  const instructions = gateState.isAwaitingExternalApproval
+    ? intl.formatMessage({
+        defaultMessage:
+          "Finish enabling this permission in System Settings, then return to Voquill.",
+      })
+    : getPermissionInstructions(kind);
   const title = getPermissionLabel(kind);
-  const requestingDisabled = status
-    ? isPermissionAuthorized(status.state)
-    : false;
+  const buttonLabel = !isRequestActionable
+    ? intl.formatMessage({ defaultMessage: "Coming soon" })
+    : requestLifecycle.requestInFlight
+      ? intl.formatMessage({ defaultMessage: "Requesting" })
+      : gateState.isAwaitingExternalApproval
+        ? intl.formatMessage({ defaultMessage: "Awaiting approval" })
+        : gateState.shouldOpenSettings
+          ? intl.formatMessage({ defaultMessage: "Open settings" })
+          : intl.formatMessage({ defaultMessage: "Enable" });
 
   const handleRequest = useCallback(async () => {
-    if (requesting || requestingDisabled) {
+    const latestState = useAppStore.getState();
+    const latestGateState = derivePermissionGateState({
+      kind,
+      status: latestState.permissions[kind],
+      requestInFlight: latestState.permissionRequests[kind].requestInFlight,
+      awaitingExternalApproval:
+        latestState.permissionRequests[kind].awaitingExternalApproval,
+    });
+
+    if (!canRequestPermission({ kind, gateState: latestGateState })) {
       return;
     }
 
-    setRequesting(true);
+    produceAppState((draft) => {
+      draft.permissionRequests[kind].requestInFlight = true;
+    });
+
     try {
       const requestFn =
         kind === "microphone"
           ? requestMicrophonePermission
-          : requestAccessibilityPermission;
+          : kind === "accessibility"
+            ? requestAccessibilityPermission
+            : requestScreenRecordingPermission;
       const result = await requestFn();
       produceAppState((draft) => {
         draft.permissions[kind] = result;
+        draft.permissionRequests[kind] = resolvePermissionRequestLifecycle({
+          kind,
+          status: result,
+          requestInFlight: draft.permissionRequests[kind].requestInFlight,
+          awaitingExternalApproval:
+            draft.permissionRequests[kind].awaitingExternalApproval,
+        });
       });
     } catch (error) {
       console.error(`Failed to request ${kind} permission`, error);
-    } finally {
-      setRequesting(false);
+      produceAppState((draft) => {
+        draft.permissionRequests[kind].requestInFlight = false;
+      });
     }
-  }, [kind, requesting, requestingDisabled]);
+  }, [kind]);
 
   return (
     <Stack
@@ -138,17 +225,25 @@ const PermissionRow = ({ kind }: { kind: PermissionKind }) => {
         variant="outlined"
         size="small"
         onClick={() => void handleRequest()}
-        disabled={requesting || requestingDisabled}
-        endIcon={<OpenInNew />}
+        disabled={!canRequest}
+        endIcon={
+          !isRequestActionable ||
+          requestLifecycle.requestInFlight ||
+          gateState.isAwaitingExternalApproval ? undefined : (
+            <OpenInNew />
+          )
+        }
       >
-        <FormattedMessage defaultMessage="Enable" />
+        {buttonLabel}
       </Button>
     </Stack>
   );
 };
 
 export const PermissionsDialog = () => {
+  const intl = useIntl();
   const permissions = useAppStore((state) => state.permissions);
+  const [isManuallyOpened, setIsManuallyOpened] = useState(false);
   const [permissionWasGranted, setPermissionWasGranted] = useState(false);
   const previousPermissionsRef = useRef(permissions);
   const location = useLocation();
@@ -173,36 +268,42 @@ export const PermissionsDialog = () => {
     previousPermissionsRef.current = permissions;
   }, [permissions]);
 
-  const { ready, blocked, allAuthorized } = useMemo(() => {
-    let known = true;
-    let missing = false;
-    let allAuth = true;
-
-    for (const kind of REQUIRED_PERMISSIONS) {
-      const status = permissions[kind];
-      if (!status) {
-        known = false;
-        allAuth = false;
-        continue;
-      }
-
-      if (!isPermissionAuthorized(status.state)) {
-        missing = true;
-        allAuth = false;
-      }
-    }
-
-    return { ready: known, blocked: missing, allAuthorized: allAuth };
-  }, [permissions]);
-
-  const open = ready && blocked && !isWelcomePage;
-  const showRestartMessage = allAuthorized && permissionWasGranted;
+  const viewState = useMemo(
+    () =>
+      derivePermissionsDialogViewState({
+        permissions,
+        permissionWasGranted,
+        isWelcomePage,
+        isManuallyOpened,
+      }),
+    [permissions, permissionWasGranted, isWelcomePage, isManuallyOpened],
+  );
+  const canCloseManually =
+    isManuallyOpened &&
+    !viewState.shouldAutoOpen &&
+    !viewState.shouldShowRestartMessage;
+  const isOptionalEnhancementsView =
+    viewState.shouldShowManualEntry &&
+    !viewState.shouldAutoOpen &&
+    !viewState.shouldShowRestartMessage;
+  const dialogTitle = isOptionalEnhancementsView
+    ? intl.formatMessage({ defaultMessage: "Optional permissions" })
+    : intl.formatMessage({ defaultMessage: "Permissions needed" });
+  const dialogDescription = isOptionalEnhancementsView
+    ? intl.formatMessage({
+        defaultMessage:
+          "Voquill already has its required startup permissions. Screen recording is only an optional enhancement for future OCR and screen context features.",
+      })
+    : intl.formatMessage({
+        defaultMessage:
+          "Voquill is an AI dictation tool. It needs microphone and accessibility access in order to function properly.",
+      });
 
   useEffect(() => {
-    if (open) {
+    if (viewState.shouldAutoOpen) {
       setGotStartedAtNow();
     }
-  }, [open]);
+  }, [viewState.shouldAutoOpen]);
 
   const handleRestart = useCallback(async () => {
     try {
@@ -222,56 +323,87 @@ export const PermissionsDialog = () => {
   };
 
   return (
-    <Dialog
-      open={open || showRestartMessage}
-      onClose={handleClose}
-      fullWidth
-      maxWidth="sm"
-      disableEscapeKeyDown
-      slotProps={{
-        backdrop: {
-          sx: { backdropFilter: "blur(4px)" },
-        },
-        paper: {
-          sx: (theme) => ({
-            paddingBottom: 2,
-            backgroundColor: theme.vars?.palette.level1,
-          }),
-        },
-      }}
-    >
-      <DialogTitle>
-        <FormattedMessage defaultMessage="Permissions needed" />
-      </DialogTitle>
-      <DialogContent>
-        <Stack spacing={3}>
-          <Typography variant="body1">
-            <FormattedMessage defaultMessage="Voquill is an AI dictation tool. It needs microphone and accessibility access in order to function properly." />
-          </Typography>
-          <Stack>
-            {REQUIRED_PERMISSIONS.map((kind) => (
-              <PermissionRow key={kind} kind={kind} />
-            ))}
+    <>
+      {viewState.shouldShowManualEntry && !viewState.isOpen && (
+        <Box
+          sx={{
+            position: "fixed",
+            right: 24,
+            bottom: 24,
+            zIndex: (theme) => theme.zIndex.appBar,
+          }}
+        >
+          <Button variant="outlined" onClick={() => setIsManuallyOpened(true)}>
+            <FormattedMessage defaultMessage="Optional permissions" />
+          </Button>
+        </Box>
+      )}
+      <Dialog
+        open={viewState.isOpen}
+        onClose={handleClose}
+        fullWidth
+        maxWidth="sm"
+        disableEscapeKeyDown
+        slotProps={{
+          backdrop: {
+            sx: { backdropFilter: "blur(4px)" },
+          },
+          paper: {
+            sx: (theme) => ({
+              paddingBottom: 2,
+              backgroundColor: theme.vars?.palette.level1,
+            }),
+          },
+        }}
+      >
+        <DialogTitle>
+          {dialogTitle}
+        </DialogTitle>
+        <DialogContent>
+          <Stack spacing={3}>
+            <Typography variant="body1">{dialogDescription}</Typography>
+            <Stack>
+              {REQUIRED_PERMISSIONS.map((kind) => (
+                <PermissionRow key={kind} kind={kind} />
+              ))}
+            </Stack>
+            <Stack spacing={1}>
+              <Typography variant="overline" color="text.secondary">
+                <FormattedMessage defaultMessage="Optional enhancements" />
+              </Typography>
+              <Stack>
+                {ENHANCEMENT_PERMISSIONS.map((kind) => (
+                  <PermissionRow key={kind} kind={kind} />
+                ))}
+              </Stack>
+            </Stack>
+            {viewState.shouldShowRestartMessage && (
+              <Alert
+                severity="info"
+                action={
+                  <Button
+                    color="inherit"
+                    size="small"
+                    onClick={() => void handleRestart()}
+                    startIcon={<RestartAlt />}
+                  >
+                    <FormattedMessage defaultMessage="Restart" />
+                  </Button>
+                }
+              >
+                <FormattedMessage defaultMessage="Please restart the application for the new permissions to take effect." />
+              </Alert>
+            )}
           </Stack>
-          {showRestartMessage && (
-            <Alert
-              severity="info"
-              action={
-                <Button
-                  color="inherit"
-                  size="small"
-                  onClick={() => void handleRestart()}
-                  startIcon={<RestartAlt />}
-                >
-                  <FormattedMessage defaultMessage="Restart" />
-                </Button>
-              }
-            >
-              <FormattedMessage defaultMessage="Please restart the application for the new permissions to take effect." />
-            </Alert>
-          )}
-        </Stack>
-      </DialogContent>
-    </Dialog>
+        </DialogContent>
+        {canCloseManually && (
+          <DialogActions sx={{ paddingX: 3 }}>
+            <Button onClick={() => setIsManuallyOpened(false)}>
+              <FormattedMessage defaultMessage="Close" />
+            </Button>
+          </DialogActions>
+        )}
+      </Dialog>
+    </>
   );
 };

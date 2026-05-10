@@ -4,6 +4,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
 
+use hound::{SampleFormat, WavSpec, WavWriter};
+
 use crate::domain::{
     ApiKey, ApiKeyCreateRequest, ApiKeyView, AudioChunkPayload, OverlayPhase, OverlayPhasePayload,
     RecordingLevelPayload, TranscriptionAudioSnapshot, EVT_AUDIO_CHUNK, EVT_OVERLAY_PHASE,
@@ -20,8 +22,64 @@ use crate::platform::input::paste_text_into_focused_field as platform_paste_text
 #[derive(serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StopRecordingResponse {
-    pub samples: Vec<f32>,
+    pub file_path: String,
     pub sample_rate: u32,
+    pub sample_count: usize,
+}
+
+fn resample_to_16khz(samples: &[f32], from_rate: u32) -> Vec<f32> {
+    if samples.is_empty() || from_rate <= 16000 {
+        return samples.to_vec();
+    }
+    let ratio = from_rate as f64 / 16000.0;
+    let new_len = (samples.len() as f64 / ratio).ceil() as usize;
+    let mut resampled = Vec::with_capacity(new_len);
+    for i in 0..new_len {
+        let src_idx = i as f64 * ratio;
+        let idx = src_idx as usize;
+        let frac = (src_idx - idx as f64) as f32;
+        let sample = if idx + 1 < samples.len() {
+            samples[idx] * (1.0 - frac) + samples[idx + 1] * frac
+        } else {
+            samples[idx.min(samples.len() - 1)]
+        };
+        resampled.push(sample);
+    }
+    resampled
+}
+
+fn write_recording_wav(
+    app: &AppHandle,
+    samples: &[f32],
+    sample_rate: u32,
+) -> Result<(PathBuf, u32, usize), String> {
+    let resampled = resample_to_16khz(samples, sample_rate);
+    let out_rate: u32 = if sample_rate > 16000 { 16000 } else { sample_rate };
+    let sample_count = resampled.len();
+
+    let audio_dir = crate::system::audio_store::audio_dir(app).map_err(|e| e.to_string())?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let file_name = format!("_rec_{ts}.wav");
+    let path = audio_dir.join(&file_name);
+
+    let spec = WavSpec {
+        channels: 1,
+        sample_rate: out_rate,
+        bits_per_sample: 16,
+        sample_format: SampleFormat::Int,
+    };
+    let mut writer = WavWriter::create(&path, spec).map_err(|e| e.to_string())?;
+    for &s in &resampled {
+        let clamped = s.clamp(-1.0, 1.0);
+        let val = (clamped * i16::MAX as f32).round() as i16;
+        writer.write_sample(val).map_err(|e| e.to_string())?;
+    }
+    writer.finalize().map_err(|e| e.to_string())?;
+
+    Ok((path, out_rate, sample_count))
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -509,6 +567,18 @@ pub fn check_microphone_permission() -> Result<crate::domain::PermissionStatus, 
 #[specta::specta]
 pub fn request_microphone_permission() -> Result<crate::domain::PermissionStatus, String> {
     crate::platform::permissions::request_microphone_permission()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn check_screen_recording_permission() -> Result<crate::domain::PermissionStatus, String> {
+    crate::platform::permissions::check_screen_recording_permission()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn request_screen_recording_permission() -> Result<crate::domain::PermissionStatus, String> {
+    crate::platform::permissions::request_screen_recording_permission()
 }
 
 #[tauri::command]
@@ -1348,17 +1418,28 @@ pub async fn start_recording(
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_recording(
-    _app: AppHandle,
+    app: AppHandle,
     recorder: State<'_, Arc<dyn crate::platform::Recorder>>,
 ) -> Result<StopRecordingResponse, String> {
     let recorder = Arc::clone(&recorder);
+    let app_clone = app.clone();
 
     tauri::async_runtime::spawn_blocking(move || match recorder.stop() {
         Ok(result) => {
             let audio = result.audio;
+            if audio.samples.is_empty() || audio.sample_rate == 0 {
+                return Ok(StopRecordingResponse {
+                    file_path: String::new(),
+                    sample_rate: 0,
+                    sample_count: 0,
+                });
+            }
+            let (path, out_rate, count) =
+                write_recording_wav(&app_clone, &audio.samples, audio.sample_rate)?;
             Ok(StopRecordingResponse {
-                samples: audio.samples,
-                sample_rate: audio.sample_rate,
+                file_path: path.to_string_lossy().to_string(),
+                sample_rate: out_rate,
+                sample_count: count,
             })
         }
         Err(err) => {
@@ -1369,8 +1450,9 @@ pub async fn stop_recording(
 
             if not_recording {
                 return Ok(StopRecordingResponse {
-                    samples: Vec::new(),
+                    file_path: String::new(),
                     sample_rate: 0,
+                    sample_count: 0,
                 });
             }
 
@@ -1422,6 +1504,46 @@ pub async fn store_transcription_audio(
     .map_err(|err| err.to_string())?;
 
     result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn store_transcription_audio_from_file(
+    app: AppHandle,
+    id: String,
+    file_path: String,
+) -> Result<TranscriptionAudioSnapshot, String> {
+    let src = PathBuf::from(&file_path);
+    if !src.exists() {
+        return Err("Recording audio file not found".to_string());
+    }
+
+    let handle = app.clone();
+    let audio_id = id.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let (samples, sample_rate) =
+            crate::system::audio_store::load_audio_samples(&src).map_err(|e| e.to_string())?;
+        crate::system::audio_store::save_transcription_audio(
+            &handle,
+            &audio_id,
+            &samples,
+            sample_rate,
+        )
+        .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn cleanup_audio_file(app: AppHandle, file_path: String) -> Result<(), String> {
+    let path = std::path::Path::new(&file_path);
+    if file_path.is_empty() || !path.exists() {
+        return Ok(());
+    }
+    crate::system::audio_store::delete_audio_file(&app, path).map_err(|e| e.to_string())
 }
 
 #[derive(serde::Deserialize, specta::Type)]
@@ -1883,6 +2005,33 @@ pub async fn get_screen_context() -> Result<ScreenContextInfo, String> {
     tauri::async_runtime::spawn_blocking(crate::platform::accessibility::get_screen_context)
         .await
         .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn get_screen_capture_context() -> Result<Option<String>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            tauri::async_runtime::spawn_blocking(
+                crate::platform::macos::screen_capture::get_screen_capture_context,
+            ),
+        )
+        .await
+        .map_err(|_| {
+            log::warn!("get_screen_capture_context command timed out after 20s");
+            "get_screen_capture_context timed out".to_string()
+        })?
+        .map_err(|err| err.to_string())??;
+
+        Ok(result)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
 }
 
 #[tauri::command]

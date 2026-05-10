@@ -1,6 +1,6 @@
 use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
 
-use crate::domain::{Transcription, TranscriptionAudioSnapshot};
+use crate::domain::{DictationIntent, Transcription, TranscriptionAudioSnapshot};
 
 fn serialize_warnings(warnings: &Option<Vec<String>>) -> Option<String> {
     warnings
@@ -8,16 +8,25 @@ fn serialize_warnings(warnings: &Option<Vec<String>>) -> Option<String> {
         .and_then(|list| serde_json::to_string(list).ok())
 }
 
+fn serialize_dictation_intent(intent: &Option<DictationIntent>) -> Option<String> {
+    intent
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok())
+}
+
 fn row_to_transcription(row: SqliteRow) -> Result<Transcription, sqlx::Error> {
     let audio_path: Option<String> = row.try_get("audio_path")?;
     let audio_duration: Option<i64> = row.try_get("audio_duration_ms")?;
     let warnings_json: Option<String> = row.try_get("warnings_json")?;
+    let dictation_intent_json: Option<String> = row.try_get("dictation_intent_json")?;
 
     let audio = audio_path.map(|file_path| TranscriptionAudioSnapshot {
         file_path,
         duration_ms: audio_duration.unwrap_or_default(),
     });
     let warnings = warnings_json.and_then(|json| serde_json::from_str::<Vec<String>>(&json).ok());
+    let dictation_intent =
+        dictation_intent_json.and_then(|json| serde_json::from_str::<DictationIntent>(&json).ok());
     let remote_status: Option<String> = row.try_get("remote_status")?;
     let remote_device_id: Option<String> = row.try_get("remote_device_id")?;
 
@@ -29,6 +38,10 @@ fn row_to_transcription(row: SqliteRow) -> Result<Transcription, sqlx::Error> {
         model_size: row.try_get::<Option<String>, _>("model_size")?,
         inference_device: row.try_get::<Option<String>, _>("inference_device")?,
         raw_transcript: row.try_get::<Option<String>, _>("raw_transcript")?,
+        authoritative_transcript: row.try_get::<Option<String>, _>("authoritative_transcript")?,
+        is_authoritative: row.try_get::<Option<bool>, _>("is_authoritative")?,
+        is_finalized: row.try_get::<Option<bool>, _>("is_finalized")?,
+        dictation_intent,
         sanitized_transcript: row.try_get::<Option<String>, _>("sanitized_transcript")?,
         transcription_prompt: row.try_get::<Option<String>, _>("transcription_prompt")?,
         post_process_prompt: row.try_get::<Option<String>, _>("post_process_prompt")?,
@@ -59,6 +72,10 @@ pub async fn insert_transcription(
              model_size,
              inference_device,
              raw_transcript,
+             authoritative_transcript,
+             is_authoritative,
+             is_finalized,
+             dictation_intent_json,
              sanitized_transcript,
              transcription_prompt,
              post_process_prompt,
@@ -72,8 +89,8 @@ pub async fn insert_transcription(
              warnings_json,
              remote_status,
              remote_device_id
-         )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+          )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
     )
     .bind(&transcription.id)
     .bind(&transcription.transcript)
@@ -88,6 +105,10 @@ pub async fn insert_transcription(
     .bind(transcription.model_size.as_deref())
     .bind(transcription.inference_device.as_deref())
     .bind(transcription.raw_transcript.as_deref())
+    .bind(transcription.authoritative_transcript.as_deref())
+    .bind(transcription.is_authoritative)
+    .bind(transcription.is_finalized)
+    .bind(serialize_dictation_intent(&transcription.dictation_intent))
     .bind(transcription.sanitized_transcript.as_deref())
     .bind(transcription.transcription_prompt.as_deref())
     .bind(transcription.post_process_prompt.as_deref())
@@ -121,6 +142,10 @@ pub async fn fetch_transcriptions(
                 model_size,
                 inference_device,
                 raw_transcript,
+                authoritative_transcript,
+                is_authoritative,
+                is_finalized,
+                dictation_intent_json,
                 sanitized_transcript,
                 transcription_prompt,
                 post_process_prompt,
@@ -165,20 +190,24 @@ pub async fn update_transcription(
              model_size = ?6,
              inference_device = ?7,
              raw_transcript = ?8,
-             sanitized_transcript = ?9,
-             transcription_prompt = ?10,
-             post_process_prompt = ?11,
-             transcription_api_key_id = ?12,
-             post_process_api_key_id = ?13,
-             transcription_mode = ?14,
-             post_process_mode = ?15,
-             post_process_device = ?16,
-             transcription_duration_ms = ?17,
-             postprocess_duration_ms = ?18,
-             warnings_json = ?19,
-             remote_status = ?20,
-             remote_device_id = ?21
-         WHERE id = ?1",
+              authoritative_transcript = ?9,
+              is_authoritative = ?10,
+              is_finalized = ?11,
+              dictation_intent_json = ?12,
+              sanitized_transcript = ?13,
+              transcription_prompt = ?14,
+              post_process_prompt = ?15,
+              transcription_api_key_id = ?16,
+              post_process_api_key_id = ?17,
+              transcription_mode = ?18,
+              post_process_mode = ?19,
+              post_process_device = ?20,
+              transcription_duration_ms = ?21,
+              postprocess_duration_ms = ?22,
+              warnings_json = ?23,
+              remote_status = ?24,
+              remote_device_id = ?25
+          WHERE id = ?1",
     )
     .bind(&transcription.id)
     .bind(&transcription.transcript)
@@ -193,6 +222,10 @@ pub async fn update_transcription(
     .bind(transcription.model_size.as_deref())
     .bind(transcription.inference_device.as_deref())
     .bind(transcription.raw_transcript.as_deref())
+    .bind(transcription.authoritative_transcript.as_deref())
+    .bind(transcription.is_authoritative)
+    .bind(transcription.is_finalized)
+    .bind(serialize_dictation_intent(&transcription.dictation_intent))
     .bind(transcription.sanitized_transcript.as_deref())
     .bind(transcription.transcription_prompt.as_deref())
     .bind(transcription.post_process_prompt.as_deref())
@@ -218,6 +251,10 @@ pub async fn update_transcription(
                 model_size,
                 inference_device,
                 raw_transcript,
+                authoritative_transcript,
+                is_authoritative,
+                is_finalized,
+                dictation_intent_json,
                 sanitized_transcript,
                 transcription_prompt,
                 post_process_prompt,
