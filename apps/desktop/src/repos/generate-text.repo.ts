@@ -347,7 +347,7 @@ export class DeepseekGenerateTextRepo extends BaseGenerateTextRepo {
   constructor(apiKey: string, model: string | null) {
     super();
     this.apiKey = apiKey;
-    this.model = (model as DeepseekModel) ?? "deepseek-chat";
+    this.model = (model as DeepseekModel) ?? "deepseek-v4-flash";
   }
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {

@@ -75,7 +75,7 @@ class ByokGenerateTextRepo(
             }
             "deepseek" -> {
                 apiUrl = "https://api.deepseek.com/chat/completions"
-                model = modelOverride ?: "deepseek-chat"
+                model = modelOverride ?: "deepseek-v4-flash"
             }
             "openRouter" -> {
                 apiUrl = "https://openrouter.ai/api/v1/chat/completions"
