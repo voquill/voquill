@@ -9,10 +9,36 @@ name: Release (auto)
 # Promotion: fast-forward merge `main` into `prod` or `enterprise` → this
 # workflow runs on that branch and only the components that changed since
 # the last release on that branch ship.
+#
+# Manual dispatch releases the selected components on the chosen branch —
+# the recovery path when a push-triggered release fails, since reruns use
+# the original (broken) workflow snapshot.
 
 on:
   push:
     branches: [main, prod, enterprise]
+  workflow_dispatch:
+    inputs:
+      desktop:
+        description: "Release desktop"
+        type: boolean
+        default: false
+      cli:
+        description: "Release CLI"
+        type: boolean
+        default: false
+      docs:
+        description: "Release docs"
+        type: boolean
+        default: false
+      enterprise_admin:
+        description: "Release enterprise admin"
+        type: boolean
+        default: false
+      enterprise_gateway:
+        description: "Release enterprise gateway"
+        type: boolean
+        default: false
 
 concurrency:
   group: release-${{ github.ref_name }}-orchestrator
@@ -30,11 +56,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       channel: ${{ steps.env.outputs.channel }}
-      cli: ${{ steps.filter.outputs.cli }}
-      desktop: ${{ steps.filter.outputs.desktop }}
-      docs: ${{ steps.filter.outputs.docs }}
-      enterprise_admin: ${{ steps.filter.outputs.enterprise_admin }}
-      enterprise_gateway: ${{ steps.filter.outputs.enterprise_gateway }}
+      cli: ${{ github.event_name == 'workflow_dispatch' && inputs.cli || steps.filter.outputs.cli }}
+      desktop: ${{ github.event_name == 'workflow_dispatch' && inputs.desktop || steps.filter.outputs.desktop }}
+      docs: ${{ github.event_name == 'workflow_dispatch' && inputs.docs || steps.filter.outputs.docs }}
+      enterprise_admin: ${{ github.event_name == 'workflow_dispatch' && inputs.enterprise_admin || steps.filter.outputs.enterprise_admin }}
+      enterprise_gateway: ${{ github.event_name == 'workflow_dispatch' && inputs.enterprise_gateway || steps.filter.outputs.enterprise_gateway }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +74,7 @@ jobs:
           esac
 
       - uses: dorny/paths-filter@v3
+        if: github.event_name == 'push'
         id: filter
         with:
           base: ${{ github.event.before }}

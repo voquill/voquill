@@ -165,9 +165,14 @@ jobs:
             DEV_TAG_NAME="${TARGET_DEV_TAG}"
           fi
 
-          if git rev-parse -q --verify "refs/tags/${TAG_NAME}" >/dev/null; then
-            echo "Tag ${TAG_NAME} already exists. Aborting." >&2
-            exit 1
+          TAG_EXISTS="false"
+          if EXISTING_SHA="$(git rev-parse -q --verify "refs/tags/${TAG_NAME}^{commit}")"; then
+            if [[ "${EXISTING_SHA}" != "${COMMIT_SHA}" ]]; then
+              echo "Tag ${TAG_NAME} already exists at ${EXISTING_SHA}, expected ${COMMIT_SHA}. Aborting." >&2
+              exit 1
+            fi
+            echo "Tag ${TAG_NAME} already exists at the target commit; reusing it."
+            TAG_EXISTS="true"
           fi
 
           VERSION_PATH="desktop/${RELEASE_ENV}/${VERSION}"
@@ -211,6 +216,7 @@ jobs:
             echo "version_path=${VERSION_PATH}"
             echo "channel_release_tag=${CHANNEL_RELEASE_TAG}"
             echo "release_flavor=${RELEASE_FLAVOR}"
+            echo "tag_exists=${TAG_EXISTS}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Read release notes
@@ -226,12 +232,19 @@ jobs:
           body="$(cat "${notes_file}")"
           printf 'release_body<<EOF\n%s\nEOF\n' "$body" >> "$GITHUB_OUTPUT"
 
+      # GITHUB_TOKEN cannot create a ref to a commit whose workflow files differ
+      # from the current branch head (GitHub demands workflows:write, which
+      # GITHUB_TOKEN can never hold). Prod promotions tag the older dev commit,
+      # so they hit this whenever a workflow changed since that dev release —
+      # RELEASE_TAG_TOKEN (PAT with contents+workflows write) covers that case.
       - name: Create release tag
+        if: steps.meta.outputs.tag_exists != 'true'
         uses: actions/github-script@v7
         env:
           TAG_NAME: ${{ steps.meta.outputs.tag_name }}
           TARGET_SHA: ${{ steps.meta.outputs.commit_sha }}
         with:
+          github-token: ${{ secrets.RELEASE_TAG_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             const tagName = process.env.TAG_NAME;
             const targetSha = process.env.TARGET_SHA;
