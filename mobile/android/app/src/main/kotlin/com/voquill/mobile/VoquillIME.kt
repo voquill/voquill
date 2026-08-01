@@ -45,6 +45,7 @@ import java.util.TimeZone
 import java.util.UUID
 import java.net.HttpURLConnection
 import java.net.URL
+import com.voquill.mobile.keyboard.*
 import com.voquill.mobile.repos.*
 import java.util.concurrent.Executors
 import kotlin.math.max
@@ -130,6 +131,23 @@ class VoquillIME : InputMethodService() {
 
     private val executor = Executors.newSingleThreadExecutor()
 
+    // Full keyboard matrix
+    private var keyboardLayoutSpec: KeyboardLayoutSpec? = null
+    private val keyboardStateMachine = KeyboardStateMachine()
+    private val keyboardMatrixRenderer = KeyboardMatrixRenderer(this) { key -> onKeySpecTap(key) }
+    private lateinit var keyMatrixContainer: FrameLayout
+    private var currentMatrixView: View? = null
+    private var isFullKeyboardMode = false
+
+    // Keyboard action toolbar
+    private val toolbarController = KeyboardToolbarController(this)
+    private lateinit var keyboardToolbarRow: LinearLayout
+    private lateinit var topLeftRow: LinearLayout
+    private lateinit var utilButtonRow: LinearLayout
+    private var activeMode = "Auto"
+    private val availableModes = listOf("Auto", "Manual", "Dictation")
+    private var overflowActions: List<String> = listOf("addToDictionary")
+
     private var lastDebugLog = ""
     private var pendingErrorMessage = ""
 
@@ -176,6 +194,11 @@ class VoquillIME : InputMethodService() {
         toneScroll.isHorizontalFadingEdgeEnabled = true
         toneScroll.isVerticalFadingEdgeEnabled = false
         toneScroll.setFadingEdgeLength((18 * resources.displayMetrics.density).toInt())
+
+        keyMatrixContainer = view.findViewById(R.id.key_matrix_container)
+        keyboardToolbarRow = view.findViewById(R.id.keyboard_toolbar_row)
+        topLeftRow = view.findViewById(R.id.top_left_row)
+        utilButtonRow = view.findViewById(R.id.util_button_row)
 
         baseKeyboardHeightPx = keyboardContent.layoutParams.height
         baseKeyboardPaddingBottomPx = keyboardContent.paddingBottom
@@ -593,6 +616,7 @@ class VoquillIME : InputMethodService() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         loadLanguageConfig(prefs)
         loadToneConfig(prefs)
+        loadKeyboardLayout(prefs)
         renderToneChips()
         updateStatusBanner()
     }
@@ -624,6 +648,158 @@ class VoquillIME : InputMethodService() {
         activeToneIds = loadStringList(prefs, KEY_ACTIVE_TONE_IDS)
         toneById = loadToneById(prefs)
         selectedToneId = prefs.getString(KEY_SELECTED_TONE_ID, null) ?: activeToneIds.firstOrNull()
+    }
+
+    private fun loadKeyboardLayout(prefs: android.content.SharedPreferences) {
+        val raw = prefs.getString(KEY_KEYBOARD_LAYOUTS, null) ?: return
+        try {
+            val json = JSONObject(raw)
+            val layouts = json.optJSONObject("layouts") ?: return
+            val activeLanguage = json.optString("activeLanguage", "en")
+            val layoutJson = layouts.optJSONObject(activeLanguage)
+                ?: layouts.optJSONObject(layouts.keys().next())
+                ?: return
+            keyboardLayoutSpec = KeyboardLayoutSpec.fromJson(layoutJson)
+            renderKeyMatrix()
+        } catch (e: Exception) {
+            dbg("Failed to load keyboard layout: $e")
+        }
+    }
+
+    private fun onKeySpecTap(key: KeyboardKeySpec) {
+        val ic = currentInputConnection ?: return
+        when (key.role) {
+            KeyboardKeyRole.CHARACTER -> {
+                val ch = if (keyboardStateMachine.caseState != KeyboardCaseState.LOWER)
+                    (key.value ?: key.label).uppercase()
+                else (key.value ?: key.label).lowercase()
+                ic.commitText(ch, 1)
+                keyboardStateMachine.onCharacterCommit()
+                currentMatrixView?.let { keyboardMatrixRenderer.updateShiftState(it, keyboardStateMachine) }
+            }
+            KeyboardKeyRole.SHIFT -> {
+                keyboardStateMachine.onShiftTap()
+                currentMatrixView?.let { keyboardMatrixRenderer.updateShiftState(it, keyboardStateMachine) }
+            }
+            KeyboardKeyRole.DELETE -> onDeleteDown()
+            KeyboardKeyRole.SPACE -> ic.commitText(" ", 1)
+            KeyboardKeyRole.ENTER -> onReturnTap()
+            KeyboardKeyRole.MODE -> {
+                keyboardStateMachine.onModeTap()
+                renderKeyMatrix()
+            }
+            KeyboardKeyRole.GLOBE -> switchToNextInputMethod()
+            KeyboardKeyRole.START_STOP -> onPillTap()
+            else -> {}
+        }
+    }
+
+    private fun cycleMode() {
+        val idx = availableModes.indexOf(activeMode)
+        activeMode = availableModes[(idx + 1) % availableModes.size]
+        toolbarController.updateMode(activeMode)
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("voquill_keyboard_active_mode", activeMode)
+            .apply()
+    }
+
+    private fun showOverflowPopup() {
+        val anchor = keyboardToolbarRow.findViewWithTag<android.widget.TextView>("toolbar_overflow")
+            ?: keyboardToolbarRow
+        val popup = android.widget.PopupMenu(this, anchor)
+        overflowActions.forEachIndexed { i, action ->
+            val label = when (action) {
+                "addToDictionary" -> "Add to Dictionary"
+                "tone"            -> "Tone"
+                "settings"        -> "Settings"
+                "help"            -> "Help"
+                else              -> action
+            }
+            popup.menu.add(0, i, i, label)
+        }
+        popup.setOnMenuItemClickListener { item ->
+            dbg("overflow action: ${overflowActions.getOrNull(item.itemId)}")
+            true
+        }
+        popup.show()
+    }
+
+    private fun renderKeyMatrix() {
+        val layout = keyboardLayoutSpec ?: return
+        currentMatrixView?.let { keyMatrixContainer.removeView(it) }
+        val view = keyboardMatrixRenderer.buildMatrixView(layout, keyboardStateMachine, isDarkMode)
+        keyMatrixContainer.addView(
+            view,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        currentMatrixView = view
+        isFullKeyboardMode = true
+        topLeftRow.visibility = View.GONE
+        utilButtonRow.visibility = View.GONE
+        renderToolbar()
+        // Push matrix below toolbar (40dp) so it doesn't cover the toolbar row
+        val density = resources.displayMetrics.density
+        (keyMatrixContainer.layoutParams as FrameLayout.LayoutParams).topMargin =
+            (40 * density).toInt()
+        keyMatrixContainer.requestLayout()
+        keyMatrixContainer.visibility = View.VISIBLE
+        pillButton.visibility = View.GONE
+    }
+
+    private fun renderToolbar() {
+        keyboardToolbarRow.removeAllViews()
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val activeLanguage = prefs.getString(KEY_DICTATION_LANGUAGE, dictationLanguages.firstOrNull() ?: "en") ?: "en"
+
+        // Read stored toolbar config from Flutter sync (matches iOS implementation)
+        var visibleActions = listOf("startStop", "language", "mode")
+        val toolbarJson = prefs.getString(KEY_KEYBOARD_TOOLBAR, null)
+        if (toolbarJson != null) {
+            runCatching {
+                val json = JSONObject(toolbarJson)
+                val arr = json.optJSONArray("visibleActions")
+                if (arr != null) visibleActions = (0 until arr.length()).map { arr.getString(it) }
+                val storedMode = json.optString("activeMode", "")
+                if (storedMode.isNotBlank()) activeMode = storedMode
+                val oarr = json.optJSONArray("overflowActions")
+                if (oarr != null) overflowActions = (0 until oarr.length()).map { oarr.getString(it) }
+            }
+        }
+
+        val toolbarView = toolbarController.buildToolbar(
+            visibleActions = visibleActions,
+            activeLanguage = activeLanguage,
+            activeMode = activeMode,
+            isDark = isDarkMode,
+            onStartStop = ::onPillTap,
+            onLanguage = ::onLanguageChipTap,
+            onMode = { cycleMode() },
+            onOverflow = { showOverflowPopup() },
+        )
+        keyboardToolbarRow.addView(
+            toolbarView,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        )
+        keyboardToolbarRow.visibility = View.VISIBLE
+    }
+
+    private fun resetToVoiceOnlyMode() {
+        if (!isFullKeyboardMode) return
+        isFullKeyboardMode = false
+        keyMatrixContainer.visibility = View.GONE
+        keyboardToolbarRow.visibility = View.GONE
+        (keyMatrixContainer.layoutParams as FrameLayout.LayoutParams).topMargin = 0
+        keyMatrixContainer.requestLayout()
+        topLeftRow.visibility = View.VISIBLE
+        utilButtonRow.visibility = View.VISIBLE
+        pillButton.visibility = View.VISIBLE
     }
 
     private fun renderToneChips() {
@@ -1486,6 +1662,9 @@ class VoquillIME : InputMethodService() {
         const val KEY_AI_TRANSCRIPTION_MODEL = "voquill_ai_transcription_model"
         const val KEY_AI_POST_PROCESSING_MODEL = "voquill_ai_post_processing_model"
         const val KEY_AI_TRANSCRIPTION_AZURE_REGION = "voquill_ai_transcription_azure_region"
+        const val KEY_KEYBOARD_LAYOUTS = "voquill_keyboard_layouts"
+        const val KEY_KEYBOARD_TOOLBAR = "voquill_keyboard_toolbar"
+        const val KEY_KEYBOARD_LANGUAGES = "voquill_keyboard_languages"
         const val EXTRA_SHOW_PAYWALL = "voquill_show_paywall"
 
         const val COLOR_BLUE = 0xFF3380FF.toInt()

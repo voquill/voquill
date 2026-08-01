@@ -22,6 +22,14 @@
         android:paddingBottom="8dp">
 
         <LinearLayout
+            android:id="@+id/keyboard_toolbar_row"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_gravity="top"
+            android:orientation="horizontal"
+            android:visibility="gone" />
+
+        <LinearLayout
             android:id="@+id/top_left_row"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -177,6 +185,12 @@
                     android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/key_matrix_container"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:visibility="gone" />
 
         <HorizontalScrollView
             android:id="@+id/tone_scroll"

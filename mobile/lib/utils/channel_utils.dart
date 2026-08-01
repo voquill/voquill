@@ -5,15 +5,25 @@ import 'package:app/api/counter_api.dart';
 import 'package:app/flavor.dart';
 import 'package:app/model/tone_model.dart';
 import 'package:app/utils/env_utils.dart';
+import 'package:app/utils/language_utils.dart';
 import 'package:app/utils/log_utils.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 final _logger = createNamedLogger('channel_utils');
 
 const _sharedChannel = MethodChannel('com.voquill.mobile/shared');
+bool? _canSyncOverrideForTest;
 
-bool get _canSync => Platform.isIOS || Platform.isAndroid;
+bool get _canSync {
+  return _canSyncOverrideForTest ?? (Platform.isIOS || Platform.isAndroid);
+}
+
+@visibleForTesting
+void overrideCanSyncForTest(bool? value) {
+  _canSyncOverrideForTest = value;
+}
 
 Future<void> syncKeyboardAuth() async {
   if (!_canSync) {
@@ -161,11 +171,9 @@ Future<void> openKeyboardSettings() async {
 Future<void> syncMixpanelUser({required String uid}) async {
   if (!_canSync) return;
 
-  _sharedChannel
-      .invokeMethod('setMixpanelUser', {'uid': uid})
-      .catchError((e) {
-        _logger.w('Failed to sync Mixpanel user', e);
-      });
+  _sharedChannel.invokeMethod('setMixpanelUser', {'uid': uid}).catchError((e) {
+    _logger.w('Failed to sync Mixpanel user', e);
+  });
 
   await IncrementKeyboardCounterApi().call(null);
 }
@@ -221,7 +229,43 @@ Future<void> syncKeyboardAiConfig({
   }
 }
 
-Future<void> syncKeyboardDictationLanguages({
+Future<void> syncKeyboardLayouts({
+  required Map<String, dynamic> layouts,
+  required String activeLanguage,
+}) async {
+  if (!_canSync) {
+    return;
+  }
+
+  try {
+    await _sharedChannel.invokeMethod('setKeyboardLayouts', {
+      'layouts': layouts,
+      'activeLanguage': activeLanguage,
+    });
+  } catch (e) {
+    _logger.w('Failed to sync keyboard layouts', e);
+  }
+}
+
+Future<void> syncKeyboardToolbar({
+  required String activeMode,
+  required List<String> visibleActions,
+}) async {
+  if (!_canSync) {
+    return;
+  }
+
+  try {
+    await _sharedChannel.invokeMethod('setKeyboardToolbar', {
+      'activeMode': activeMode,
+      'visibleActions': visibleActions,
+    });
+  } catch (e) {
+    _logger.w('Failed to sync keyboard toolbar', e);
+  }
+}
+
+Future<void> syncKeyboardLanguages({
   required List<String> languages,
   required String activeLanguage,
 }) async {
@@ -230,20 +274,20 @@ Future<void> syncKeyboardDictationLanguages({
   }
 
   try {
-    await _sharedChannel.invokeMethod('setDictationLanguages', {
+    await _sharedChannel.invokeMethod('setKeyboardLanguages', {
       'languages': languages,
-    });
-    await _sharedChannel.invokeMethod('setActiveDictationLanguage', {
-      'language': activeLanguage,
+      'activeLanguage': activeLanguage,
+      'languageMetadata': {
+        for (final language in languages)
+          language: {'displayName': getDisplayNameForLanguage(language)},
+      },
     });
   } catch (e) {
-    _logger.w('Failed to sync keyboard dictation languages', e);
+    _logger.w('Failed to sync keyboard languages', e);
   }
 }
 
-Future<void> syncIdleTimeout({
-  required int timeoutSeconds,
-}) async {
+Future<void> syncIdleTimeout({required int timeoutSeconds}) async {
   if (!_canSync) {
     return;
   }

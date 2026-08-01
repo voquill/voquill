@@ -50,6 +50,9 @@ class MainActivity : FlutterFragmentActivity() {
                         result.success(null)
                     }
                     "setKeyboardAiConfig" -> handleSetKeyboardAiConfig(call.arguments, result)
+                    "setKeyboardLayouts" -> handleSetKeyboardLayouts(call.arguments, result)
+                    "setKeyboardToolbar" -> handleSetKeyboardToolbar(call.arguments, result)
+                    "setKeyboardLanguages" -> handleSetKeyboardLanguages(call.arguments, result)
                     "isKeyboardEnabled" -> result.success(isVoquillKeyboardEnabled())
                     "openKeyboardSettings" -> {
                         val intent = Intent(Settings.ACTION_INPUT_METHOD_SETTINGS).apply {
@@ -262,6 +265,56 @@ class MainActivity : FlutterFragmentActivity() {
         putOrRemove(VoquillIME.KEY_AI_TRANSCRIPTION_AZURE_REGION, "transcriptionAzureRegion")
 
         editor.apply()
+        result.success(null)
+    }
+
+    private fun handleSetKeyboardLayouts(arguments: Any?, result: MethodChannel.Result) {
+        val args = arguments as? Map<*, *>
+        val layouts = args?.get("layouts")
+        val activeLanguage = args?.get("activeLanguage") as? String
+        if (layouts == null || activeLanguage.isNullOrBlank()) {
+            result.error("INVALID_ARGS", "Missing required arguments", null)
+            return
+        }
+        val json = JSONObject().apply {
+            put("layouts", layouts)
+            put("activeLanguage", activeLanguage)
+        }
+        keyboardPrefs.edit().putString(VoquillIME.KEY_KEYBOARD_LAYOUTS, json.toString()).apply()
+        result.success(null)
+    }
+
+    private fun handleSetKeyboardToolbar(arguments: Any?, result: MethodChannel.Result) {
+        val args = arguments as? Map<*, *>
+        val activeMode = args?.get("activeMode") as? String
+        val visibleActions = args?.get("visibleActions")
+        if (activeMode.isNullOrBlank() || visibleActions == null) {
+            result.error("INVALID_ARGS", "Missing required arguments", null)
+            return
+        }
+        val json = JSONObject().apply {
+            put("activeMode", activeMode)
+            put("visibleActions", visibleActions)
+        }
+        keyboardPrefs.edit().putString(VoquillIME.KEY_KEYBOARD_TOOLBAR, json.toString()).apply()
+        result.success(null)
+    }
+
+    private fun handleSetKeyboardLanguages(arguments: Any?, result: MethodChannel.Result) {
+        val args = arguments as? Map<*, *>
+        val languages = args?.get("languages")
+        val activeLanguage = args?.get("activeLanguage") as? String
+        val languageMetadata = args?.get("languageMetadata")
+        if (languages == null || activeLanguage.isNullOrBlank()) {
+            result.error("INVALID_ARGS", "Missing required arguments", null)
+            return
+        }
+        val json = JSONObject().apply {
+            put("languages", languages)
+            put("activeLanguage", activeLanguage)
+            if (languageMetadata != null) put("languageMetadata", languageMetadata)
+        }
+        keyboardPrefs.edit().putString(VoquillIME.KEY_KEYBOARD_LANGUAGES, json.toString()).apply()
         result.success(null)
     }
 

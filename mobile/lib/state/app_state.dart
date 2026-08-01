@@ -2,6 +2,7 @@ import 'package:app/model/auth_user_model.dart';
 import 'package:app/model/common_model.dart';
 import 'package:app/model/desktop_session_model.dart';
 import 'package:app/model/config_model.dart';
+import 'package:app/model/keyboard/keyboard.dart';
 import 'package:app/model/member_model.dart';
 import 'package:app/model/session_history_entry.dart';
 import 'package:app/model/term_model.dart';
@@ -43,6 +44,9 @@ class AppState with EquatableMixin {
 
   final List<String> dictationLanguages;
   final String? activeDictationLanguage;
+  final Map<String, KeyboardLayoutModel> keyboardLayoutsByLanguage;
+  final String keyboardToolbarActiveMode;
+  final List<String> keyboardToolbarVisibleActions;
 
   final bool hasMicrophonePermission;
   final bool hasKeyboardPermission;
@@ -67,6 +71,13 @@ class AppState with EquatableMixin {
     this.remote = const RemoteState(),
     this.dictationLanguages = const ['en'],
     this.activeDictationLanguage,
+    this.keyboardLayoutsByLanguage = const {},
+    this.keyboardToolbarActiveMode = 'Auto',
+    this.keyboardToolbarVisibleActions = const [
+      'startStop',
+      'language',
+      'mode',
+    ],
     this.hasMicrophonePermission = false,
     this.hasKeyboardPermission = false,
   });
@@ -96,6 +107,9 @@ class AppState with EquatableMixin {
     remote,
     dictationLanguages,
     activeDictationLanguage,
+    keyboardLayoutsByLanguage,
+    keyboardToolbarActiveMode,
+    keyboardToolbarVisibleActions,
     hasMicrophonePermission,
     hasKeyboardPermission,
   ];

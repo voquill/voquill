@@ -303,6 +303,17 @@ class KeyboardViewController: UIInputViewController {
     private var upgradeButton: UIButton!
     private var fullAccessBanner: UIView!
 
+    // MARK: - Full Keyboard
+    private var keyboardLayoutSpec: KeyboardLayoutSpec?
+    private let keyboardStateMachine = KeyboardStateMachine()
+    private lazy var matrixBuilder = KeyboardMatrixBuilder { [weak self] key in self?.handleKeyTap(key) }
+    private var keyMatrixContainer: UIView?
+    private var isFullKeyboardMode = false
+    private var toolbarView: UIView?
+    private var activeMode: String = "Auto"
+    private let availableModes = ["Auto", "Manual", "Dictation"]
+    private var overflowActions: [String] = ["addToDictionary"]
+
     override func viewDidLoad() {
         super.viewDidLoad()
         initMixpanel()
@@ -335,6 +346,7 @@ class KeyboardViewController: UIInputViewController {
         startDarwinObservers()
         refreshMemberData()
         startMemberRefreshTimer()
+        loadKeyboardLayout()
     }
 
     private func syncFullAccessStatus() {
@@ -355,6 +367,9 @@ class KeyboardViewController: UIInputViewController {
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         updateColorsForAppearance()
+        if isFullKeyboardMode {
+            renderKeyMatrix()  // rebuilds toolbar too
+        }
     }
 
     private func updateColorsForAppearance() {
@@ -362,7 +377,262 @@ class KeyboardViewController: UIInputViewController {
         progressView.barColor = .white
     }
 
-    // MARK: - Dictation State
+    // MARK: - Full Keyboard
+
+    private func loadKeyboardLayout() {
+        let defaults = UserDefaults(suiteName: DictationConstants.appGroupId)
+        guard let data = defaults?.data(forKey: "voquill_keyboard_layouts") else { return }
+        do {
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let layouts = json["layouts"] as? [String: Any],
+                  let activeLanguage = json["activeLanguage"] as? String else {
+                NSLog("[VoquillKB] Keyboard layout JSON missing required fields")
+                return
+            }
+            let layoutDict = (layouts[activeLanguage] ?? layouts.values.first) as? [String: Any]
+            guard let layoutDict = layoutDict,
+                  let spec = KeyboardLayoutSpec.from(layoutDict) else {
+                NSLog("[VoquillKB] Failed to build KeyboardLayoutSpec")
+                return
+            }
+            keyboardLayoutSpec = spec
+            renderKeyMatrix()
+        } catch {
+            NSLog("[VoquillKB] Failed to parse keyboard layout JSON: \(error)")
+        }
+    }
+
+    private func renderKeyMatrix() {
+        guard let spec = keyboardLayoutSpec else { return }
+        let isDark = traitCollection.userInterfaceStyle == .dark
+
+        // Build toolbar first so the matrix can be anchored below it
+        toolbarView?.removeFromSuperview()
+        keyMatrixContainer?.removeFromSuperview()
+
+        renderToolbar()
+
+        let matrix = matrixBuilder.buildMatrix(layout: spec, state: keyboardStateMachine, isDark: isDark)
+        matrix.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(matrix)
+        if let toolbar = toolbarView {
+            NSLayoutConstraint.activate([
+                matrix.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                matrix.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                matrix.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
+                matrix.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+            ])
+        } else {
+            NSLayoutConstraint.activate([
+                matrix.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                matrix.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                matrix.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor),
+                matrix.heightAnchor.constraint(equalToConstant: 200),
+            ])
+        }
+        keyMatrixContainer = matrix
+        isFullKeyboardMode = true
+        pillButton?.isHidden = true
+    }
+
+    private func buildToolbar(isDark: Bool, visibleActions: [String], modeLabel: String, overflowActions: [String] = []) -> UIView {
+        let defaults = UserDefaults(suiteName: DictationConstants.appGroupId)
+
+        let stack = UIStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .center
+        stack.layoutMargins = UIEdgeInsets(top: 4, left: 12, bottom: 4, right: 12)
+        stack.isLayoutMarginsRelativeArrangement = true
+
+        let chipBg: UIColor = isDark ? UIColor(white: 0.23, alpha: 1) : UIColor(white: 0.82, alpha: 1)
+        let textColor: UIColor = isDark ? .white : .black
+
+        func makeChip(title: String, identifier: String = "", action: @escaping () -> Void) -> UIButton {
+            let btn = UIButton(type: .custom)
+            btn.setTitle(title, for: .normal)
+            btn.titleLabel?.font = .systemFont(ofSize: 13, weight: .medium)
+            btn.setTitleColor(textColor, for: .normal)
+            btn.backgroundColor = chipBg
+            btn.layer.cornerRadius = 8
+            btn.contentEdgeInsets = UIEdgeInsets(top: 4, left: 10, bottom: 4, right: 10)
+            if !identifier.isEmpty { btn.accessibilityIdentifier = identifier }
+            btn.addAction(UIAction { _ in action() }, for: .touchUpInside)
+            return btn
+        }
+
+        // Start/Stop
+        if visibleActions.contains("startStop") {
+            let btn = makeChip(title: "⏺", identifier: "toolbar_startStop") { [weak self] in
+                guard let self = self else { return }
+                self.handleKeyTap(KeyboardKeySpec(id: "startStop", role: .startStop, label: "⏺", flex: 1, value: nil))
+            }
+            stack.addArrangedSubview(btn)
+        }
+
+        // Spacer
+        let spacer = UIView()
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        stack.addArrangedSubview(spacer)
+
+        // Language
+        if visibleActions.contains("language") {
+            let langCode = (defaults?.string(forKey: "voquill_dictation_language") ?? "en")
+                .components(separatedBy: "-").first?.uppercased() ?? "EN"
+            let btn = makeChip(title: langCode, identifier: "toolbar_language") { [weak self] in
+                self?.onLanguageChipTap()
+            }
+            stack.addArrangedSubview(btn)
+        }
+
+        // Mode
+        if visibleActions.contains("mode") {
+            let btn = makeChip(title: modeLabel, identifier: "toolbar_mode") { [weak self] in
+                self?.cycleMode()
+            }
+            stack.addArrangedSubview(btn)
+        }
+
+        // Overflow
+        let overflow = makeChip(title: "⋯", identifier: "toolbar_overflow") { [weak self] in
+            self?.toggleOverflowStrip()
+        }
+        stack.addArrangedSubview(overflow)
+
+        return stack
+    }
+
+    private func renderToolbar() {
+        toolbarView?.removeFromSuperview()
+        let isDark = traitCollection.userInterfaceStyle == .dark
+
+        // Read stored toolbar config; update activeMode state here (not inside buildToolbar)
+        var visibleActions = ["startStop", "language", "mode"]
+        let defaults = UserDefaults(suiteName: DictationConstants.appGroupId)
+        if let data = defaults?.data(forKey: "voquill_keyboard_toolbar"),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let actions = json["visibleActions"] as? [String] { visibleActions = actions }
+            if let mode = json["activeMode"] as? String { activeMode = mode }
+            if let oarr = json["overflowActions"] as? [String] { overflowActions = oarr }
+        }
+
+        let toolbar = buildToolbar(isDark: isDark, visibleActions: visibleActions, modeLabel: activeMode, overflowActions: overflowActions)
+        view.addSubview(toolbar)
+        NSLayoutConstraint.activate([
+            toolbar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            toolbar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            toolbar.topAnchor.constraint(equalTo: view.topAnchor, constant: 4),
+            toolbar.heightAnchor.constraint(equalToConstant: 40),
+        ])
+        toolbarView = toolbar
+
+        // Hide existing top controls (logo, language chip)
+        logoButton?.isHidden = true
+        languageChip?.isHidden = true
+    }
+    }
+
+    private func handleKeyTap(_ key: KeyboardKeySpec) {
+        switch key.role {
+        case .character:
+            let ch = keyboardStateMachine.caseState != .lower
+                ? (key.value ?? key.label).uppercased()
+                : (key.value ?? key.label).lowercased()
+            textDocumentProxy.insertText(ch)
+            keyboardStateMachine.onCharacterCommit()
+            if let m = keyMatrixContainer { matrixBuilder.updateShiftKey(in: m, state: keyboardStateMachine) }
+        case .shift:
+            keyboardStateMachine.onShiftTap()
+            if let m = keyMatrixContainer { matrixBuilder.updateShiftKey(in: m, state: keyboardStateMachine) }
+        case .delete:
+            textDocumentProxy.deleteBackward()
+        case .space:
+            textDocumentProxy.insertText(" ")
+        case .enter:
+            textDocumentProxy.insertText("\n")
+        case .mode:
+            keyboardStateMachine.onModeTap()
+            renderKeyMatrix()
+        case .globe:
+            advanceToNextInputMode()
+        case .startStop:
+            // Toggle voice dictation — mirrors the voice pill tap
+            switch dictationPhase {
+            case .idle:
+                openURL("voquill://dictate")
+            case .active:
+                DarwinNotificationManager.shared.post(DictationConstants.startRecording)
+            case .recording:
+                DarwinNotificationManager.shared.post(DictationConstants.stopRecording)
+            }
+        default:
+            break
+        }
+    }
+
+    private func cycleMode() {
+        let idx = availableModes.firstIndex(of: activeMode) ?? 0
+        activeMode = availableModes[(idx + 1) % availableModes.count]
+        UserDefaults(suiteName: DictationConstants.appGroupId)?
+            .set(activeMode, forKey: "voquill_keyboard_active_mode")
+        renderToolbar()
+    }
+
+    private var overflowStripView: UIView?
+
+    private func toggleOverflowStrip() {
+        if let strip = overflowStripView {
+            strip.removeFromSuperview()
+            overflowStripView = nil
+            return
+        }
+        guard let toolbar = toolbarView else { return }
+        let strip = buildOverflowStrip(actions: overflowActions)
+        view.addSubview(strip)
+        NSLayoutConstraint.activate([
+            strip.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            strip.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            strip.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 2),
+            strip.heightAnchor.constraint(equalToConstant: 34),
+        ])
+        overflowStripView = strip
+    }
+
+    private func buildOverflowStrip(actions: [String]) -> UIView {
+        let strip = UIStackView()
+        strip.translatesAutoresizingMaskIntoConstraints = false
+        strip.axis = .horizontal
+        strip.distribution = .fillEqually
+        strip.spacing = 6
+        strip.layoutMargins = UIEdgeInsets(top: 2, left: 8, bottom: 2, right: 8)
+        strip.isLayoutMarginsRelativeArrangement = true
+        let isDark = traitCollection.userInterfaceStyle == .dark
+
+        for action in actions {
+            let label: String = {
+                switch action {
+                case "addToDictionary": return "Add to Dict"
+                case "tone":            return "Tone"
+                case "settings":        return "Settings"
+                case "help":            return "Help"
+                default:                return action
+                }
+            }()
+            let btn = UIButton(type: .system)
+            btn.setTitle(label, for: .normal)
+            btn.titleLabel?.font = .systemFont(ofSize: 12)
+            btn.backgroundColor = isDark ? UIColor(white: 0.22, alpha: 1) : UIColor(white: 0.82, alpha: 1)
+            btn.layer.cornerRadius = 6
+            btn.accessibilityIdentifier = "overflow_\(action)"
+            #if DEBUG
+            let capturedAction = action
+            btn.addAction(UIAction { _ in NSLog("[VoquillKB] overflow: \(capturedAction)") }, for: .touchUpInside)
+            #endif
+            strip.addArrangedSubview(btn)
+        }
+        return strip
+    }
 
     private func refreshDictationState() {
         let defaults = UserDefaults(suiteName: DictationConstants.appGroupId)
@@ -409,7 +679,8 @@ class KeyboardViewController: UIInputViewController {
     private func buildUI() {
         view.backgroundColor = .clear
 
-        let hc = view.heightAnchor.constraint(equalToConstant: 250)
+        // 300pt: 40pt toolbar + 4pt gap + ~220pt matrix + ~34pt safeArea (home indicator)
+        let hc = view.heightAnchor.constraint(equalToConstant: 300)
         hc.priority = .defaultHigh
         hc.isActive = true
 

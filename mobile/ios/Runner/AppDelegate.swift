@@ -269,6 +269,47 @@ import UIKit
       case "getDictationPhase":
         result(DictationService.shared.currentPhase.rawValue)
 
+      case "setKeyboardLayouts":
+        guard let args = call.arguments as? [String: Any],
+              let layouts = args["layouts"],
+              let activeLanguage = args["activeLanguage"] as? String,
+              let defaults = UserDefaults(suiteName: AppDelegate.appGroupId) else {
+          result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+          return
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: ["layouts": layouts, "activeLanguage": activeLanguage]) {
+          defaults.set(data, forKey: "voquill_keyboard_layouts")
+        }
+        result(nil)
+
+      case "setKeyboardToolbar":
+        guard let args = call.arguments as? [String: Any],
+              let activeMode = args["activeMode"] as? String,
+              let visibleActions = args["visibleActions"],
+              let defaults = UserDefaults(suiteName: AppDelegate.appGroupId) else {
+          result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+          return
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: ["activeMode": activeMode, "visibleActions": visibleActions]) {
+          defaults.set(data, forKey: "voquill_keyboard_toolbar")
+        }
+        result(nil)
+
+      case "setKeyboardLanguages":
+        guard let args = call.arguments as? [String: Any],
+              let languages = args["languages"],
+              let activeLanguage = args["activeLanguage"] as? String,
+              let defaults = UserDefaults(suiteName: AppDelegate.appGroupId) else {
+          result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+          return
+        }
+        var payload: [String: Any] = ["languages": languages, "activeLanguage": activeLanguage]
+        if let meta = args["languageMetadata"] { payload["languageMetadata"] = meta }
+        if let data = try? JSONSerialization.data(withJSONObject: payload) {
+          defaults.set(data, forKey: "voquill_keyboard_languages")
+        }
+        result(nil)
+
       default:
         result(FlutterMethodNotImplemented)
       }
