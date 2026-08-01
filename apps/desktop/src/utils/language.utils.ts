@@ -121,6 +121,12 @@ export const WHISPER_LANGUAGES = {
 
 export const AUTO_LANGUAGE = "auto";
 
+/**
+ * Sentinel value stored as the Active Dictation Language meaning "follow the
+ * Primary Dictation Language" rather than a concrete language code.
+ */
+export const PRIMARY_LANGUAGE_SENTINEL = "primary";
+
 /** These are all the supported languages. Anything not supported by Whisper needs to be post processed into the language of choice */
 export const DICTATION_LANGUAGES = {
   [AUTO_LANGUAGE]: "Auto-detect",

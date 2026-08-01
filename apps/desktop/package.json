@@ -9,6 +9,7 @@
     "dev:mac": "cross-env TAURI_PLATFORM=macos pnpm run dev:tauri",
     "dev:windows": "cross-env TAURI_PLATFORM=windows pnpm run dev:tauri",
     "dev:linux": "cross-env TAURI_PLATFORM=linux pnpm run dev:tauri",
+    "dev:linux:gpu": "cross-env VOQUILL_REQUIRE_GPU_SIDECAR=true TAURI_PLATFORM=linux pnpm run dev:tauri",
     "dev:tauri": "pnpm run prepare:sidecars && node -e \"const c=process.env.TAURI_DEV_CONFIG||'src-tauri/tauri.local.conf.json';require('child_process').execSync('pnpm tauri dev --config '+c,{stdio:'inherit'})\"",
     "dev:vite": "node scripts/run-vite-with-flavor.mjs dev",
     "build": "tsc && node scripts/run-vite-with-flavor.mjs build",

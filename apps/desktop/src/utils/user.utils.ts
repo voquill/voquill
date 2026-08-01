@@ -23,11 +23,13 @@ import {
   getAllowsChangePostProcessing,
   getAllowsChangeTranscription,
 } from "./enterprise.utils";
+import { getAdditionalLanguageEntries } from "./keyboard.utils";
 import {
   AUTO_LANGUAGE,
   coerceToDictationLanguage,
   DictationLanguageCode,
   KEYBOARD_LAYOUT_LANGUAGE,
+  PRIMARY_LANGUAGE_SENTINEL,
 } from "./language.utils";
 import { getEffectivePlan, getMemberExceedsLimitByState } from "./member.utils";
 
@@ -112,11 +114,51 @@ export const getMyPrimaryDictationLanguage = (state: AppState): string => {
   return getDetectedSystemLocale();
 };
 
+/**
+ * The set of concrete dictation language codes the user has configured and may
+ * therefore select as their Active Dictation Language. Auto is always available;
+ * the rest come from the additional-language hotkeys. The Primary is represented
+ * by the `primary` sentinel, not a concrete code, so it is not included here.
+ */
+export const getConfiguredDictationLanguageCodes = (
+  state: AppState,
+): Set<string> => {
+  const codes = new Set<string>([AUTO_LANGUAGE]);
+  for (const entry of getAdditionalLanguageEntries(state)) {
+    codes.add(entry.language);
+  }
+  return codes;
+};
+
+/**
+ * The Active Dictation Language as a sentinel-or-code, with the stale-value
+ * guard applied: the persisted value is honored only when it is the `primary`
+ * sentinel or a member of the current configured set; otherwise it falls
+ * through to the sentinel (follow Primary). Guards against stale values written
+ * by the since-removed language-switch feature and against a previously-active
+ * language later removed from the configured set.
+ */
+export const getActiveDictationLanguage = (state: AppState): string => {
+  const stored = state.userPrefs?.activeDictationLanguage;
+  if (!stored || stored === PRIMARY_LANGUAGE_SENTINEL) {
+    return PRIMARY_LANGUAGE_SENTINEL;
+  }
+  if (getConfiguredDictationLanguageCodes(state).has(stored)) {
+    return stored;
+  }
+  return PRIMARY_LANGUAGE_SENTINEL;
+};
+
 export const getMyDictationLanguage = (state: AppState): string => {
   // TODO: We should pass the dictation language into the processors instead of overriding
   const override = state.dictationLanguageOverride;
   if (override) {
     return override;
+  }
+
+  const active = getActiveDictationLanguage(state);
+  if (active !== PRIMARY_LANGUAGE_SENTINEL) {
+    return active;
   }
 
   return getMyPrimaryDictationLanguage(state);

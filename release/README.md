@@ -1,15 +1,16 @@
 # Releases
 
-| Branch       | Releases to  | Trigger     |
-|--------------|--------------|-------------|
-| `main`       | `dev`        | Push (auto) |
-| `prod`       | `prod`       | Push (auto) |
-| `enterprise` | `enterprise` | Push (auto) |
+| Branch       | Channel      | Eligible components                                                          |
+| ------------ | ------------ | ---------------------------------------------------------------------------- |
+| `main`       | `dev`        | CLI, desktop, desktop `enterprise-dev`, enterprise admin, enterprise gateway |
+| `prod`       | `prod`       | CLI, desktop, docs                                                           |
+| `enterprise` | `enterprise` | Desktop, enterprise admin, enterprise gateway                                |
 
-Pushing to any of the above runs `.github/workflows/release.yml`, which
-detects which folders changed (`cli/`, `apps/desktop/`, `apps/docs/`,
-`apps/web/`, `enterprise/admin/`, `enterprise/gateway/`) and releases only
-those components.
+Pushing to any of these branches runs
+[`release.yml`](../.github/workflows/release.yml). Its path filters detect
+changes to `cli/`, `apps/desktop/`, `apps/windows-installer/`, `apps/docs/`,
+`enterprise/admin/`, `enterprise/gateway/`, and `packages/`, then invoke the
+eligible component workflows.
 
 ## Release notes
 

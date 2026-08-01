@@ -1,0 +1,97 @@
+name: Re-sign Windows updater
+
+# Azure Trusted Signing modifies the NSIS installer *after* Tauri generates its
+# minisign updater signature, which invalidates it and breaks auto-updates with
+# "signature verification failed". This workflow re-signs the final exe bytes,
+# patches latest.json, and verifies every signature in the manifest before
+# publishing. It runs as part of the desktop release pipeline and can be
+# dispatched manually to repair an already-published release.
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: "Release tag holding the artifacts (e.g. desktop-v0.0.650)"
+        required: true
+        type: string
+      channel_tag:
+        description: "Channel tag that should also receive the patched latest.json (e.g. desktop-prod)"
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag holding the artifacts (e.g. desktop-v0.0.650)"
+        required: true
+        type: string
+      channel_tag:
+        description: "Channel tag that should also receive the patched latest.json (e.g. desktop-prod)"
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  resign:
+    name: Re-sign and verify updater signatures
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      CHANNEL_TAG: ${{ inputs.channel_tag }}
+    steps:
+      - name: Download latest.json and updater artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$RELEASE_TAG" --pattern "latest.json" --dir dist --clobber
+          jq -r '.platforms[].url | sub(".*/"; "")' dist/latest.json | sort -u | while read -r asset; do
+            gh release download "$RELEASE_TAG" --pattern "$asset" --dir dist --clobber
+          done
+
+      - name: Re-sign NSIS installers
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for exe in dist/*-setup.exe; do
+            npx --yes @tauri-apps/cli@2 signer sign "$exe"
+            sig="$(cat "${exe}.sig")"
+            name="$(basename "$exe")"
+            jq --arg name "$name" --arg sig "$sig" \
+              '.platforms |= with_entries(if (.value.url | endswith("/" + $name)) then .value.signature = $sig else . end)' \
+              dist/latest.json > dist/latest.json.tmp
+            mv dist/latest.json.tmp dist/latest.json
+          done
+
+      - name: Verify every signature in latest.json
+        env:
+          TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq >/dev/null
+          sudo apt-get install -y -qq minisign >/dev/null
+          pub="$( (base64 -d <<<"$TAURI_UPDATER_PUBLIC_KEY" 2>/dev/null || printf '%s' "$TAURI_UPDATER_PUBLIC_KEY") | grep -m1 '^RW' )"
+          jq -r '.platforms | to_entries[] | [.key, (.value.url | sub(".*/"; "")), .value.signature] | @tsv' dist/latest.json \
+          | while IFS=$'\t' read -r platform asset sig; do
+              printf '%s' "$sig" | base64 -d > asset.minisig
+              minisign -Vm "dist/$asset" -x asset.minisig -P "$pub" >/dev/null
+              echo "verified: $platform ($asset)"
+            done
+
+      - name: Publish re-signed artifacts
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for sig in dist/*-setup.exe.sig; do
+            gh release upload "$RELEASE_TAG" "$sig" --clobber
+          done
+          gh release upload "$RELEASE_TAG" dist/latest.json --clobber
+          if [[ -n "$CHANNEL_TAG" ]]; then
+            gh release upload "$CHANNEL_TAG" dist/latest.json --clobber
+          fi

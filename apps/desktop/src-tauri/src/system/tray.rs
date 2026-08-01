@@ -31,17 +31,29 @@ pub enum MenuIconVariant {
 
 use crate::domain::EVT_REGISTER_CURRENT_APP;
 use std::sync::OnceLock;
-use tauri::menu::MenuItem;
+use tauri::menu::{MenuItem, Submenu};
 
 pub const EVT_INSTALL_UPDATE: &str = "tray-install-update";
 pub const EVT_COPY_LAST_TRANSCRIPT: &str = "tray-copy-last-transcript";
+pub const EVT_SET_DICTATION_LANGUAGE: &str = "tray-set-dictation-language";
+
+const TRAY_LANGUAGE_ITEM_PREFIX: &str = "tray-lang:";
 
 static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
+static LANGUAGE_SUBMENU: OnceLock<Submenu<tauri::Wry>> = OnceLock::new();
+
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayLanguageMenuItem {
+    pub code: String,
+    pub label: String,
+    pub checked: bool,
+}
 
 #[cfg(desktop)]
 pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     use tauri::image::Image;
-    use tauri::menu::MenuBuilder;
+    use tauri::menu::{MenuBuilder, SubmenuBuilder};
     use tauri::tray::TrayIconBuilder;
     use tauri::{Emitter, Manager};
 
@@ -63,12 +75,15 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?;
+    let language_submenu = SubmenuBuilder::new(app, "Language").build()?;
+    let _ = LANGUAGE_SUBMENU.set(language_submenu.clone());
     let quit_item = MenuItem::with_id(app, "quit-voquill", "Quit Voquill", true, None::<&str>)?;
 
     let menu = MenuBuilder::new(app)
         .item(&open_item)
         .item(&copy_last_transcript_item)
         .item(&register_current_app_item)
+        .item(&language_submenu)
         .item(&update_item)
         .separator()
         .item(&quit_item)
@@ -103,6 +118,12 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                 }
             }
             "quit-voquill" => app.exit(0),
+            other if other.starts_with(TRAY_LANGUAGE_ITEM_PREFIX) => {
+                let code = other[TRAY_LANGUAGE_ITEM_PREFIX.len()..].to_string();
+                if let Err(err) = app.emit(EVT_SET_DICTATION_LANGUAGE, code) {
+                    log::error!("Failed to emit set-dictation-language event: {err}");
+                }
+            }
             _ => {}
         });
 
@@ -142,6 +163,38 @@ pub fn set_menu_icon(app: &tauri::AppHandle, variant: MenuIconVariant) -> Result
     {
         tray.set_icon_as_template(true)
             .map_err(|err| err.to_string())?;
+    }
+
+    Ok(())
+}
+
+pub fn set_tray_language_menu(
+    app: &tauri::AppHandle,
+    items: Vec<TrayLanguageMenuItem>,
+) -> Result<(), String> {
+    use tauri::menu::CheckMenuItem;
+
+    let submenu = LANGUAGE_SUBMENU
+        .get()
+        .ok_or("Language submenu not initialized")?;
+
+    let existing_count = submenu.items().map_err(|err| err.to_string())?.len();
+    for _ in 0..existing_count {
+        submenu.remove_at(0).map_err(|err| err.to_string())?;
+    }
+
+    for item in &items {
+        let id = format!("{TRAY_LANGUAGE_ITEM_PREFIX}{}", item.code);
+        let check_item = CheckMenuItem::with_id(
+            app,
+            id.as_str(),
+            item.label.as_str(),
+            true,
+            item.checked,
+            None::<&str>,
+        )
+        .map_err(|err| err.to_string())?;
+        submenu.append(&check_item).map_err(|err| err.to_string())?;
     }
 
     Ok(())

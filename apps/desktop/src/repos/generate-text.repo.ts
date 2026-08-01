@@ -21,6 +21,7 @@ import {
   GeminiGenerateTextModel,
   geminiGenerateTextResponse,
   geminiStreamChat,
+  GENERATE_TEXT_MODELS,
   GenerateTextModel,
   groqGenerateTextResponse,
   groqStreamChat,
@@ -100,9 +101,9 @@ export class GroqGenerateTextRepo extends BaseGenerateTextRepo {
   constructor(apiKey: string, model: string | null) {
     super();
     this.groqApiKey = apiKey;
-    this.model =
-      (model as GenerateTextModel) ??
-      "meta-llama/llama-4-scout-17b-16e-instruct";
+    this.model = GENERATE_TEXT_MODELS.includes(model as GenerateTextModel)
+      ? (model as GenerateTextModel)
+      : "openai/gpt-oss-120b";
   }
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {

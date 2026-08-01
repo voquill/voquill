@@ -1,5 +1,4 @@
-- Ability to copy last transcript
-- Add automatic language detection for Deepgram transcription
-- Show transcription status on the retranscribe button
-- Fix pill position on HiDPI displays under X11
-- Fall back to XWayland on GNOME Wayland for improved compatibility
+- Switch language from menu tray
+- Improve docs
+- Fix integration issue with groq
+- Allow multi word replacements

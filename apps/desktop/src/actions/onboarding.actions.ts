@@ -10,6 +10,7 @@ import { getAppState, produceAppState } from "../store";
 import { CURRENT_COHORT } from "../utils/analytics.utils";
 import { DEFAULT_DICTATION_LIMIT_MINUTES } from "../utils/dictation-limit.utils";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
+import { PRIMARY_LANGUAGE_SENTINEL } from "../utils/language.utils";
 import {
   EMAIL_TONE_ID,
   POLISHED_TONE_ID,
@@ -184,6 +185,7 @@ export const submitOnboarding = async () => {
           : null,
       lastSeenFeature: null,
       isEnterprise: getIsEnterpriseEnabled(),
+      activeDictationLanguage: PRIMARY_LANGUAGE_SENTINEL,
       preferredMicrophone: normalizedMicrophone,
       ignoreUpdateDialog: false,
       incognitoModeEnabled: false,

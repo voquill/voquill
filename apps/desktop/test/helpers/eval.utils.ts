@@ -36,7 +36,7 @@ export function getOpenAIGentextRepo(model = "gpt-5.4"): BaseGenerateTextRepo {
 }
 
 export function getGroqGentextRepo(
-  model = "meta-llama/llama-4-scout-17b-16e-instruct",
+  model = "openai/gpt-oss-120b",
 ): BaseGenerateTextRepo {
   const apiKey = getGroqApiKey();
   return new GroqGenerateTextRepo(apiKey, model);

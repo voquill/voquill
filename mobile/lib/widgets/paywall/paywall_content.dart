@@ -115,7 +115,7 @@ class _PaywallContentState extends State<PaywallContent>
 
     setState(() => _loading = true);
     try {
-      await Purchases.purchasePackage(package);
+      await Purchases.purchase(PurchaseParams.package(package));
       trackPaymentComplete();
       await refreshMemberUntilChange();
       if (mounted) dismissAppOverlay();

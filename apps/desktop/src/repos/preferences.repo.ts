@@ -11,6 +11,7 @@ import {
   DEFAULT_DICTATION_LIMIT_MINUTES,
   normalizeDictationLimitMinutes,
 } from "../utils/dictation-limit.utils";
+import { PRIMARY_LANGUAGE_SENTINEL } from "../utils/language.utils";
 import { getEffectivePillVisibility, LOCAL_USER_ID } from "../utils/user.utils";
 import { BaseRepo } from "./base.repo";
 
@@ -68,7 +69,7 @@ const normalizePostProcessingMode = (
   return "none";
 };
 
-const fromLocalPreferences = (
+export const fromLocalPreferences = (
   preferences: LocalUserPreferences,
 ): UserPreferences => ({
   userId: preferences.userId,
@@ -91,6 +92,7 @@ const fromLocalPreferences = (
   openclawToken: preferences.openclawToken ?? null,
   lastSeenFeature: preferences.lastSeenFeature,
   isEnterprise: preferences.isEnterprise,
+  activeDictationLanguage: preferences.activeDictationLanguage ?? null,
   preferredMicrophone: preferences.preferredMicrophone ?? null,
   ignoreUpdateDialog: preferences.ignoreUpdateDialog ?? false,
   incognitoModeEnabled: preferences.incognitoModeEnabled ?? false,
@@ -113,7 +115,7 @@ const fromLocalPreferences = (
   typingSpeedMs: preferences.typingSpeedMs ?? null,
 });
 
-const toLocalPreferences = (
+export const toLocalPreferences = (
   preferences: UserPreferences,
 ): LocalUserPreferences => ({
   userId: LOCAL_USER_ID,
@@ -136,7 +138,8 @@ const toLocalPreferences = (
   isEnterprise: preferences.isEnterprise,
   languageSwitchEnabled: false,
   secondaryDictationLanguage: null,
-  activeDictationLanguage: "primary",
+  activeDictationLanguage:
+    preferences.activeDictationLanguage ?? PRIMARY_LANGUAGE_SENTINEL,
   preferredMicrophone: preferences.preferredMicrophone ?? null,
   ignoreUpdateDialog: preferences.ignoreUpdateDialog ?? false,
   incognitoModeEnabled: preferences.incognitoModeEnabled ?? false,

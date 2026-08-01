@@ -41,9 +41,7 @@ const OPENAI_LLM_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"];
 const GROQ_LLM_MODELS = [
   "openai/gpt-oss-120b",
   "openai/gpt-oss-20b",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
   "meta-llama/llama-guard-4-12b",
-  "llama-3.3-70b-versatile",
   "moonshotai/kimi-k2-instruct-0905",
 ];
 

@@ -10,7 +10,7 @@
 ** Repository structure **
 
 - This is a Turborepo monorepo. Root-level: `pnpm run build`, `pnpm run lint`, `pnpm run check-types`, `pnpm run test`.
-- Shared packages live in `packages/` (types, functions, ui, etc.). After modifying `packages/types` or `packages/functions`, rebuild them before downstream consumers can see changes.
+- Shared packages live in `packages/` (types, functions, utilities, etc.). After modifying `packages/types` or `packages/functions`, rebuild them before downstream consumers can see changes.
 - Use `<FormattedMessage defaultMessage="..." />` or `useIntl()` for i18n — never pass an `id` prop.
 
 ** `apps/desktop` — Tauri desktop app (Rust + TypeScript/React) **
@@ -39,12 +39,12 @@
 - Uses `flutter_zustand` and `draft` for state management, following similar patterns as the desktop app.
 - Use `./mobile/generate.sh` to re-generate code.
 
-** `apps/web` — Marketing website (Next.js static export) **
+** `apps/docs` — Documentation site (Astro + Starlight) **
 
-- Next.js App Router with `output: 'export'` for fully static HTML.
-- Page components live in `src/views/`, route definitions in `src/app/`.
-- Uses react-intl for i18n with babel-plugin-formatjs (custom `.babelrc.js`).
-- Build output goes to `out/` directory (deployed via Firebase Hosting).
-- Scripts: `pnpm run build`.
+- Scripts: `pnpm run dev`, `pnpm run check-types`, `pnpm run build`.
+
+** `apps/windows-installer` — Windows installer (Tauri) **
+
+- Build on Windows with `pnpm run tauri:build`.
 
 ** Important scripts **

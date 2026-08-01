@@ -286,7 +286,7 @@ class _AddApiKeyDialogState extends State<AddApiKeyDialog> {
       case ApiKeyProvider.openai:
         return isTranscription ? 'e.g. whisper-1' : 'e.g. gpt-4o-mini';
       case ApiKeyProvider.groq:
-        return isTranscription ? 'e.g. whisper-large-v3' : 'e.g. llama-3.3-70b-versatile';
+        return isTranscription ? 'e.g. whisper-large-v3' : 'e.g. openai/gpt-oss-120b';
       case ApiKeyProvider.deepseek:
         return 'e.g. deepseek-chat';
       case ApiKeyProvider.openRouter:

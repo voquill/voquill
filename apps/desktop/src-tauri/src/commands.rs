@@ -1901,6 +1901,15 @@ pub fn set_menu_icon(
 
 #[tauri::command]
 #[specta::specta]
+pub fn set_tray_language_menu(
+    app: AppHandle,
+    items: Vec<crate::system::tray::TrayLanguageMenuItem>,
+) -> Result<(), String> {
+    crate::system::tray::set_tray_language_menu(&app, items)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub fn set_tray_visible(app: AppHandle, visible: bool) -> Result<(), String> {
     use tauri::tray::TrayIconId;
     if let Some(tray) = app.tray_by_id(&TrayIconId::new("main")) {

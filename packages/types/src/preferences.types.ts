@@ -24,6 +24,7 @@ export type UserPreferences = {
   openclawGatewayUrl: Nullable<string>;
   openclawToken: Nullable<string>;
   lastSeenFeature: Nullable<string>;
+  activeDictationLanguage: Nullable<string>;
   preferredMicrophone: Nullable<string>;
   ignoreUpdateDialog: boolean;
   incognitoModeEnabled: boolean;

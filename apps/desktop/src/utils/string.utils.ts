@@ -129,50 +129,122 @@ export const sanitizeIndentation = (text: string): string => {
     .join("\n");
 };
 
+const collapseWhitespace = (text: string): string => text.replace(/\s+/g, " ");
+
+/**
+ * Canonical form used to compare a rule's source against a candidate span:
+ * internal whitespace collapsed, surrounding punctuation stripped.
+ */
+const normalizePhrase = (phrase: string): string =>
+  extractPunctuation(collapseWhitespace(phrase.trim())).word;
+
+const countWords = (phrase: string): number => {
+  const trimmed = phrase.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+};
+
 export const applyReplacements = (
   text: string,
   rules: ReplacementRule[],
 ): string => {
   if (rules.length === 0) return text;
 
-  const words = text.split(/(\s+)/);
+  const segments = text.split(/(\s+)/);
+
+  // Positions of the word segments; the odd indices in between are whitespace.
+  const wordPositions: number[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    if (segment && !/^\s+$/.test(segment)) {
+      wordPositions.push(i);
+    }
+  }
+
+  // Rules are matched as phrases, so a rule spans as many words as its source
+  // does. Longer phrases are tried first so that "New York City" wins over a
+  // "New York" rule at the same position.
+  const preparedRules = rules
+    .map((rule) => ({
+      rule,
+      source: normalizePhrase(rule.sourceValue).toLowerCase(),
+      wordCount: countWords(rule.sourceValue),
+    }))
+    .filter((prepared) => prepared.source.length > 0);
+
+  if (preparedRules.length === 0) return text;
+
+  const maxWordCount = Math.max(
+    ...preparedRules.map((prepared) => prepared.wordCount),
+  );
+
   const result: string[] = [];
+  let segmentIndex = 0;
+  let wordIndex = 0;
 
-  for (const segment of words) {
-    if (/^\s+$/.test(segment)) {
-      result.push(segment);
-      continue;
+  while (wordIndex < wordPositions.length) {
+    const startSegment = wordPositions[wordIndex];
+
+    // Emit whitespace (and anything else) preceding this word untouched.
+    while (segmentIndex < startSegment) {
+      result.push(segments[segmentIndex]);
+      segmentIndex++;
     }
 
-    const { word, leadingPunctuation, trailingPunctuation } =
-      extractPunctuation(segment);
+    const remainingWords = wordPositions.length - wordIndex;
+    let matched = false;
 
-    if (!word) {
-      result.push(segment);
-      continue;
-    }
+    for (
+      let span = Math.min(maxWordCount, remainingWords);
+      span >= 1 && !matched;
+      span--
+    ) {
+      const endSegment = wordPositions[wordIndex + span - 1];
+      const candidate = segments.slice(startSegment, endSegment + 1).join("");
+      const { word, leadingPunctuation, trailingPunctuation } =
+        extractPunctuation(candidate);
 
-    let bestMatch: ReplacementRule | null = null;
-    let bestSimilarity = 0;
+      if (!word) continue;
 
-    for (const rule of rules) {
-      const { word: ruleWord } = extractPunctuation(rule.sourceValue);
-      if (!ruleWord) continue;
+      const normalizedCandidate = collapseWhitespace(word).toLowerCase();
 
-      const similarity = getStringSimilarity(
-        word.toLowerCase(),
-        ruleWord.toLowerCase(),
-      );
-      if (similarity >= SIMILARITY_THRESHOLD && similarity > bestSimilarity) {
-        bestSimilarity = similarity;
-        bestMatch = rule;
+      let bestMatch: ReplacementRule | null = null;
+      let bestSimilarity = 0;
+
+      for (const prepared of preparedRules) {
+        if (prepared.wordCount !== span) continue;
+
+        const similarity = getStringSimilarity(
+          normalizedCandidate,
+          prepared.source,
+        );
+        if (similarity >= SIMILARITY_THRESHOLD && similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          bestMatch = prepared.rule;
+        }
+      }
+
+      if (bestMatch) {
+        const { word: destinationWord } = extractPunctuation(
+          bestMatch.destinationValue,
+        );
+        result.push(leadingPunctuation + destinationWord + trailingPunctuation);
+        segmentIndex = endSegment + 1;
+        wordIndex += span;
+        matched = true;
       }
     }
 
-    const { word: destinationWord } = bestMatch
-      ? extractPunctuation(bestMatch.destinationValue)
-      : { word };
-    result.push(leadingPunctuation + destinationWord + trailingPunctuation);
+    if (!matched) {
+      result.push(segments[startSegment]);
+      segmentIndex = startSegment + 1;
+      wordIndex++;
+    }
+  }
+
+  // Emit any trailing whitespace.
+  while (segmentIndex < segments.length) {
+    result.push(segments[segmentIndex]);
+    segmentIndex++;
   }
 
   return result.join("");

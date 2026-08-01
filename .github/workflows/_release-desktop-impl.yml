@@ -872,9 +872,20 @@ jobs:
           Write-Host "Uploading $destName to release $env:RELEASE_TAG"
           gh release upload $env:RELEASE_TAG $destName --clobber
 
+  # Azure Trusted Signing (above) rewrites the NSIS exe after Tauri computed
+  # its updater signature, so the sig and latest.json must be regenerated from
+  # the final bytes before the channel manifest is published.
+  resign-windows-updater:
+    name: Re-sign Windows updater
+    needs: [metadata, build]
+    uses: ./.github/workflows/resign-windows-updater.yml
+    with:
+      release_tag: ${{ needs.metadata.outputs.tag_name }}
+    secrets: inherit
+
   update-channel:
     name: Update channel release
-    needs: [metadata, build]
+    needs: [metadata, build, resign-windows-updater]
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -1,150 +1,238 @@
 # Getting Started
 
-## Monorepo Layout
+Commands in this guide run from the repository root unless a section says
+otherwise.
 
-| Path                                                                                                                                                      | Description                                                                                                |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `apps/desktop`                                                                                                                                            | Tauri desktop app (Vite + React + Zustand) controlling UI, state, and business logic.                      |
-| `apps/desktop/src-tauri`                                                                                                                                  | Rust API layer invoked from TypeScript for native capabilities, SQLite storage, and Whisper inference.     |
-| `apps/web`                                                                                                                                                | Astro-powered marketing site hosted at voquill.com.                                                        |
-| `apps/firebase`                                                                                                                                           | Firebase Functions project handling authentication, billing, demos, and Groq-powered server transcription. |
-| `packages/voice-ai`                                                                                                                                       | Audio chunking + Groq client used for transcription and transcript cleanup.                                |
-| `packages/types`                                                                                                                                          | Shared domain models (users, transcriptions, dictionary terms, etc.).                                      |
-| `packages/functions`, `packages/firemix`, `packages/utilities`, `packages/pricing`, `packages/ui`, `packages/typescript-config`, `packages/eslint-config` | Reusable utilities, UI primitives, configuration, and Firemix helpers consumed by every app.               |
-| `docs`                                                                                                                                                    | Architecture notes, release guides, and reference material.                                                |
-| `scripts`                                                                                                                                                 | Automation and helper scripts (for example Linux dependency setup).                                        |
+## Repository layout
 
-## Architecture Overview
+| Path                     | Description                                                                                                      |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `apps/desktop`           | Tauri desktop app. React and TypeScript own the UI, state, and business logic; Rust exposes native capabilities. |
+| `apps/desktop/src-tauri` | Rust commands for audio, keyboard input, SQLite, Whisper, updates, and other native integrations.                |
+| `apps/windows-installer` | Windows installer built with Tauri.                                                                              |
+| `apps/docs`              | Astro and Starlight documentation site.                                                                          |
+| `enterprise/admin`       | React and Vite enterprise administration dashboard.                                                              |
+| `enterprise/gateway`     | Enterprise API gateway.                                                                                          |
+| `mobile`                 | Flutter mobile app for iOS and Android. This is outside the pnpm workspace.                                      |
+| `cli`                    | Rust command-line application.                                                                                   |
+| `packages`               | Shared TypeScript and Rust packages used by the applications.                                                    |
+| `release`                | Release notes and promotion instructions.                                                                        |
+| `docs`                   | Architecture notes and contributor documentation.                                                                |
 
-The desktop app follows a TypeScript-first design: Zustand maintains a single global store, while pure utility functions in `apps/desktop/src/utils` read and mutate state. Actions compose those utilities and may call out to repositories. Repos abstract whether persistence happens locally (SQLite through Tauri commands) or remotely (Firebase/Groq).
-
-```
-User input / system events
-        ↓
-React + Zustand state (TypeScript)
-        ↓
-Repos choose local vs. remote storage
-        ↓
-Tauri commands (Rust API bridge)
-        ↓
-SQLite, Whisper models, or external services
-```
-
-Rust stays focused on native integrations—audio capture, keyboard injection, updater, encryption, GPU enumeration, filesystem paths. TypeScript owns business logic, routing, and UI. The same shared packages are imported by the desktop app, Firebase functions, and the marketing site, which keeps the product vocabulary in sync.
-
-See `desktop-architecture.md` for the full tour.
+The pnpm workspace membership is defined in
+[`pnpm-workspace.yaml`](../pnpm-workspace.yaml). See
+[`desktop-architecture.md`](desktop-architecture.md) for the desktop data flow
+and ownership boundaries.
 
 ## Prerequisites
 
-- Node.js 18+ (desktop/web) and npm 10+.
-- Rust toolchain with `cargo`, `rustup`, and the Tauri CLI (`cargo install tauri-cli`).
-- Platform dependencies for Tauri (GTK/WebKit/AppIndicator/etc.). On Linux you can run `apps/desktop/scripts/setup-linux.sh`. On Windows use `powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/setup-windows.ps1` (add `-EnableGpu` to pull the Vulkan SDK for GPU builds).
-- A Groq API key if you plan to use hosted transcription or transcript cleanup (`GROQ_API_KEY`).
-- Firebase CLI (`npm install -g firebase-tools`) when working on the functions project.
+### Node.js and pnpm
 
-## Install dependencies
+[`package.json`](../package.json) supports Node.js 18 or newer, but contributors
+should install the Node.js version selected by [`.nvmrc`](../.nvmrc), currently
+Node.js 24. The repository pins its pnpm version in the `packageManager` field
+of [`package.json`](../package.json).
 
-```sh
-npm install
-```
-
-## Build everything
-
-Use the prepared `turbo` task instead of manually invoking `turbo dev`.
+With [nvm](https://github.com/nvm-sh/nvm):
 
 ```sh
-npm run build
+nvm install
+nvm use
+corepack enable
+pnpm install --frozen-lockfile
 ```
 
-## Run the desktop app
+Run pnpm from the repository root so it uses the pinned version and the shared
+lockfile.
 
-Pick the platform-specific script; avoid `turbo dev` since the desktop app manages its own watcher.
+### Native toolchains
+
+- Install Rust with [rustup](https://rustup.rs/) for the desktop app, Windows
+  installer, CLI, and Rust packages.
+- Install the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+  for your operating system. Linux and Windows contributors can use the
+  repository scripts described in the desktop section below.
+- Install a Flutter SDK whose Dart version satisfies
+  [`mobile/pubspec.yaml`](../mobile/pubspec.yaml), plus Xcode and CocoaPods for
+  iOS or the Android SDK for Android.
+
+## JavaScript and TypeScript workspaces
+
+The root manifest exposes the Turborepo tasks used across pnpm workspaces:
 
 ```sh
-# Mac
-npm run dev:mac --workspace apps/desktop
-
-# Windows
-npm run dev:windows --workspace apps/desktop
-
-# Linux (CPU)
-npm run dev:linux --workspace apps/desktop
-
-# Linux with Vulkan GPU acceleration
-npm run dev:linux:gpu --workspace apps/desktop
+pnpm run build
+pnpm run lint
+pnpm run check-types
+pnpm run test
 ```
 
-During local development you can override platform detection by exporting `VOQUILL_DESKTOP_PLATFORM` (`darwin`, `win32`, or `linux`). The desktop dev journey now defaults to the `emulators` flavor (`apps/desktop/.env.emulators`) so that `turbo dev` and the workspace dev scripts point at the Firebase emulator suite; pass `FLAVOR=dev` or `VITE_FLAVOR=dev` when you explicitly want the hosted dev project. Set `VITE_USE_EMULATORS=true` to point at Firebase emulators (this is already true in the emulator flavor).
+Turbo runs only scripts exposed by each workspace. Use a pnpm filter when
+working on one application or package. The full test task also runs desktop
+evals and gateway tests, so it needs the credentials and services described in
+those sections.
 
-### Running on Windows
+## Desktop app
+
+On Linux, install the native dependencies:
+
+```sh
+./apps/desktop/scripts/setup-linux.sh
+```
+
+On Windows, run the setup script from an elevated PowerShell:
 
 ```powershell
-# 1) Make sure MSVC is initialized
-# (Skip this if you're already in "Developer PowerShell for VS 2022")
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-
-# (Optional but recommended) shorten build paths on Windows
-$env:CARGO_TARGET_DIR = 'C:\cargo'
-
-# 3) Build
-npm run dev
+powershell -ExecutionPolicy Bypass -File apps/desktop/scripts/setup-windows.ps1
 ```
 
-## Run the marketing site
+Pass `-EnableGpu` to the Windows script, or set
+`VOQUILL_ENABLE_GPU=1` before running the Linux script, to install the optional
+Vulkan build dependencies.
+
+Start the desktop app with the platform selected automatically:
 
 ```sh
-npm run dev --workspace apps/web
+pnpm --filter desktop run dev
 ```
 
-## Firebase Functions and emulators
+The development command uses the emulator flavor by default. Set
+`VITE_FLAVOR=dev` to use the hosted development services. The available
+flavors and commands live in
+[`apps/desktop/package.json`](../apps/desktop/package.json) and the checked-in
+`apps/desktop/.env.*` files.
 
-The Firebase workspace targets Node 20. Install its dependencies (`npm install` inside `apps/firebase/functions`) and start emulators with:
+Validate desktop changes with:
 
 ```sh
-npm run dev --workspace apps/firebase/functions
+pnpm --filter desktop run build
+pnpm --filter desktop run lint
+pnpm --filter desktop run test:unit
 ```
 
-Secrets such as `GROQ_API_KEY` can be managed through `.secret.local` when using the emulator suite.
+`pnpm --filter desktop run test` additionally runs integration tests and evals
+that require `GROQ_API_KEY`.
 
-## Quality checks
+## Documentation site
+
+The docs site's commands are defined in
+[`apps/docs/package.json`](../apps/docs/package.json):
 
 ```sh
-npm run lint
-npm run check-types
-npm run test
+pnpm --filter docs run dev
+pnpm --filter docs run check-types
+pnpm --filter docs run build
 ```
 
-Individual workspaces expose the same commands if you need a narrower scope.
+The development server listens on port 3490.
 
-## Run in prod mode
+## Windows installer
 
-1. Comment out devUrl in `apps/desktop/src-tauri/tauri.conf.json`.
-2. cd /apps/desktop
-3. npm run build
-4. VITE_FLAVOR=prod npx tauri dev --no-dev-server
+Build the installer on Windows after the desktop app has produced its installer
+input:
 
-## Environment Reference
+```sh
+pnpm --filter @voquill/windows-installer run tauri:build
+```
 
-| Variable                                                         | Purpose                                                                                                            |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `VOQUILL_API_KEY_SECRET`                                         | Secret used by the desktop app to encrypt API keys stored on disk (`apps/desktop/src-tauri/src/system/crypto.rs`). |
-| `VOQUILL_WHISPER_MODEL_URL` / `VOQUILL_WHISPER_MODEL_URL_<SIZE>` | Override download locations for Whisper models when running locally.                                               |
-| `VOQUILL_WHISPER_DISABLE_GPU`                                    | Force the desktop app to avoid GPU inference, useful for debugging.                                                |
-| `VITE_USE_EMULATORS`                                             | When set to `true`, the desktop app points to Firebase emulators instead of production services.                   |
-| `GROQ_API_KEY`                                                   | Enables Groq-backed transcription/cleanup in Firebase functions and in the desktop API transcription mode.         |
+The installer workflow and its other commands live in
+[`apps/windows-installer/package.json`](../apps/windows-installer/package.json).
 
-## Releases & CI
+## Enterprise apps
 
-- Releases are orchestrated by `.github/workflows/release.yml`, which detects which folders changed and invokes per-component reusable workflows (`release-cli.yml`, `_release-desktop-impl.yml`, `release-docs.yml`, `release-web.yml`, `release-enterprise-admin.yml`, `release-enterprise-gateway.yml`). Pushes to `main`/`prod`/`enterprise` release to the `dev`/`prod`/`enterprise` channels respectively. Desktop builds bump a channel tag, build all three platforms, and publish assets plus `latest.json` manifests. See `desktop-release.md` for step-by-step instructions.
-- Turbo caching is configured in `turbo.json`; CI jobs call `npm run build`, `npm run lint`, and other workspace-scoped commands.
+Run and validate the admin dashboard:
 
-## Documentation
+```sh
+pnpm --filter admin run dev
+pnpm --filter admin run lint
+pnpm --filter admin run build
+```
 
-- Desktop architecture: `desktop-architecture.md`
-- Release playbook: `desktop-release.md`
-- Additional resources and inspiration: `resources.md`
-- Contributor conventions and workspace notes: `AGENTS.md` (repo root)
+Run and validate the gateway:
 
-## License
+```sh
+pnpm --filter @repo/enterprise-gateway run dev
+pnpm --filter @repo/enterprise-gateway run check-types
+pnpm --filter @repo/enterprise-gateway run test
+pnpm --filter @repo/enterprise-gateway run build
+```
 
-Unless otherwise noted, Voquill is released under the AGPLv3. See `LICENCE` for the complete terms and third-party attributions.
+These commands are owned by
+[`enterprise/admin/package.json`](../enterprise/admin/package.json) and
+[`enterprise/gateway/package.json`](../enterprise/gateway/package.json). The
+gateway tests require PostgreSQL. They use `DATABASE_URL` when set and otherwise
+connect to `postgres://postgres:postgres@localhost:5432/voquill`.
+
+## Shared packages
+
+The root build compiles shared packages before their consumers. To work on one
+package, filter by the name in its manifest:
+
+```sh
+pnpm --filter @voquill/types run build
+pnpm --filter @voquill/functions run build
+```
+
+Rebuild `@voquill/types` or `@voquill/functions` after changing them so
+downstream workspaces see the updated output.
+
+## Mobile app
+
+The mobile app is a separate Flutter project and does not use pnpm. Prepare it
+from a fresh clone with:
+
+```sh
+cd mobile
+flutter pub get
+cp .env.example .env
+./generate.sh
+```
+
+Replace the placeholder values in `.env` before launching the app. The
+available flavors are `dev`, `emulators`, and `prod`; each has a matching entry
+point under `mobile/lib`.
+
+```sh
+flutter run --flavor dev -t lib/main_dev.dart
+flutter analyze
+flutter test
+```
+
+Build release artifacts with the helper script:
+
+```sh
+./deploy.sh ios prod
+./deploy.sh android prod
+```
+
+The script calls `flutter build ipa` for iOS and `flutter build appbundle` for
+Android. iOS packaging requires macOS, Xcode, CocoaPods, and signing configured
+for the selected flavor.
+
+## CLI
+
+The CLI is a standalone Rust crate:
+
+```sh
+cargo build --manifest-path cli/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml
+```
+
+## Releases and CI
+
+Pushes to `main`, `prod`, and `enterprise` are orchestrated by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml). That
+workflow owns the component filters, release channels, and reusable workflows.
+See [`release/README.md`](../release/README.md) for promotion and rollback
+instructions and [`desktop-release.md`](desktop-release.md) for desktop release
+details.
+
+## Additional documentation
+
+- [Desktop architecture](desktop-architecture.md)
+- [Desktop release guide](desktop-release.md)
+- [Local model integration](local-model-integration.md)
+- [Resources](resources.md)
+
+Unless otherwise noted, Voquill is released under the AGPLv3. See
+[`LICENCE`](../LICENCE) for the complete terms and third-party attributions.

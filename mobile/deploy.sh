@@ -14,16 +14,16 @@ fi
 VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
 echo "Deploying $PLATFORM $FLAVOR — version $VERSION"
 
-fvm flutter pub get
+flutter pub get
 
 case "$PLATFORM" in
   ios)
-    fvm flutter build ipa -t "lib/main_${FLAVOR}.dart" --flavor "${FLAVOR}" --release
+    flutter build ipa -t "lib/main_${FLAVOR}.dart" --flavor "${FLAVOR}" --release
     echo "IPA ready at build/ios/ipa/"
     open build/ios/ipa/
     ;;
   android)
-    fvm flutter build appbundle -t "lib/main_${FLAVOR}.dart" --flavor "${FLAVOR}" --release
+    flutter build appbundle -t "lib/main_${FLAVOR}.dart" --flavor "${FLAVOR}" --release
     echo "AAB ready at build/app/outputs/bundle/${FLAVOR}Release/"
     open build/app/outputs/bundle/${FLAVOR}Release/
     ;;

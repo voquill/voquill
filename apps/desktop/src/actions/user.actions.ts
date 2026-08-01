@@ -21,6 +21,7 @@ import {
   normalizeDictationLimitMinutes,
 } from "../utils/dictation-limit.utils";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
+import { PRIMARY_LANGUAGE_SENTINEL } from "../utils/language.utils";
 import {
   isGpuPreferredTranscriptionDevice,
   normalizeLocalWhisperModel,
@@ -101,6 +102,7 @@ export const createDefaultPreferences = (): UserPreferences => ({
   openclawToken: null,
   lastSeenFeature: null,
   isEnterprise: false,
+  activeDictationLanguage: PRIMARY_LANGUAGE_SENTINEL,
   preferredMicrophone: null,
   ignoreUpdateDialog: false,
   incognitoModeEnabled: false,
@@ -418,6 +420,14 @@ export const setPreferredLanguage = async (
     "Unable to update preferred language. User not found.",
     "Failed to save preferred language. Please try again.",
   );
+};
+
+export const setActiveDictationLanguage = async (
+  language: string,
+): Promise<void> => {
+  await updateUserPreferences((preferences) => {
+    preferences.activeDictationLanguage = language;
+  }, "Failed to save active dictation language. Please try again.");
 };
 
 export const setInteractionChimeEnabled = async (enabled: boolean) => {

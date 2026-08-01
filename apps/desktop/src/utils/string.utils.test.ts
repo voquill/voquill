@@ -303,6 +303,76 @@ describe("applyReplacements", () => {
     expect(applyReplacements("help world", rules)).toBe("help world");
   });
 
+  it("should replace multi-word sources", () => {
+    const rules = [
+      { sourceValue: "New York", destinationValue: "NYC" },
+      { sourceValue: "Prompt 1", destinationValue: "Audit the plan" },
+    ];
+    expect(applyReplacements("I live in New York today", rules)).toBe(
+      "I live in NYC today",
+    );
+    expect(applyReplacements("Prompt 1", rules)).toBe("Audit the plan");
+  });
+
+  it("should replace a multi-word source that carries trailing punctuation", () => {
+    const rules = [
+      { sourceValue: "Prompt 1", destinationValue: "Audit the plan" },
+    ];
+    // Speech-to-text habitually ends a short utterance with a period; the
+    // trigger's punctuation is preserved on the replacement, as it is for
+    // single-word rules.
+    expect(applyReplacements("Prompt 1.", rules)).toBe("Audit the plan.");
+  });
+
+  it("should match a multi-word source regardless of case", () => {
+    const rules = [{ sourceValue: "New York", destinationValue: "NYC" }];
+    expect(applyReplacements("i love new york", rules)).toBe("i love NYC");
+  });
+
+  it("should prefer the longest matching phrase", () => {
+    const rules = [
+      { sourceValue: "New York", destinationValue: "NYC" },
+      { sourceValue: "New York City", destinationValue: "The Big Apple" },
+    ];
+    expect(applyReplacements("Welcome to New York City now", rules)).toBe(
+      "Welcome to The Big Apple now",
+    );
+  });
+
+  it("should replace multiple occurrences of a multi-word source", () => {
+    const rules = [{ sourceValue: "foo bar", destinationValue: "baz" }];
+    expect(applyReplacements("foo bar and foo bar", rules)).toBe("baz and baz");
+  });
+
+  it("should preserve surrounding whitespace around multi-word matches", () => {
+    const rules = [{ sourceValue: "foo bar", destinationValue: "baz" }];
+    expect(applyReplacements("  foo bar   end  ", rules)).toBe("  baz   end  ");
+  });
+
+  it("should not match a phrase split across a newline boundary incorrectly", () => {
+    const rules = [{ sourceValue: "foo bar", destinationValue: "baz" }];
+    // The words are still adjacent, just separated by a newline.
+    expect(applyReplacements("foo\nbar", rules)).toBe("baz");
+  });
+
+  it("should not partially match a multi-word source", () => {
+    const rules = [{ sourceValue: "New York", destinationValue: "NYC" }];
+    expect(applyReplacements("New Jersey is nearby", rules)).toBe(
+      "New Jersey is nearby",
+    );
+    expect(applyReplacements("York alone stays", rules)).toBe(
+      "York alone stays",
+    );
+  });
+
+  it("should still apply single-word rules alongside multi-word rules", () => {
+    const rules = [
+      { sourceValue: "LLM", destinationValue: "Claude" },
+      { sourceValue: "New York", destinationValue: "NYC" },
+    ];
+    expect(applyReplacements("LLM in New York", rules)).toBe("Claude in NYC");
+  });
+
   it("should choose best match when multiple rules could apply", () => {
     const rules = [
       { sourceValue: "test", destinationValue: "exam" },

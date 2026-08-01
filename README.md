@@ -29,7 +29,7 @@
 </div>
 </br>
 
-Voquill is an open-source, cross-platform AI voice typing app that lets you dictate into any desktop application, clean the transcript with AI, and keep your personal glossary in sync. The repo bundles the production desktop app, marketing site, Firebase backend, the mobile app, and all shared packages in a single Turborepo.
+Voquill is an open-source, cross-platform AI voice typing app that lets you dictate into any desktop application, clean the transcript with AI, and keep your personal glossary in sync. The repository contains the desktop and mobile apps, documentation site, enterprise services, CLI, and shared packages.
 
 ## Highlights
 
@@ -37,7 +37,7 @@ Voquill is an open-source, cross-platform AI voice typing app that lets you dict
 - Choose your engine: run Whisper locally (with optional GPU acceleration) or point to a cloud provider of your choice.
 - AI text cleanup: remove filler words and false starts automatically.
 - Personal dictionary: create glossary terms and replacement rules so recurring names and phrases stay accurate.
-- Batteries included: Tauri auto-updates, Firebase functions for billing and demos, and shared utilities/types.
+- Batteries included: Tauri auto-updates, enterprise services, and shared utilities and types.
 - Privacy first: You have full control over your data. Run Voquill against any backend you wish, even offline.
 
 ## Screenshots

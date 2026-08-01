@@ -13,7 +13,6 @@ import OpenAI from "openai";
 import { openaiCompatibleStreamChat } from "./openai.utils";
 
 export const GENERATE_TEXT_MODELS = [
-  "meta-llama/llama-4-scout-17b-16e-instruct",
   "moonshotai/kimi-k2-instruct-0905",
   "openai/gpt-oss-20b",
   "openai/gpt-oss-120b",
@@ -26,8 +25,6 @@ const JSON_SCHEMA_SUPPORTED_MODELS = new Set<string>([
   "moonshotai/kimi-k2-instruct-0905",
   "openai/gpt-oss-20b",
   "openai/gpt-oss-120b",
-  "meta-llama/llama-4-scout-17b-16e-instruct",
-  "meta-llama/llama-4-maverick-17b-128e-instruct",
 ]);
 
 export const TRANSCRIPTION_MODELS = ["whisper-large-v3-turbo"] as const;
@@ -122,7 +119,7 @@ export type GroqGenerateResponseOutput = {
 
 export const groqGenerateTextResponse = async ({
   apiKey,
-  model = "meta-llama/llama-4-scout-17b-16e-instruct",
+  model = "openai/gpt-oss-120b",
   system,
   prompt,
   imageUrls = [],
@@ -207,9 +204,10 @@ export const groqTestIntegration = async ({
         ],
       },
     ],
-    model: "meta-llama/llama-4-scout-17b-16e-instruct",
+    model: "openai/gpt-oss-120b",
     temperature: 0,
-    max_completion_tokens: 32,
+    reasoning_effort: "low",
+    max_completion_tokens: 1024,
     top_p: 1,
   });
 
