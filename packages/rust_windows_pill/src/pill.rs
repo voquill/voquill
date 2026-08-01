@@ -6,7 +6,10 @@ use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::*;
+use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::constants::*;
@@ -30,15 +33,36 @@ thread_local! {
     static EDIT_CONTAINER: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
     static EDIT_HWND: Cell<HWND> = const { Cell::new(HWND(std::ptr::null_mut())) };
     static EDIT_BG_BRUSH: Cell<HBRUSH> = const { Cell::new(HBRUSH(std::ptr::null_mut())) };
+    static VDM: RefCell<Option<IVirtualDesktopManager>> = const { RefCell::new(None) };
+}
+
+fn get_dpi_scale() -> f64 {
+    unsafe {
+        let mut cursor = POINT::default();
+        if GetCursorPos(&mut cursor).is_err() {
+            return 1.0;
+        }
+        let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+        let mut dpi_x: u32 = 96;
+        let mut dpi_y: u32 = 96;
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        (dpi_x as f64 / 96.0).max(1.0)
+    }
 }
 
 pub fn run(receiver: Receiver<InMessage>) {
     let t0 = Instant::now();
     unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
         let _ = windows::Win32::UI::HiDpi::SetProcessDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         );
     }
+
+    let ui_scale = get_dpi_scale();
+    let window_w = (WINDOW_W_TYPING as f64 * ui_scale) as i32;
+    let window_h = (WINDOW_H_TYPING as f64 * ui_scale) as i32;
+    eprintln!("[pill] DPI scale: {ui_scale}, window: {window_w}x{window_h}");
 
     let class_name = w!("VoquillPill");
     let hinstance = unsafe { GetModuleHandleW(None).unwrap() };
@@ -54,7 +78,7 @@ pub fn run(receiver: Receiver<InMessage>) {
     };
     unsafe { RegisterClassExW(&wc); }
 
-    let (wx, wy) = initial_position();
+    let (wx, wy) = initial_position(ui_scale);
     let hwnd = unsafe {
         CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -62,7 +86,7 @@ pub fn run(receiver: Receiver<InMessage>) {
             w!("VoquillPill"),
             WS_POPUP,
             wx, wy,
-            WINDOW_W_TYPING, WINDOW_H_TYPING,
+            window_w, window_h,
             None, None, Some(hinstance.into()), None,
         ).unwrap()
     };
@@ -70,10 +94,11 @@ pub fn run(receiver: Receiver<InMessage>) {
     HWND_CELL.with(|c| c.set(hwnd));
     eprintln!("[pill] window created in {:?}", t0.elapsed());
 
-    let gfx = Gfx::new(WINDOW_W_TYPING, WINDOW_H_TYPING).expect("Failed to create D2D context");
+    let gfx = Gfx::new(window_w, window_h).expect("Failed to create D2D context");
     eprintln!("[pill] D2D/DWrite initialized in {:?}", t0.elapsed());
 
     let state = PillState {
+        ui_scale: Cell::new(ui_scale),
         phase: Cell::new(Phase::Idle),
         visibility: Cell::new(Visibility::WhileActive),
         expand_t: Cell::new(0.0),
@@ -145,6 +170,12 @@ pub fn run(receiver: Receiver<InMessage>) {
     GFX.with(|g| *g.borrow_mut() = Some(gfx));
     RECEIVER.with(|r| *r.borrow_mut() = Some(receiver));
 
+    // Initialize Virtual Desktop Manager so the pill follows across desktops
+    match unsafe { CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_INPROC_SERVER) } {
+        Ok(vdm) => VDM.with(|c| *c.borrow_mut() = Some(vdm)),
+        Err(e) => eprintln!("[pill] VirtualDesktopManager unavailable: {e:?}"),
+    }
+
     create_edit_overlay(hinstance, hwnd);
     eprintln!("[pill] edit overlay created in {:?}", t0.elapsed());
 
@@ -163,6 +194,7 @@ pub fn run(receiver: Receiver<InMessage>) {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                 if msg.message == WM_QUIT {
                     windows::Win32::Media::timeEndPeriod(1);
+                    windows::Win32::System::Com::CoUninitialize();
                     return;
                 }
                 if handle_edit_message(&msg) { continue; }
@@ -181,6 +213,7 @@ pub fn run(receiver: Receiver<InMessage>) {
             }
         }
         windows::Win32::Media::timeEndPeriod(1);
+        windows::Win32::System::Com::CoUninitialize();
     }
 }
 
@@ -198,9 +231,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f64;
             STATE.with(|s| {
                 if let Some(ref state) = *s.borrow() {
+                    let scale = state.ui_scale.get();
                     let (ox, oy) = state.content_offset();
-                    let x = raw_x - ox;
-                    let y = raw_y - oy;
+                    let x = raw_x / scale - ox;
+                    let y = raw_y / scale - oy;
                     state.mouse_x.set(x);
                     state.mouse_y.set(y);
                     let regions = state.click_regions.borrow();
@@ -236,11 +270,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let x = (lparam.0 & 0xFFFF) as i16 as f64;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f64;
+            let raw_x = (lparam.0 & 0xFFFF) as i16 as f64;
+            let raw_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f64;
             STATE.with(|s| {
                 if let Some(ref state) = *s.borrow() {
-                    input::handle_click(state, x, y);
+                    let scale = state.ui_scale.get();
+                    input::handle_click(state, raw_x / scale, raw_y / scale);
                 }
             });
             LRESULT(0)
@@ -353,6 +388,43 @@ fn on_cursor_tick(hwnd: HWND) {
         if let Some(ref state) = *s.borrow() {
             check_hover(hwnd, state);
             reposition_to_cursor_monitor(hwnd);
+        }
+    });
+    ensure_on_current_desktop(hwnd);
+}
+
+fn ensure_on_current_desktop(hwnd: HWND) {
+    VDM.with(|v| {
+        let vdm_guard = v.borrow();
+        let vdm = match &*vdm_guard {
+            Some(ref vdm) => vdm,
+            None => return,
+        };
+        let result: windows::core::Result<windows::core::BOOL> =
+            unsafe { vdm.IsWindowOnCurrentVirtualDesktop(hwnd) };
+        if let Ok(is_on_current) = result {
+            if !is_on_current.as_bool() {
+                // Create a temporary window on the current desktop to get its GUID
+                if let Ok(temp_hwnd) = unsafe {
+                    CreateWindowExW(
+                        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                        w!("STATIC"),
+                        w!(""),
+                        WS_POPUP,
+                        0, 0, 1, 1,
+                        None, None, None, None,
+                    )
+                } {
+                    if let Ok(cur_desktop_id) =
+                        unsafe { vdm.GetWindowDesktopId(temp_hwnd) }
+                    {
+                        unsafe {
+                            let _ = vdm.MoveWindowToDesktop(hwnd, &cur_desktop_id);
+                        }
+                    }
+                    unsafe { let _ = DestroyWindow(temp_hwnd); }
+                }
+            }
         }
     });
 }
@@ -779,29 +851,32 @@ fn check_hover(hwnd: HWND, state: &PillState) {
     let mut win_rect = RECT::default();
     unsafe { let _ = GetWindowRect(hwnd, &mut win_rect); }
 
+    let scale = state.ui_scale.get();
     let (ox, oy) = state.content_offset();
     let dw = state.draw_width.get();
     let dh = state.draw_height.get();
 
-    // Pill position in screen coordinates
+    // Pill position in screen coordinates (DIP → physical)
     let (pill_x, pill_y, pill_w, pill_h) = draw::pill_position(state, dw, dh);
-    let screen_pill_x = win_rect.left as f64 + ox + pill_x;
-    let screen_pill_y = win_rect.top as f64 + oy + pill_y;
+    let screen_pill_x = win_rect.left as f64 + (ox + pill_x) * scale;
+    let screen_pill_y = win_rect.top as f64 + (oy + pill_y) * scale;
+    let screen_pill_w = pill_w * scale;
+    let screen_pill_h = pill_h * scale;
 
-    let pad = if state.hovered.get() { 24.0 } else { 8.0 };
+    let pad = (if state.hovered.get() { 24.0 } else { 8.0 }) * scale;
     let cx = cursor.x as f64;
     let cy = cursor.y as f64;
 
     let in_pill = cx >= screen_pill_x - pad
-        && cx <= screen_pill_x + pill_w + pad
+        && cx <= screen_pill_x + screen_pill_w + pad
         && cy >= screen_pill_y - pad
-        && cy <= screen_pill_y + pill_h + pad;
+        && cy <= screen_pill_y + screen_pill_h + pad;
 
     let in_panel = if state.assistant_active.get() {
-        let panel_x = win_rect.left as f64 + ox;
-        let panel_y = win_rect.top as f64 + oy;
-        cx >= panel_x && cx <= panel_x + dw
-            && cy >= panel_y && cy <= panel_y + dh
+        let panel_x = win_rect.left as f64 + ox * scale;
+        let panel_y = win_rect.top as f64 + oy * scale;
+        cx >= panel_x && cx <= panel_x + dw * scale
+            && cy >= panel_y && cy <= panel_y + dh * scale
     } else {
         false
     };
@@ -844,7 +919,7 @@ fn update_layered(hwnd: HWND, gfx: &Gfx) {
     }
 }
 
-fn initial_position() -> (i32, i32) {
+fn initial_position(ui_scale: f64) -> (i32, i32) {
     unsafe {
         let mut cursor = POINT::default();
         let _ = GetCursorPos(&mut cursor);
@@ -857,8 +932,11 @@ fn initial_position() -> (i32, i32) {
         let wa = info.rcWork;
         let wa_w = wa.right - wa.left;
         let wa_h = wa.bottom - wa.top;
-        let x = wa.left + (wa_w - WINDOW_W_TYPING) / 2;
-        let y = wa.top + wa_h - WINDOW_H_TYPING - MARGIN_BOTTOM;
+        let win_w = (WINDOW_W_TYPING as f64 * ui_scale) as i32;
+        let win_h = (WINDOW_H_TYPING as f64 * ui_scale) as i32;
+        let margin = (MARGIN_BOTTOM as f64 * ui_scale) as i32;
+        let x = wa.left + (wa_w - win_w) / 2;
+        let y = wa.top + wa_h - win_h - margin;
         (x, y)
     }
 }
@@ -868,6 +946,12 @@ fn reposition_to_cursor_monitor(hwnd: HWND) {
         let mut cursor = POINT::default();
         let _ = GetCursorPos(&mut cursor);
         let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTOPRIMARY);
+
+        let mut dpi_x: u32 = 96;
+        let mut dpi_y: u32 = 96;
+        let _ = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
+        let new_scale = (dpi_x as f64 / 96.0).max(1.0);
+
         let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
@@ -876,16 +960,49 @@ fn reposition_to_cursor_monitor(hwnd: HWND) {
         let wa = info.rcWork;
         let wa_w = wa.right - wa.left;
         let wa_h = wa.bottom - wa.top;
-        let x = wa.left + (wa_w - WINDOW_W_TYPING) / 2;
-        let y = wa.top + wa_h - WINDOW_H_TYPING - MARGIN_BOTTOM;
+
+        let win_w = (WINDOW_W_TYPING as f64 * new_scale) as i32;
+        let win_h = (WINDOW_H_TYPING as f64 * new_scale) as i32;
+        let margin = (MARGIN_BOTTOM as f64 * new_scale) as i32;
+        let x = wa.left + (wa_w - win_w) / 2;
+        let y = wa.top + wa_h - win_h - margin;
 
         let mut current = RECT::default();
         let _ = GetWindowRect(hwnd, &mut current);
-        if current.left != x || current.top != y {
-            let _ = SetWindowPos(
-                hwnd, None, x, y, 0, 0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+        let cur_w = current.right - current.left;
+        let cur_h = current.bottom - current.top;
+
+        let scale_changed = STATE.with(|s| {
+            if let Some(ref state) = *s.borrow() {
+                let old = state.ui_scale.get();
+                (new_scale - old).abs() > 0.01
+            } else {
+                false
+            }
+        });
+
+        if scale_changed || current.left != x || current.top != y || cur_w != win_w || cur_h != win_h {
+            // Update window position and size
+            let flags = if scale_changed {
+                SWP_NOZORDER | SWP_NOACTIVATE
+            } else {
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            };
+            let _ = SetWindowPos(hwnd, None, x, y, win_w, win_h, flags);
+
+            if scale_changed {
+                STATE.with(|s| {
+                    if let Some(ref state) = *s.borrow() {
+                        state.ui_scale.set(new_scale);
+                        state.dirty.set(true);
+                    }
+                });
+                GFX.with(|g| {
+                    if let Some(ref mut gfx) = *g.borrow_mut() {
+                        gfx.resize(win_w, win_h);
+                    }
+                });
+            }
         }
     }
 }
@@ -1109,6 +1226,8 @@ fn update_edit_overlay(main_hwnd: HWND, state: &PillState) {
         return;
     }
 
+    let scale = state.ui_scale.get();
+
     // Calculate input field position in screen coordinates
     let (ox, oy) = state.content_offset();
     let ww = state.draw_width.get();
@@ -1127,9 +1246,10 @@ fn update_edit_overlay(main_hwnd: HWND, state: &PillState) {
     let mut win_rect = RECT::default();
     unsafe { let _ = GetWindowRect(main_hwnd, &mut win_rect); }
 
-    let screen_x = win_rect.left as f64 + ox + input_x;
-    let screen_y = win_rect.top as f64 + oy + input_y + 1.0;
-    let h = PANEL_INPUT_HEIGHT - 1.0;
+    let screen_x = win_rect.left as f64 + (ox + input_x) * scale;
+    let screen_y = win_rect.top as f64 + (oy + input_y + 1.0) * scale;
+    let h = ((PANEL_INPUT_HEIGHT - 1.0) * scale) as i32;
+    let w = (input_w * scale) as i32;
 
     unsafe {
         // Color key makes the background transparent; alpha matches text to panel opacity
@@ -1142,13 +1262,13 @@ fn update_edit_overlay(main_hwnd: HWND, state: &PillState) {
         let _ = SetWindowPos(
             container, None,
             screen_x as i32, screen_y as i32,
-            input_w as i32, h as i32,
+            w, h,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = SetWindowPos(
             edit, None,
             0, 0,
-            input_w as i32, h as i32,
+            w, h,
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
         );
     }

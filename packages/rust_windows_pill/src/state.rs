@@ -104,6 +104,7 @@ pub(crate) struct FlameTongue {
 }
 
 pub(crate) struct PillState {
+    pub(crate) ui_scale: Cell<f64>,
     pub(crate) phase: Cell<Phase>,
     pub(crate) visibility: Cell<Visibility>,
     pub(crate) expand_t: Cell<f64>,
