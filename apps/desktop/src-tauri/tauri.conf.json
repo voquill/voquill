@@ -67,7 +67,7 @@
         "depends": ["xdotool", "vulkan-loader", "gtk-layer-shell", "wtype"]
       },
       "appimage": {
-        "bundleMediaFramework": false
+        "bundleMediaFramework": true
       }
     }
   },
