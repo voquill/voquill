@@ -9,6 +9,8 @@ import {
   geminiTranscribeAudio,
   GeminiTranscriptionModel,
   groqTranscribeAudio,
+  inferenceApisTranscribeAudio,
+  InferenceApisTranscriptionModel,
   openaiTranscribeAudio,
   OpenAITranscriptionModel,
   TranscriptionModel,
@@ -307,6 +309,56 @@ export class GroqTranscribeAudioRepo extends BaseTranscribeAudioRepo {
       text: transcript,
       metadata: {
         inferenceDevice: "API • Groq",
+        modelSize: this.model,
+        transcriptionMode: "api",
+      },
+    };
+  }
+}
+
+export class InferenceApisTranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  private apiKey: string;
+  private model: InferenceApisTranscriptionModel;
+
+  constructor(apiKey: string, model: string | null) {
+    super();
+    this.apiKey = apiKey;
+    this.model =
+      (model as InferenceApisTranscriptionModel) ?? "openai/whisper-large-v3";
+  }
+
+  // Inference APIs allows uploads up to 100MB, 60s segments are well within that
+  protected getSegmentDurationSec(): number {
+    return 60;
+  }
+
+  protected getOverlapDurationSec(): number {
+    return 5;
+  }
+
+  // Inference APIs can handle parallel requests
+  protected getBatchChunkCount(): number {
+    return 3;
+  }
+
+  protected async transcribeSegment(
+    input: TranscribeSegmentInput,
+  ): Promise<TranscribeAudioOutput> {
+    const wavBuffer = buildWaveFile(input.samples, input.sampleRate);
+
+    const { text: transcript } = await inferenceApisTranscribeAudio({
+      apiKey: this.apiKey,
+      model: this.model,
+      blob: wavBuffer,
+      ext: "wav",
+      prompt: input.prompt ?? undefined,
+      language: input.language,
+    });
+
+    return {
+      text: transcript,
+      metadata: {
+        inferenceDevice: "API • Inference APIs",
         modelSize: this.model,
         transcriptionMode: "api",
       },

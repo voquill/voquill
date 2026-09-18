@@ -6,6 +6,8 @@ import {
   DEEPSEEK_MODELS,
   GEMINI_GENERATE_TEXT_MODELS,
   GEMINI_TRANSCRIPTION_MODELS,
+  INFERENCEAPIS_GENERATE_TEXT_MODELS,
+  INFERENCEAPIS_TRANSCRIPTION_MODELS,
   XAI_TRANSCRIPTION_MODELS,
 } from "@voquill/voice-ai";
 import { fetch } from "@tauri-apps/plugin-http";
@@ -59,6 +61,14 @@ function isOpenAITranscriptionModel(modelId: string): boolean {
   return isWhisperModel(modelId) || modelId.includes("transcribe");
 }
 
+function isInferenceApisTranscriptionModel(modelId: string): boolean {
+  return (
+    isWhisperModel(modelId) ||
+    modelId.includes("parakeet") ||
+    modelId.includes("voxtral")
+  );
+}
+
 function filterFetchedModels(
   fetched: string[],
   allowList: readonly string[],
@@ -96,6 +106,43 @@ export class GroqModelProviderRepo extends BaseModelProviderRepo {
   async getTranscriptionModels(options: FetchModelsOptions): Promise<string[]> {
     const fetched = await this.fetchModels(options);
     return fetched.filter(isWhisperModel);
+  }
+}
+
+export class InferenceApisModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return true;
+  }
+
+  private async fetchModels(options: FetchModelsOptions): Promise<string[]> {
+    return fetchOpenAICompatibleModels(
+      "https://api.inferenceapis.com/v1/models",
+      options.apiKey ?? "",
+    );
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    const fetched = await this.fetchModels(options);
+    const filtered = fetched.filter(
+      (m) => !isInferenceApisTranscriptionModel(m),
+    );
+    return filtered.length > 0
+      ? filtered
+      : [...INFERENCEAPIS_GENERATE_TEXT_MODELS];
+  }
+
+  async getTranscriptionModels(options: FetchModelsOptions): Promise<string[]> {
+    const fetched = await this.fetchModels(options);
+    const filtered = fetched.filter(isInferenceApisTranscriptionModel);
+    return filtered.length > 0
+      ? filtered
+      : [...INFERENCEAPIS_TRANSCRIPTION_MODELS];
   }
 }
 

@@ -25,6 +25,10 @@ import {
   GenerateTextModel,
   groqGenerateTextResponse,
   groqStreamChat,
+  INFERENCEAPIS_GENERATE_TEXT_MODELS,
+  inferenceApisGenerateTextResponse,
+  inferenceApisStreamChat,
+  InferenceApisGenerateTextModel,
   OpenAIGenerateTextModel,
   openaiGenerateTextResponse,
   openaiStreamChat,
@@ -127,6 +131,47 @@ export class GroqGenerateTextRepo extends BaseGenerateTextRepo {
   async *streamChat(input: LlmChatInput): AsyncGenerator<LlmStreamEvent> {
     yield* groqStreamChat({
       apiKey: this.groqApiKey,
+      model: this.model,
+      input,
+    });
+  }
+}
+
+export class InferenceApisGenerateTextRepo extends BaseGenerateTextRepo {
+  private apiKey: string;
+  private model: InferenceApisGenerateTextModel;
+
+  constructor(apiKey: string, model: string | null) {
+    super();
+    this.apiKey = apiKey;
+    this.model = INFERENCEAPIS_GENERATE_TEXT_MODELS.includes(
+      model as InferenceApisGenerateTextModel,
+    )
+      ? (model as InferenceApisGenerateTextModel)
+      : "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+  }
+
+  async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
+    const response = await inferenceApisGenerateTextResponse({
+      apiKey: this.apiKey,
+      model: this.model,
+      prompt: input.prompt,
+      system: input.system ?? undefined,
+      jsonResponse: input.jsonResponse,
+    });
+
+    return {
+      text: response.text,
+      metadata: {
+        postProcessingMode: "api",
+        inferenceDevice: "API • Inference APIs",
+      },
+    };
+  }
+
+  async *streamChat(input: LlmChatInput): AsyncGenerator<LlmStreamEvent> {
+    yield* inferenceApisStreamChat({
+      apiKey: this.apiKey,
       model: this.model,
       input,
     });

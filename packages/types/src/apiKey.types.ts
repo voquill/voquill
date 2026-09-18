@@ -18,6 +18,7 @@ export const API_KEY_PROVIDERS = [
   "cerebras",
   "speaches",
   "xai",
+  "inferenceapis",
 ] as const;
 export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number];
 
