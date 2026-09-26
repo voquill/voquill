@@ -12,7 +12,7 @@ mod ipc;
 mod state;
 
 fn main() {
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, receiver) = ipc::channel();
     ipc::start_stdin_reader(sender);
     app::run(receiver);
 }

@@ -1,8 +1,25 @@
-use rodio::{Decoder, OutputStream, Sink};
+use rodio::source::{Source, Zero};
+use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::io::Cursor;
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::OnceLock;
 use std::thread;
+use std::time::Duration;
+
+/// How long the output stream stays open after the last chime. An open stream
+/// keeps CoreAudio running (and Bluetooth headphones awake) even while silent,
+/// so on macOS it is released when idle. 30s covers most dictations, so the
+/// stop chime usually reuses the start chime's stream. Other platforms keep the
+/// stream open for the life of the app; releasing it is untested there.
+#[cfg(target_os = "macos")]
+const OUTPUT_IDLE_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
+#[cfg(not(target_os = "macos"))]
+const OUTPUT_IDLE_TIMEOUT: Option<Duration> = None;
+
+/// Silence played ahead of a chime on a freshly opened stream. Bluetooth
+/// headphones drop the first moments of audio while waking, which would
+/// otherwise swallow the short chimes entirely.
+const WAKE_PREROLL: Duration = Duration::from_millis(250);
 
 static START_RECORDING_CLIP: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -34,61 +51,87 @@ static ALERT_WINDOWS_11_CLIP: &[u8] = include_bytes!(concat!(
     "/assets/audio/alert-windows-11.wav"
 ));
 
-/// Channel sender for the warm audio thread.
+/// Channel sender for the audio thread.
 static AUDIO_SENDER: OnceLock<Sender<AudioRequest>> = OnceLock::new();
 
 enum AudioRequest {
     Play(&'static [u8]),
 }
 
-/// Initialize a dedicated audio thread at app startup for instant chime playback.
-/// The thread keeps an OutputStream alive so we don't recreate it for each chime.
-pub fn warm_audio_output() {
+/// Start the dedicated chime playback thread. See `OUTPUT_IDLE_TIMEOUT` for
+/// how long its output stream stays open.
+pub fn start_audio_thread() {
     let (tx, rx) = mpsc::channel::<AudioRequest>();
 
-    // Store the sender for later use
     if AUDIO_SENDER.set(tx).is_err() {
         log::warn!("Audio sender already initialized");
         return;
     }
 
-    // Spawn the dedicated audio thread
     thread::spawn(move || {
-        // Create the output stream once and keep it alive
-        let (_stream, handle) = match OutputStream::try_default() {
-            Ok(result) => {
-                log::info!("Pre-warmed audio output stream");
-                result
-            }
-            Err(err) => {
-                log::error!("Failed to create audio output: {err}");
-                // Still process requests, but they'll fail gracefully
-                for request in rx {
-                    let AudioRequest::Play(bytes) = request;
-                    play_clip_fallback(bytes);
-                }
-                return;
-            }
+        let mut output = match OUTPUT_IDLE_TIMEOUT {
+            Some(_) => None,
+            None => open_output(),
         };
 
-        // Process play requests on this thread
-        for request in rx {
+        loop {
+            let request = match OUTPUT_IDLE_TIMEOUT {
+                Some(timeout) => rx.recv_timeout(timeout),
+                None => rx.recv().map_err(RecvTimeoutError::from),
+            };
             match request {
-                AudioRequest::Play(bytes) => {
-                    if let Ok(sink) = Sink::try_new(&handle) {
-                        if let Ok(source) = Decoder::new(Cursor::new(bytes)) {
-                            sink.append(source);
-                            sink.sleep_until_end();
-                        }
+                Ok(AudioRequest::Play(bytes)) => {
+                    let fresh = output.is_none();
+                    if fresh {
+                        output = open_output();
+                    }
+                    match &output {
+                        Some((_, handle)) => play_on(handle, bytes, fresh),
+                        None => play_clip_fallback(bytes),
                     }
                 }
+                Err(RecvTimeoutError::Timeout) => {
+                    if output.take().is_some() {
+                        log::debug!("Released idle audio output stream");
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
             }
         }
     });
 }
 
-/// Try to send a play request to the warm audio thread.
-fn try_warm_play(bytes: &'static [u8]) -> bool {
+fn open_output() -> Option<(OutputStream, OutputStreamHandle)> {
+    OutputStream::try_default()
+        .inspect_err(|err| log::error!("Failed to open default audio output stream: {err}"))
+        .ok()
+}
+
+/// `fresh` means the stream was just opened, so the device may still be waking.
+fn play_on(handle: &OutputStreamHandle, bytes: &'static [u8], fresh: bool) {
+    let sink = match Sink::try_new(handle) {
+        Ok(sink) => sink,
+        Err(err) => {
+            log::error!("Failed to create audio sink: {err}");
+            return;
+        }
+    };
+    let source = match Decoder::new(Cursor::new(bytes)) {
+        Ok(source) => source,
+        Err(err) => {
+            log::error!("Failed to decode audio clip: {err}");
+            return;
+        }
+    };
+    if fresh {
+        let silence = Zero::<f32>::new(source.channels(), source.sample_rate());
+        sink.append(silence.take_duration(WAKE_PREROLL));
+    }
+    sink.append(source);
+    sink.sleep_until_end();
+}
+
+fn try_send_to_audio_thread(bytes: &'static [u8]) -> bool {
     if let Some(sender) = AUDIO_SENDER.get() {
         sender.send(AudioRequest::Play(bytes)).is_ok()
     } else {
@@ -121,8 +164,7 @@ pub fn play_alert_windows_11_clip() {
 }
 
 fn play_clip(bytes: &'static [u8]) {
-    // Try the warm audio thread first (instant)
-    if try_warm_play(bytes) {
+    if try_send_to_audio_thread(bytes) {
         return;
     }
 
@@ -132,25 +174,8 @@ fn play_clip(bytes: &'static [u8]) {
 
 fn play_clip_fallback(bytes: &'static [u8]) {
     thread::spawn(move || {
-        if let Ok((stream, handle)) = OutputStream::try_default() {
-            match Sink::try_new(&handle) {
-                Ok(sink) => match Decoder::new(Cursor::new(bytes)) {
-                    Ok(source) => {
-                        sink.append(source);
-                        sink.sleep_until_end();
-                    }
-                    Err(err) => {
-                        log::error!("Failed to decode audio clip: {err}");
-                    }
-                },
-                Err(err) => {
-                    log::error!("Failed to create audio sink: {err}");
-                }
-            }
-
-            drop(stream);
-        } else {
-            log::error!("Failed to open default audio output stream");
+        if let Some((_stream, handle)) = open_output() {
+            play_on(&handle, bytes, true);
         }
     });
 }

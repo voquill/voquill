@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::mpsc::Receiver;
 
 use cocoa::appkit::{
@@ -31,6 +31,7 @@ extern "C" {
         context: *mut c_void,
     ) -> i32;
     fn CVDisplayLinkStart(link: *mut c_void) -> i32;
+    fn CVDisplayLinkStop(link: *mut c_void) -> i32;
 }
 
 extern "C" {
@@ -50,6 +51,8 @@ struct AppContext {
     quit: Cell<bool>,
     last_tick_time: Cell<f64>,
     embedded: bool,
+    /// Nothing was animating at the end of the previous tick.
+    quiescent: Cell<bool>,
 }
 
 thread_local! {
@@ -64,16 +67,53 @@ fn with_ctx<R>(f: impl FnOnce(&AppContext) -> R) -> Option<R> {
 
 static NEEDS_TICK: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn display_link_callback(
-    _link: *mut c_void, _now: *const c_void, _output_time: *const c_void,
-    _flags_in: u64, _flags_out: *mut u64, _context: *mut c_void,
-) -> i32 {
+// The display link only runs while something is animating or a message has
+// just arrived. While the pill is idle it is parked, so an (often invisible)
+// window is not redrawn at 60 fps — that kept the host process and
+// WindowServer busy around the clock and cost real battery.
+static DISPLAY_LINK: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+static LINK_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Schedule one tick on the main thread (coalesced). Safe from any thread.
+pub(crate) fn request_tick() {
     if !NEEDS_TICK.swap(true, Ordering::Release) {
         unsafe {
             let main_q = &_dispatch_main_q as *const u8 as *mut c_void;
             dispatch_async_f(main_q, std::ptr::null_mut(), main_thread_tick);
         }
     }
+}
+
+/// Restart ticking for an input event if the render loop is parked. Input
+/// arrives on the main thread, which is also where the display link is started
+/// and stopped, so this check cannot race with parking.
+fn wake_for_input() {
+    if !LINK_RUNNING.load(Ordering::Acquire) {
+        request_tick();
+    }
+}
+
+fn set_display_link_running(run: bool) {
+    let link = DISPLAY_LINK.load(Ordering::Acquire);
+    if link.is_null() {
+        return;
+    }
+    if LINK_RUNNING.swap(run, Ordering::AcqRel) != run {
+        unsafe {
+            if run {
+                CVDisplayLinkStart(link);
+            } else {
+                CVDisplayLinkStop(link);
+            }
+        }
+    }
+}
+
+extern "C" fn display_link_callback(
+    _link: *mut c_void, _now: *const c_void, _output_time: *const c_void,
+    _flags_in: u64, _flags_out: *mut u64, _context: *mut c_void,
+) -> i32 {
+    request_tick();
     0
 }
 
@@ -96,6 +136,7 @@ fn register_pill_view_class() -> &'static Class {
         decl.add_method(sel!(mouseDown:), mouse_down as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(mouseEntered:), mouse_entered as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(mouseExited:), mouse_exited as extern "C" fn(&Object, Sel, id));
+        decl.add_method(sel!(mouseMoved:), mouse_moved as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(mouseUp:), mouse_up as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(scrollWheel:), scroll_wheel as extern "C" fn(&Object, Sel, id));
         decl.add_method(sel!(updateTrackingAreas), update_tracking_areas as extern "C" fn(&Object, Sel));
@@ -156,7 +197,15 @@ extern "C" fn draw_rect(this: &Object, _sel: Sel, _dirty: NSRect) {
     });
 }
 
-extern "C" fn mouse_entered(_this: &Object, _sel: Sel, _event: id) {}
+// Hover is detected in the tick, so entering or moving within the window must
+// run one even while the render loop is parked.
+extern "C" fn mouse_entered(_this: &Object, _sel: Sel, _event: id) {
+    wake_for_input();
+}
+
+extern "C" fn mouse_moved(_this: &Object, _sel: Sel, _event: id) {
+    wake_for_input();
+}
 
 extern "C" fn mouse_exited(_this: &Object, _sel: Sel, _event: id) {
     with_ctx(|ctx| {
@@ -168,6 +217,7 @@ extern "C" fn mouse_exited(_this: &Object, _sel: Sel, _event: id) {
 }
 
 extern "C" fn mouse_up(_this: &Object, _sel: Sel, event: id) {
+    wake_for_input();
     with_ctx(|ctx| {
         unsafe {
             let loc: NSPoint = msg_send![event, locationInWindow];
@@ -178,6 +228,7 @@ extern "C" fn mouse_up(_this: &Object, _sel: Sel, event: id) {
 }
 
 extern "C" fn scroll_wheel(_this: &Object, _sel: Sel, event: id) {
+    wake_for_input();
     with_ctx(|ctx| {
         unsafe {
             let precise: bool = msg_send![event, hasPreciseScrollingDeltas];
@@ -251,6 +302,12 @@ extern "C" fn text_field_action(_this: &Object, _sel: Sel, sender: id) {
 }
 
 extern "C" fn tick_callback(_this: &Object, _sel: Sel, _timer: id) {
+    // NSTimer path. With a working display link this is the slow idle timer
+    // (1 Hz) that drains IPC and keeps the window on the active screen while
+    // the link is parked; without one it is the 60 fps fallback.
+    if LINK_RUNNING.load(Ordering::Acquire) {
+        return;
+    }
     perform_tick();
 }
 
@@ -433,11 +490,48 @@ fn perform_tick() {
         // Reposition window on active monitor
         reposition_window(ctx.window);
 
-        // Request redraw
-        unsafe {
-            let _: () = msg_send![ctx.view, setNeedsDisplay:YES];
+        // Request a redraw, then park the display link once nothing is moving.
+        // Two consecutive quiescent ticks mean the frame would be identical.
+        let quiescent = is_quiescent(&ctx.state);
+        let was_quiescent = ctx.quiescent.replace(quiescent);
+        if !(quiescent && was_quiescent) {
+            unsafe {
+                let _: () = msg_send![ctx.view, setNeedsDisplay:YES];
+            }
         }
+        set_display_link_running(!quiescent);
     });
+}
+
+fn settled(value: &Cell<f64>, velocity: &Cell<f64>, target: f64) -> bool {
+    (value.get() - target).abs() < 0.001 && velocity.get().abs() < 0.001
+}
+
+/// True when no animation is in flight, so successive frames would be identical.
+fn is_quiescent(state: &PillState) -> bool {
+    if state.phase.get() != Phase::Idle
+        || state.assistant_active.get()
+        || state.hovered.get()
+        || state.flash_visible.get()
+        || state.fireworks_active.get()
+        || state.flame_active.get()
+        || state.flash_blue_active.get()
+        || state.transcript_has_message.get()
+        || state.transcript_opacity.get() >= 0.001
+        || state.current_level.get() != 0.0
+        || state.target_level.get() != 0.0
+    {
+        return false;
+    }
+    let (tw, th) = state.window_mode.get().dimensions();
+    settled(&state.expand_t, &state.expand_velocity, 0.0)
+        && settled(&state.tooltip_t, &state.tooltip_velocity, 0.0)
+        && settled(&state.panel_open_t, &state.panel_open_velocity, 0.0)
+        && settled(&state.kb_button_t, &state.kb_button_velocity, 0.0)
+        && settled(&state.flash_t, &state.flash_velocity, 0.0)
+        && settled(&state.cancel_t, &state.cancel_velocity, 0.0)
+        && settled(&state.draw_width, &state.draw_w_velocity, tw as f64)
+        && settled(&state.draw_height, &state.draw_h_velocity, th as f64)
 }
 
 // ── Hover detection ──────────────────────────────────────────────
@@ -991,6 +1085,7 @@ unsafe fn setup(receiver: Receiver<InMessage>, embedded: bool) {
             quit: Cell::new(false),
             last_tick_time: Cell::new(0.0),
             embedded,
+            quiescent: Cell::new(false),
         });
     });
 
@@ -998,7 +1093,19 @@ unsafe fn setup(receiver: Receiver<InMessage>, embedded: bool) {
     let mut display_link: *mut c_void = std::ptr::null_mut();
     if CVDisplayLinkCreateWithActiveCGDisplays(&mut display_link) == 0 {
         CVDisplayLinkSetOutputCallback(display_link, display_link_callback, std::ptr::null_mut());
+        DISPLAY_LINK.store(display_link, Ordering::Release);
+        LINK_RUNNING.store(true, Ordering::Release);
         CVDisplayLinkStart(display_link);
+        // Slow idle timer (see tick_callback). Coalescing tolerance keeps it
+        // from waking the CPU on its own schedule.
+        let idle_timer: id = msg_send![class!(NSTimer),
+            scheduledTimerWithTimeInterval:1.0_f64
+            target:view
+            selector:sel!(tick:)
+            userInfo:nil
+            repeats:YES
+        ];
+        let _: () = msg_send![idle_timer, setTolerance:0.5_f64];
     } else {
         let _: id = msg_send![class!(NSTimer),
             scheduledTimerWithTimeInterval:0.016_f64

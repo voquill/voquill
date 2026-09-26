@@ -192,8 +192,7 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
 
                 app.manage(recorder);
 
-                // Pre-warm audio output for instant chime playback
-                crate::system::audio_feedback::warm_audio_output();
+                crate::system::audio_feedback::start_audio_thread();
 
                 crate::overlay::try_create_native_overlays(app_handle);
             }

@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::io::{self, BufRead, Write};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 use serde::{Deserialize, Serialize};
 
@@ -133,7 +133,27 @@ pub fn send(msg: &OutMessage) {
     }
 }
 
-pub fn start_stdin_reader(sender: Sender<InMessage>) {
+/// Sends messages to the pill and wakes its render loop, which is parked while
+/// the pill is idle. Safe to use from any thread.
+pub struct PillSender(Sender<InMessage>);
+
+impl PillSender {
+    /// Returns false if the pill has shut down.
+    pub fn send(&self, msg: InMessage) -> bool {
+        if self.0.send(msg).is_err() {
+            return false;
+        }
+        crate::app::request_tick();
+        true
+    }
+}
+
+pub(crate) fn channel() -> (PillSender, Receiver<InMessage>) {
+    let (sender, receiver) = mpsc::channel();
+    (PillSender(sender), receiver)
+}
+
+pub fn start_stdin_reader(sender: PillSender) {
     std::thread::spawn(move || {
         let stdin = io::stdin();
         let reader = stdin.lock();
@@ -144,7 +164,7 @@ pub fn start_stdin_reader(sender: Sender<InMessage>) {
             }
             match serde_json::from_str::<InMessage>(&line) {
                 Ok(msg) => {
-                    if sender.send(msg).is_err() {
+                    if !sender.send(msg) {
                         break;
                     }
                 }
@@ -153,6 +173,6 @@ pub fn start_stdin_reader(sender: Sender<InMessage>) {
                 }
             }
         }
-        let _ = sender.send(InMessage::Quit);
+        sender.send(InMessage::Quit);
     });
 }

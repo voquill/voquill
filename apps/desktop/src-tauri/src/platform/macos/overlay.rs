@@ -1,33 +1,27 @@
 use std::sync::mpsc;
-use std::sync::Mutex;
 
 use tauri::{Emitter, Manager};
 
 use crate::domain::{OverlayPhase, PillWindowSize};
-use rust_macos_pill::ipc::{InMessage, OutMessage, Phase, Visibility};
+use rust_macos_pill::ipc::{InMessage, OutMessage, Phase, PillSender, Visibility};
 
 struct MacosPill {
-    sender: Mutex<mpsc::Sender<InMessage>>,
+    sender: PillSender,
 }
 
 impl MacosPill {
     fn send(&self, msg: InMessage) {
-        if let Ok(sender) = self.sender.lock() {
-            let _ = sender.send(msg);
-        }
+        self.sender.send(msg);
     }
 }
 
 pub fn try_create_native_overlays(app: &tauri::AppHandle) -> bool {
-    let (in_tx, in_rx) = mpsc::channel::<InMessage>();
     let (out_tx, out_rx) = mpsc::channel::<OutMessage>();
 
     // Start the pill on the main thread (Tauri setup runs on main thread)
-    rust_macos_pill::start(out_tx, in_rx);
+    let sender = rust_macos_pill::start(out_tx);
 
-    let pill = std::sync::Arc::new(MacosPill {
-        sender: Mutex::new(in_tx),
-    });
+    let pill = std::sync::Arc::new(MacosPill { sender });
     app.manage(pill);
 
     start_out_reader(app.clone(), out_rx);
