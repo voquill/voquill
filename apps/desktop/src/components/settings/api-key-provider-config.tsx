@@ -12,6 +12,7 @@ import {
   elevenlabsTestIntegration,
   geminiTestIntegration,
   groqTestIntegration,
+  inferenceApisTestIntegration,
   openaiCompatibleTestIntegration,
   openaiTestIntegration,
   openrouterTestIntegration,
@@ -97,6 +98,10 @@ const STANDARD_PROVIDERS: Record<
   claude: { displayName: "Claude", testFn: claudeTestIntegration },
   cerebras: { displayName: "Cerebras", testFn: cerebrasTestIntegration },
   xai: { displayName: "xAI Grok", testFn: xaiTestIntegration },
+  inferenceapis: {
+    displayName: "Inference APIs",
+    testFn: inferenceApisTestIntegration,
+  },
 };
 
 function buildStandardConfig(provider: string): ProviderFormConfig {

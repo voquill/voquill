@@ -37,6 +37,7 @@ import {
   EnterpriseGenerateTextRepo,
   GeminiGenerateTextRepo,
   GroqGenerateTextRepo,
+  InferenceApisGenerateTextRepo,
   OllamaGenerateTextRepo,
   OpenAICompatibleGenerateTextRepo,
   OpenAIGenerateTextRepo,
@@ -60,6 +61,7 @@ import {
   ElevenLabsModelProviderRepo,
   GeminiModelProviderRepo,
   GroqModelProviderRepo,
+  InferenceApisModelProviderRepo,
   OllamaModelProviderRepo,
   OpenAICompatibleModelProviderRepo,
   OpenAIModelProviderRepo,
@@ -104,6 +106,7 @@ import {
   EnterpriseTranscribeAudioRepo,
   GeminiTranscribeAudioRepo,
   GroqTranscribeAudioRepo,
+  InferenceApisTranscribeAudioRepo,
   LocalTranscribeAudioRepo,
   NewServerTranscribeAudioRepo,
   OpenAICompatibleTranscribeAudioRepo,
@@ -340,6 +343,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "inferenceapis") {
+      getLogger().verbose("Configuring Inference APIs repo for generate text");
+      repo = new InferenceApisGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else {
       getLogger().verbose("Configuring Groq repo for generate text");
       repo = new GroqGenerateTextRepo(
@@ -459,6 +468,11 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
         prefs.apiKeyValue,
         prefs.transcriptionModel,
       );
+    } else if (prefs.provider === "inferenceapis") {
+      repo = new InferenceApisTranscribeAudioRepo(
+        prefs.apiKeyValue,
+        prefs.transcriptionModel,
+      );
     } else {
       repo = new GroqTranscribeAudioRepo(
         prefs.apiKeyValue,
@@ -492,6 +506,8 @@ export const getModelProviderRepo = (
       return new ClaudeModelProviderRepo();
     case "cerebras":
       return new CerebrasModelProviderRepo();
+    case "inferenceapis":
+      return new InferenceApisModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
