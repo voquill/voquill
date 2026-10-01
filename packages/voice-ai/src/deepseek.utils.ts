@@ -4,10 +4,17 @@ import {
   ChatCompletionMessageParam,
 } from "openai/resources/chat/completions";
 import { retry, countWords } from "@voquill/utilities";
-import type { JsonResponse, LlmChatInput, LlmStreamEvent } from "@voquill/types";
+import type {
+  JsonResponse,
+  LlmChatInput,
+  LlmStreamEvent,
+} from "@voquill/types";
 import { openaiCompatibleStreamChat } from "./openai.utils";
 
-export const DEEPSEEK_MODELS = ["deepseek-chat", "deepseek-reasoner"] as const;
+export const DEEPSEEK_MODELS = [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+] as const;
 export type DeepseekModel = (typeof DEEPSEEK_MODELS)[number];
 
 const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
@@ -44,7 +51,7 @@ const createClient = (apiKey: string) => {
 
 export type DeepseekGenerateTextArgs = {
   apiKey: string;
-  model?: DeepseekModel;
+  model?: string;
   system?: string;
   prompt: string;
   jsonResponse?: JsonResponse;
@@ -57,7 +64,7 @@ export type DeepseekGenerateResponseOutput = {
 
 export const deepseekGenerateTextResponse = async ({
   apiKey,
-  model = "deepseek-chat",
+  model = "deepseek-v4-flash",
   system,
   prompt,
   jsonResponse,
@@ -130,7 +137,7 @@ export const deepseekTestIntegration = async ({
         ],
       },
     ],
-    model: "deepseek-chat",
+    model: "deepseek-v4-flash",
     temperature: 0,
     max_tokens: 32,
     top_p: 1,
