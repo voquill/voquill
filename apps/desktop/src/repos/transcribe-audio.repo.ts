@@ -6,6 +6,7 @@ import {
   azureTranscribeAudio,
   deepgramTranscribeAudio,
   elevenlabsTranscribeAudio,
+  sixtydbTranscribeAudio,
   geminiTranscribeAudio,
   GeminiTranscriptionModel,
   groqTranscribeAudio,
@@ -444,6 +445,48 @@ export class ElevenLabsTranscribeAudioRepo extends BaseTranscribeAudioRepo {
       text: transcript,
       metadata: {
         inferenceDevice: "API • ElevenLabs",
+        modelSize: null,
+        transcriptionMode: "api",
+      },
+    };
+  }
+}
+
+export class SixtyDBTranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    super();
+    this.apiKey = apiKey;
+  }
+
+  protected getSegmentDurationSec(): number {
+    return 60;
+  }
+
+  protected getOverlapDurationSec(): number {
+    return 5;
+  }
+
+  protected getBatchChunkCount(): number {
+    return 1;
+  }
+
+  protected async transcribeSegment(
+    input: TranscribeSegmentInput,
+  ): Promise<TranscribeAudioOutput> {
+    const wavBuffer = buildWaveFile(input.samples, input.sampleRate);
+
+    const { text: transcript } = await sixtydbTranscribeAudio({
+      apiKey: this.apiKey,
+      blob: wavBuffer,
+      language: input.language,
+    });
+
+    return {
+      text: transcript,
+      metadata: {
+        inferenceDevice: "API • 60db",
         modelSize: null,
         transcriptionMode: "api",
       },
