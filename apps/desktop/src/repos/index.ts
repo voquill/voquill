@@ -58,6 +58,7 @@ import {
   DeepgramModelProviderRepo,
   DeepSeekModelProviderRepo,
   ElevenLabsModelProviderRepo,
+  SixtyDBModelProviderRepo,
   GeminiModelProviderRepo,
   GroqModelProviderRepo,
   OllamaModelProviderRepo,
@@ -101,6 +102,7 @@ import {
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
   ElevenLabsTranscribeAudioRepo,
+  SixtyDBTranscribeAudioRepo,
   EnterpriseTranscribeAudioRepo,
   GeminiTranscribeAudioRepo,
   GroqTranscribeAudioRepo,
@@ -447,6 +449,8 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
         baseUrl,
         model || "Systran/faster-whisper-large-v3",
       );
+    } else if (prefs.provider === "sixtydb") {
+      repo = new SixtyDBTranscribeAudioRepo(prefs.apiKeyValue);
     } else if (prefs.provider === "elevenlabs") {
       repo = new ElevenLabsTranscribeAudioRepo(prefs.apiKeyValue);
     } else if (prefs.provider === "deepgram") {
@@ -510,6 +514,8 @@ export const getModelProviderRepo = (
       return new AldeaModelProviderRepo();
     case "assemblyai":
       return new AssemblyAIModelProviderRepo();
+    case "sixtydb":
+      return new SixtyDBModelProviderRepo();
     case "elevenlabs":
       return new ElevenLabsModelProviderRepo();
     case "deepgram":

@@ -434,6 +434,24 @@ export class AldeaModelProviderRepo extends BaseModelProviderRepo {
   }
 }
 
+export class SixtyDBModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return false;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return true;
+  }
+
+  async getGenerativeTextModels(): Promise<string[]> {
+    return [];
+  }
+
+  async getTranscriptionModels(): Promise<string[]> {
+    return [];
+  }
+}
+
 export class AssemblyAIModelProviderRepo extends BaseModelProviderRepo {
   supportsGenerativeTextModels(): boolean {
     return false;

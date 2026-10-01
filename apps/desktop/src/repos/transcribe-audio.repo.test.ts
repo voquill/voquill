@@ -1,10 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INITIAL_APP_STATE } from "../state/app.state";
 import { setAppState } from "../store";
-import { getTranscribeAudioRepo } from ".";
+import { getTranscribeAudioRepo, getModelProviderRepo } from ".";
+import {
+  sixtydbTranscribeAudio,
+  sixtydbTestIntegration,
+} from "@voquill/voice-ai";
+import {
+  BatchTranscriptionSession,
+  createTranscriptionSession,
+} from "../sessions";
+import { getTranscriptionPrefs } from "../utils/user.utils";
 import {
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
+  SixtyDBTranscribeAudioRepo,
   TranscribeAudioOutput,
   TranscribeSegmentInput,
 } from "./transcribe-audio.repo";
@@ -350,5 +360,193 @@ describe("DeepgramTranscribeAudioRepo", () => {
 
     expect(repo).toBeInstanceOf(DeepgramTranscribeAudioRepo);
     expect(apiKeyId).toBe("deepgram-key");
+  });
+});
+
+describe("60db transcription", () => {
+  it("uploads long recordings sequentially and merges overlapping transcripts", async () => {
+    let active = 0;
+    let maximum = 0;
+    const sizes: number[] = [];
+    const texts = ["hello shared words", "shared words goodbye"];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      active++;
+      maximum = Math.max(maximum, active);
+      const form = init?.body;
+      if (!(form instanceof FormData))
+        throw new Error("Expected multipart audio");
+      const file = form.get("file") as File;
+      sizes.push(file.size);
+      await Promise.resolve();
+      active--;
+      return Response.json({ text: texts[sizes.length - 1] });
+    });
+    const result = await new SixtyDBTranscribeAudioRepo("key").transcribeAudio({
+      samples: createSamples(70, 16000),
+      sampleRate: 16000,
+    });
+    expect(maximum).toBe(1);
+    expect(sizes).toEqual([60 * 16000 * 2 + 44, 15 * 16000 * 2 + 44]);
+    expect(result.text).toBe("hello shared words goodbye");
+  });
+
+  it("rejects invalid JSON without returning a transcript", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not JSON"));
+    await expect(
+      sixtydbTranscribeAudio({ apiKey: "key", blob: new ArrayBuffer(2) }),
+    ).rejects.toThrow();
+  });
+
+  it("routes the selected key through batch transcription and multipart WAV", async () => {
+    const state = structuredClone(INITIAL_APP_STATE);
+    state.settings.aiTranscription.mode = "api";
+    state.settings.aiTranscription.selectedApiKeyId = "60db-key";
+    state.apiKeyById["60db-key"] = {
+      id: "60db-key",
+      name: "Workspace",
+      provider: "sixtydb",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      keyFull: " workspace-key ",
+    };
+    setAppState(state, true);
+    const { repo, apiKeyId } = getTranscribeAudioRepo();
+    expect(repo).toBeInstanceOf(SixtyDBTranscribeAudioRepo);
+    expect(apiKeyId).toBe("60db-key");
+    expect(getModelProviderRepo("sixtydb").supportsTranscriptionModels()).toBe(
+      true,
+    );
+    expect(getModelProviderRepo("sixtydb").supportsGenerativeTextModels()).toBe(
+      false,
+    );
+    const session = createTranscriptionSession(getTranscriptionPrefs(state));
+    expect(session).toBeInstanceOf(BatchTranscriptionSession);
+    expect(session.supportsStreaming()).toBe(false);
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ text: "hello caller" }));
+    const result = await repo.transcribeAudio({
+      samples: createSamples(1, 16000),
+      sampleRate: 16000,
+      language: "en-US",
+    });
+    expect(result).toMatchObject({
+      text: "hello caller",
+      metadata: {
+        inferenceDevice: "API • 60db",
+        modelSize: null,
+        transcriptionMode: "api",
+      },
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.60db.ai/stt");
+    expect(init?.headers).toEqual({ Authorization: "Bearer workspace-key" });
+    expect(init?.redirect).toBe("error");
+    const form = init?.body as FormData;
+    expect(form.get("language")).toBe("en");
+    expect(form.has("model")).toBe(false);
+    const file = form.get("file") as File;
+    expect(file.name).toBe("audio.wav");
+    expect(file.type).toBe("audio/wav");
+    const wav = new Uint8Array(await file.arrayBuffer());
+    expect(new TextDecoder().decode(wav.subarray(0, 4))).toBe("RIFF");
+    expect(wav.length).toBeGreaterThan(32000);
+    const serialized = new Request(String(url), init);
+    expect(serialized.headers.get("Content-Type")).toContain(
+      "multipart/form-data; boundary=",
+    );
+    expect((await serialized.formData()).get("language")).toBe("en");
+  });
+
+  it("preserves Buffer slice boundaries, omits automatic language and accepts silence", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        Response.json({ text: "", warning_codes: ["no_speech_detected"] }),
+      );
+    const backing = Buffer.from([99, 1, 2, 3, 88]);
+    const result = await sixtydbTranscribeAudio({
+      apiKey: "key",
+      blob: backing.subarray(1, 4),
+      language: "auto",
+    });
+    expect(result).toEqual({ text: "", wordsUsed: 0 });
+    const form = fetchMock.mock.calls[0]![1]!.body as FormData;
+    expect(form.has("language")).toBe(false);
+    expect([
+      ...new Uint8Array(await (form.get("file") as File).arrayBuffer()),
+    ]).toEqual([1, 2, 3]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([401, 402, 429, 503])(
+    "does not retry HTTP %s or expose response contents",
+    async (status) => {
+      const fetchMock = vi
+        .spyOn(globalThis, "fetch")
+        .mockResolvedValue(new Response("private detail", { status }));
+      await expect(
+        sixtydbTranscribeAudio({
+          apiKey: "secret-key",
+          blob: new ArrayBuffer(2),
+        }),
+      ).rejects.toThrow(`status ${status}`);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    null,
+    [],
+    {},
+    { text: null },
+    { text: 5 },
+    { text: "bad", success: false },
+    { text: "bad", error_code: "FAILED" },
+  ])("rejects malformed or application error response %j", async (body) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json(body));
+    await expect(
+      sixtydbTranscribeAudio({ apiKey: "key", blob: new ArrayBuffer(2) }),
+    ).rejects.toThrow("invalid transcript");
+  });
+
+  it("propagates network and timeout failures without retries", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new DOMException("Request timed out", "TimeoutError"));
+    await expect(
+      sixtydbTranscribeAudio({ apiKey: "key", blob: new ArrayBuffer(2) }),
+    ).rejects.toThrow("Request timed out");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![1]!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("rejects missing keys and invalid upload sizes before networking", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    await expect(
+      sixtydbTranscribeAudio({ apiKey: " ", blob: new ArrayBuffer(2) }),
+    ).rejects.toThrow("key is required");
+    for (const size of [0, 10_000_001]) {
+      await expect(
+        sixtydbTranscribeAudio({ apiKey: "key", blob: new ArrayBuffer(size) }),
+      ).rejects.toThrow("at most 10 MB");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks credentials without submitting audio", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(Response.json({ voices: [] }));
+    expect(await sixtydbTestIntegration({ apiKey: " key " })).toBe(true);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.60db.ai/voices");
+    expect(init?.headers).toEqual({ Authorization: "Bearer key" });
+    expect(init?.body).toBeUndefined();
+    fetchMock.mockResolvedValue(
+      new Response("private details", { status: 401 }),
+    );
+    await expect(sixtydbTestIntegration({ apiKey: "key" })).rejects.toThrow(
+      "status 401",
+    );
   });
 });
