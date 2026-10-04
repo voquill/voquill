@@ -9,6 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  characters: ^1.4.1
   draft: ^0.0.12
   equatable: ^2.0.7
   flutter_zustand: ^0.0.5
