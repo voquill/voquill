@@ -1,0 +1,20 @@
+name: Path filter audit
+
+# Checks that every workflow's `on.*.paths` list still covers the workspace
+# packages its projects depend on (and flags directories listed without `/**`
+# or references to deleted workflow files). Findings show as warnings on the
+# PR; it never fails the build.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Continuous-Actions/dynamic-monorepo@v1
+        with:
+          audit: warn
