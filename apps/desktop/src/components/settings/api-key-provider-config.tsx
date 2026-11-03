@@ -6,6 +6,7 @@ import {
   azureOpenAITestIntegration,
   azureTestIntegration,
   cerebrasTestIntegration,
+  cheaperinferenceTestIntegration,
   claudeTestIntegration,
   deepgramTestIntegration,
   deepseekTestIntegration,
@@ -17,6 +18,7 @@ import {
   openrouterTestIntegration,
   xaiTestIntegration,
 } from "@voquill/voice-ai";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { FormattedMessage } from "react-intl";
 import type { SettingsApiKey } from "../../state/settings.state";
 import {
@@ -97,6 +99,11 @@ const STANDARD_PROVIDERS: Record<
   claude: { displayName: "Claude", testFn: claudeTestIntegration },
   cerebras: { displayName: "Cerebras", testFn: cerebrasTestIntegration },
   xai: { displayName: "xAI Grok", testFn: xaiTestIntegration },
+  cheaperinference: {
+    displayName: "Cheaper Inference",
+    testFn: (args) =>
+      cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
 };
 
 function buildStandardConfig(provider: string): ProviderFormConfig {

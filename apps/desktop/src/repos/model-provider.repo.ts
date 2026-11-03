@@ -1,6 +1,8 @@
 import {
   AZURE_OPENAI_MODELS,
   CEREBRAS_MODELS,
+  CHEAPER_INFERENCE_BASE_URL,
+  CHEAPER_INFERENCE_MODELS,
   CLAUDE_MODELS,
   DEEPGRAM_TRANSCRIPTION_MODELS,
   DEEPSEEK_MODELS,
@@ -191,6 +193,35 @@ export class CerebrasModelProviderRepo extends BaseModelProviderRepo {
   ): Promise<string[]> {
     const fetched = await this.fetchModels(options);
     return fetched.length > 0 ? fetched : [...CEREBRAS_MODELS];
+  }
+
+  async getTranscriptionModels(): Promise<string[]> {
+    return [];
+  }
+}
+
+export class CheaperInferenceModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return false;
+  }
+
+  private async fetchModels(options: FetchModelsOptions): Promise<string[]> {
+    if (!options.apiKey) return [];
+    return fetchOpenAICompatibleModels(
+      `${CHEAPER_INFERENCE_BASE_URL}/models`,
+      options.apiKey,
+    );
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    const fetched = await this.fetchModels(options);
+    return fetched.length > 0 ? fetched : [...CHEAPER_INFERENCE_MODELS];
   }
 
   async getTranscriptionModels(): Promise<string[]> {
