@@ -294,7 +294,8 @@ export const getTranscriptionPrefs = (state: AppState): TranscriptionPrefs => {
     const noKeyRequired =
       provider === "speaches" ||
       provider === "ollama" ||
-      provider === "openai-compatible";
+      provider === "openai-compatible" ||
+      provider === "litellm";
     if (apiKey || noKeyRequired) {
       return {
         mode: "api",
@@ -389,7 +390,9 @@ const getGenPrefsInternal = ({
     const selectedApiKey = getRec(state.apiKeyById, config.selectedApiKeyId);
     const provider = selectedApiKey?.provider;
     const noKeyRequired =
-      provider === "ollama" || provider === "openai-compatible";
+      provider === "ollama" ||
+      provider === "openai-compatible" ||
+      provider === "litellm";
     if (apiKey || noKeyRequired) {
       return {
         mode: "api",
