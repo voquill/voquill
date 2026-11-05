@@ -32,6 +32,7 @@ import {
   BaseGenerateTextRepo,
   CerebrasGenerateTextRepo,
   CheaperInferenceGenerateTextRepo,
+  CheapaimodelGenerateTextRepo,
   ClaudeGenerateTextRepo,
   CloudGenerateTextRepo,
   DeepseekGenerateTextRepo,
@@ -56,6 +57,7 @@ import {
   BaseModelProviderRepo,
   CerebrasModelProviderRepo,
   CheaperInferenceModelProviderRepo,
+  CheapaimodelModelProviderRepo,
   ClaudeModelProviderRepo,
   DeepgramModelProviderRepo,
   DeepSeekModelProviderRepo,
@@ -350,6 +352,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "cheapaimodel") {
+      getLogger().verbose("Configuring cheapaimodel repo for generate text");
+      repo = new CheapaimodelGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else {
       getLogger().verbose("Configuring Groq repo for generate text");
       repo = new GroqGenerateTextRepo(
@@ -504,6 +512,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "cheapaimodel":
+      return new CheapaimodelModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
