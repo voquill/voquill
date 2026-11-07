@@ -29,6 +29,7 @@ import {
 import { EnterpriseRepo } from "./enterprise.repo";
 import {
   AzureOpenAIGenerateTextRepo,
+  ApiRouteGenerateTextRepo,
   BaseGenerateTextRepo,
   CerebrasGenerateTextRepo,
   CheaperInferenceGenerateTextRepo,
@@ -51,6 +52,7 @@ import {
 } from "./member.repo";
 import {
   AldeaModelProviderRepo,
+  ApiRouteModelProviderRepo,
   AssemblyAIModelProviderRepo,
   AzureModelProviderRepo,
   BaseModelProviderRepo,
@@ -342,6 +344,11 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "api-route") {
+      repo = new ApiRouteGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else if (prefs.provider === "cheaperinference") {
       getLogger().verbose(
         "Configuring Cheaper Inference repo for generate text",
@@ -504,6 +511,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "api-route":
+      return new ApiRouteModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
