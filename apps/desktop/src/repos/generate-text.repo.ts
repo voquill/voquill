@@ -7,6 +7,8 @@ import type {
   OpenRouterProviderRouting,
 } from "@voquill/types";
 import {
+  API_ROUTE_BASE_URL,
+  API_ROUTE_DEFAULT_MODEL,
   azureOpenAIGenerateText,
   azureOpenaiStreamChat,
   claudeGenerateTextResponse,
@@ -488,6 +490,20 @@ export class CerebrasGenerateTextRepo extends BaseGenerateTextRepo {
       model: this.model,
       input,
     });
+  }
+}
+
+export class ApiRouteGenerateTextRepo extends OpenAICompatibleGenerateTextRepo {
+  constructor(apiKey: string, model: string | null) {
+    super(API_ROUTE_BASE_URL, model || API_ROUTE_DEFAULT_MODEL, apiKey.trim());
+  }
+
+  async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
+    const output = await super.generateText(input);
+    return {
+      ...output,
+      metadata: { ...output.metadata, inferenceDevice: "API • API Route" },
+    };
   }
 }
 

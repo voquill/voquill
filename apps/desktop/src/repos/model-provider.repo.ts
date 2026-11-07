@@ -1,4 +1,5 @@
 import {
+  API_ROUTE_BASE_URL,
   AZURE_OPENAI_MODELS,
   CEREBRAS_MODELS,
   CHEAPER_INFERENCE_BASE_URL,
@@ -420,6 +421,30 @@ export class SpeachesModelProviderRepo extends BaseModelProviderRepo {
       .map((m) => (m.id ?? "").trim())
       .filter(Boolean)
       .sort();
+  }
+}
+
+export class ApiRouteModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return false;
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    if (!options.apiKey?.trim()) return [];
+    return fetchOpenAICompatibleModels(
+      `${API_ROUTE_BASE_URL}/models`,
+      options.apiKey.trim(),
+    );
+  }
+
+  async getTranscriptionModels(): Promise<string[]> {
+    return [];
   }
 }
 

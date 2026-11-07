@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { ApiKeyProvider } from "@voquill/types";
 import {
   aldeaTestIntegration,
+  apiRouteTestIntegration,
   assemblyaiTestIntegration,
   azureOpenAITestIntegration,
   azureTestIntegration,
@@ -103,6 +104,11 @@ const STANDARD_PROVIDERS: Record<
     displayName: "Cheaper Inference",
     testFn: (args) =>
       cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
+  "api-route": {
+    displayName: "API Route",
+    testFn: (args) =>
+      apiRouteTestIntegration({ ...args, customFetch: tauriFetch }),
   },
 };
 
