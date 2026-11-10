@@ -2,6 +2,7 @@ import type { CloudModel } from "@voquill/functions";
 import type { ApiKeyProvider } from "@voquill/types";
 import { Nullable } from "@voquill/types";
 import { getRec } from "@voquill/utilities";
+import { buildLiteLLMApiUrl } from "@voquill/voice-ai";
 import { getAppState } from "../store";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
 import { getLogger } from "../utils/log.utils";
@@ -56,6 +57,7 @@ import {
   BaseModelProviderRepo,
   CerebrasModelProviderRepo,
   CheaperInferenceModelProviderRepo,
+  LiteLLMModelProviderRepo,
   ClaudeModelProviderRepo,
   DeepgramModelProviderRepo,
   DeepSeekModelProviderRepo,
@@ -284,6 +286,22 @@ const getGenTextRepoInternal = ({
           "No model configured for OpenAI Compatible post-processing.",
         );
       }
+    } else if (prefs.provider === "litellm") {
+      const apiKeyRecord = getRec(state.apiKeyById, prefs.apiKeyId);
+      const model = prefs.postProcessingModel;
+      getLogger().verbose(
+        `Configuring LiteLLM repo for generate text with model=${model}`,
+      );
+      if (model) {
+        repo = new OpenAICompatibleGenerateTextRepo(
+          buildLiteLLMApiUrl(apiKeyRecord?.baseUrl),
+          model,
+          apiKeyRecord?.keyFull || undefined,
+          "LiteLLM",
+        );
+      } else {
+        prefs.warnings.push("No model configured for LiteLLM post-processing.");
+      }
     } else if (prefs.provider === "openrouter") {
       // Get OpenRouter-specific config from the API key
       const apiKey = getRec(state.apiKeyById, prefs.apiKeyId);
@@ -444,6 +462,20 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
         model,
         providerApiKey,
       );
+    } else if (prefs.provider === "litellm") {
+      const state = getAppState();
+      const apiKeyRecord = getRec(state.apiKeyById, prefs.apiKeyId);
+      if (!prefs.transcriptionModel) {
+        prefs.warnings.push(
+          "No model configured for LiteLLM transcription. Using whisper-1.",
+        );
+      }
+      repo = new OpenAICompatibleTranscribeAudioRepo(
+        buildLiteLLMApiUrl(apiKeyRecord?.baseUrl),
+        prefs.transcriptionModel || "whisper-1",
+        apiKeyRecord?.keyFull || undefined,
+        "LiteLLM",
+      );
     } else if (prefs.provider === "speaches") {
       const state = getAppState();
       const apiKeyRecord = getRec(state.apiKeyById, prefs.apiKeyId);
@@ -504,6 +536,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "litellm":
+      return new LiteLLMModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":

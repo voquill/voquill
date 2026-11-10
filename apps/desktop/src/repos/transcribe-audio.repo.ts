@@ -689,12 +689,19 @@ export class OpenAICompatibleTranscribeAudioRepo extends BaseTranscribeAudioRepo
   private baseUrl: string;
   private model: string;
   private apiKey?: string;
+  private providerName: string;
 
-  constructor(baseUrl: string, model: string, apiKey?: string) {
+  constructor(
+    baseUrl: string,
+    model: string,
+    apiKey?: string,
+    providerName = "OpenAI Compatible",
+  ) {
     super();
     this.baseUrl = baseUrl;
     this.model = model;
     this.apiKey = apiKey;
+    this.providerName = providerName;
   }
 
   protected getSegmentDurationSec(): number {
@@ -727,7 +734,7 @@ export class OpenAICompatibleTranscribeAudioRepo extends BaseTranscribeAudioRepo
     return {
       text: transcript,
       metadata: {
-        inferenceDevice: "API • OpenAI Compatible",
+        inferenceDevice: `API • ${this.providerName}`,
         modelSize: this.model,
         transcriptionMode: "api",
       },
