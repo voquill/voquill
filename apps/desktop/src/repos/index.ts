@@ -42,6 +42,7 @@ import {
   OpenAICompatibleGenerateTextRepo,
   OpenAIGenerateTextRepo,
   OpenRouterGenerateTextRepo,
+  UberLLMGenerateTextRepo,
 } from "./generate-text.repo";
 import { BaseHotkeyRepo, LocalHotkeyRepo } from "./hotkey.repo";
 import {
@@ -67,6 +68,7 @@ import {
   OpenAIModelProviderRepo,
   OpenRouterModelProviderRepo,
   SpeachesModelProviderRepo,
+  UberLLMModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
 import {
@@ -350,6 +352,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "uberllm") {
+      getLogger().verbose("Configuring UberLLM repo for generate text");
+      repo = new UberLLMGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else {
       getLogger().verbose("Configuring Groq repo for generate text");
       repo = new GroqGenerateTextRepo(
@@ -504,6 +512,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "uberllm":
+      return new UberLLMModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
