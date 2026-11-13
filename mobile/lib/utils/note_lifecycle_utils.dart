@@ -35,7 +35,12 @@ const _transitions = <LocalNotePhase, Map<LocalNoteEvent, LocalNotePhase>>{
     LocalNoteEvent.fail: LocalNotePhase.failed,
   },
   LocalNotePhase.failed: {LocalNoteEvent.retry: LocalNotePhase.pendingUpload},
-  LocalNotePhase.ready: {},
+  // Ready locally means the server finished but some segment audio stays on
+  // the device (it failed to transcribe); it can be retried or extended.
+  LocalNotePhase.ready: {
+    LocalNoteEvent.retry: LocalNotePhase.pendingUpload,
+    LocalNoteEvent.resume: LocalNotePhase.recording,
+  },
 };
 
 /// The next phase for [event], or null when [event] is not valid in [phase].

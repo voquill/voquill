@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:app/model/note_model.dart';
 import 'package:app/utils/sse_utils.dart';
@@ -9,6 +10,10 @@ import 'package:http/http.dart' as http;
 const noteAudioContentType = 'audio/aac';
 
 const _quotaErrorCodes = {'word_quota_exceeded', 'audio_quota_exceeded'};
+const _uploadSessionExpiredCode = 'upload_session_expired';
+
+/// GCS requires every chunk but the last to be a multiple of 256 KiB.
+const _uploadChunkBytes = 32 * 256 * 1024;
 
 /// A failed Notes request. [statusCode] is null when the server could not be
 /// reached at all.
@@ -32,7 +37,8 @@ class NotesApiException implements Exception {
 
   bool get isNetwork => statusCode == null;
   bool get isQuota => _quotaErrorCodes.contains(code);
-  bool get isNotFound => statusCode == 404;
+  bool get isNoteNotFound => code == 'note_not_found';
+  bool get isUploadSessionExpired => code == _uploadSessionExpiredCode;
 
   /// Worth retrying later without user action.
   bool get isTransient {
@@ -88,10 +94,11 @@ class NotesApi {
   }) : _client = client ?? http.Client();
 
   final String baseUrl;
-  final Future<String?> Function() getIdToken;
+  final Future<String?> Function({bool forceRefresh}) getIdToken;
   final http.Client _client;
 
   static const _requestTimeout = Duration(seconds: 30);
+  static const _chunkTimeout = Duration(minutes: 5);
 
   Future<NotesPage> listNotes({int limit = 50, String? cursor}) async {
     final json = await _send(
@@ -145,6 +152,7 @@ class NotesApi {
     String segmentId, {
     required int durationMs,
     required int sizeBytes,
+    int? index,
   }) async {
     final json = await _send(
       'POST',
@@ -153,13 +161,14 @@ class NotesApi {
         'contentType': noteAudioContentType,
         'durationMs': durationMs,
         'sizeBytes': sizeBytes,
+        'index': ?index,
       },
     );
     return json['uploadUrl'] as String;
   }
 
-  /// Bytes the upload session already holds. Throws a 404/410
-  /// [NotesApiException] when the session expired.
+  /// Bytes the upload session already holds. An expired session throws
+  /// [NotesApiException.isUploadSessionExpired].
   Future<int> queryUploadOffset(String uploadUrl, int totalBytes) async {
     final response = await _guard(
       () => _client.put(
@@ -170,7 +179,8 @@ class NotesApi {
     return _uploadOffset(response, totalBytes);
   }
 
-  /// Streams [file] from [offset] to the session and returns the new offset.
+  /// Uploads [file] from [offset] in chunks; returns the offset the session
+  /// confirmed. A failed chunk loses at most one chunk of progress.
   Future<int> uploadBytes(
     String uploadUrl,
     File file, {
@@ -178,24 +188,34 @@ class NotesApi {
     required int totalBytes,
     void Function(int sentBytes)? onProgress,
   }) async {
-    final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl))
-      ..headers['Content-Type'] = noteAudioContentType
-      ..headers['Content-Range'] = 'bytes $offset-${totalBytes - 1}/$totalBytes'
-      ..contentLength = totalBytes - offset;
+    var current = offset;
+    while (current < totalBytes) {
+      final start = current;
+      final end = min(start + _uploadChunkBytes, totalBytes);
+      final request = http.StreamedRequest('PUT', Uri.parse(uploadUrl))
+        ..headers['Content-Type'] = noteAudioContentType
+        ..headers['Content-Range'] = 'bytes $start-${end - 1}/$totalBytes'
+        ..contentLength = end - start;
 
-    var sent = offset;
-    final body = file.openRead(offset, totalBytes).map((chunk) {
-      sent += chunk.length;
-      onProgress?.call(sent);
-      return chunk;
-    });
-    unawaited(request.sink.addStream(body).whenComplete(request.sink.close));
+      var sent = start;
+      final body = file.openRead(start, end).map((chunk) {
+        sent += chunk.length;
+        onProgress?.call(sent);
+        return chunk;
+      });
+      unawaited(request.sink.addStream(body).whenComplete(request.sink.close));
 
-    final response = await _guard(() async {
-      final streamed = await _client.send(request);
-      return http.Response.fromStream(streamed);
-    }, timeout: null);
-    return _uploadOffset(response, totalBytes);
+      final response = await _guard(() async {
+        final streamed = await _client.send(request);
+        return http.Response.fromStream(streamed);
+      }, timeout: _chunkTimeout);
+      current = _uploadOffset(response, totalBytes);
+      onProgress?.call(current);
+      if (current <= start && current < totalBytes) {
+        throw const NotesApiException.network('The upload made no progress.');
+      }
+    }
+    return current;
   }
 
   Future<Note> processNote(
@@ -310,8 +330,8 @@ class NotesApi {
     return query == null ? uri : uri.replace(queryParameters: query);
   }
 
-  Future<Map<String, String>> _headers() async {
-    final token = await getIdToken();
+  Future<Map<String, String>> _headers({bool forceRefresh = false}) async {
+    final token = await getIdToken(forceRefresh: forceRefresh);
     if (token == null) {
       throw const NotesApiException(
         statusCode: 401,
@@ -325,20 +345,27 @@ class NotesApi {
     };
   }
 
+  /// Sends a JSON request; a `401` is retried once with a refreshed token.
   Future<Map<String, dynamic>> _send(
     String method,
     String path, {
     Map<String, String>? query,
     Map<String, dynamic>? body,
   }) async {
-    final request = http.Request(method, _uri(path, query))
-      ..headers.addAll(await _headers());
-    if (body != null) request.body = jsonEncode(body);
+    Future<http.Response> attempt({required bool forceRefresh}) async {
+      final request = http.Request(method, _uri(path, query))
+        ..headers.addAll(await _headers(forceRefresh: forceRefresh));
+      if (body != null) request.body = jsonEncode(body);
+      return _guard(() async {
+        final streamed = await _client.send(request);
+        return http.Response.fromStream(streamed);
+      });
+    }
 
-    final response = await _guard(() async {
-      final streamed = await _client.send(request);
-      return http.Response.fromStream(streamed);
-    });
+    var response = await attempt(forceRefresh: false);
+    if (response.statusCode == 401) {
+      response = await attempt(forceRefresh: true);
+    }
     if (response.statusCode >= 400) throw _errorFrom(response);
     if (response.body.isEmpty) return const {};
     return jsonDecode(response.body) as Map<String, dynamic>;
@@ -354,9 +381,10 @@ class NotesApi {
           : RegExp(r'bytes=0-(\d+)').firstMatch(range);
       return match == null ? 0 : int.parse(match.group(1)!) + 1;
     }
+    final isExpired = status == 404 || status == 410;
     throw NotesApiException(
       statusCode: status,
-      code: 'upload_failed',
+      code: isExpired ? _uploadSessionExpiredCode : 'upload_failed',
       message: 'Audio upload failed ($status).',
     );
   }

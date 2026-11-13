@@ -431,4 +431,77 @@ void main() {
       expect(server.notes[_noteId]!['title'], 'AI title');
     },
   );
+
+  test('a ready note keeps only the audio of segments that failed', () async {
+    await seedStoppedNote(segmentIds: [_segmentA, _segmentB]);
+    server.failSegmentIds.add(_segmentB);
+    await boot();
+
+    final note = local()!;
+    expect(note.phase, LocalNotePhase.ready);
+    expect(note.segments.map((s) => s.id), [_segmentB]);
+    expect(note.segments.single.isUploaded, isFalse);
+    expect(audioExists(), isFalse);
+    expect(store.segmentFile(_noteId, '$_segmentB.aac').existsSync(), isTrue);
+    final view = buildNoteView(getAppState().notes, _noteId)!;
+    expect(view.state, NoteDisplayState.ready);
+    expect(view.failedSegmentError?.code, 'unsupported_audio');
+    expect(view.title, 'AI title');
+
+    server.failSegmentIds.clear();
+    await retryNote(_noteId);
+    expect(local(), isNull);
+    expect(server.callCount('UPLOAD'), 3);
+  });
+
+  test('all segments failing fails the note and keeps everything', () async {
+    await seedStoppedNote();
+    server.failSegmentIds.add(_segmentA);
+    await boot();
+    expect(local()!.phase, LocalNotePhase.failed);
+    expect(local()!.segments.single.isUploaded, isFalse);
+    expect(audioExists(), isTrue);
+  });
+
+  test('a processing note re-sends process after a restart', () async {
+    await seedStoppedNote();
+    server.networkFailures['get'] = 1;
+    await boot();
+    expect(local()!.phase, LocalNotePhase.processing);
+    await disposeNotes();
+
+    await boot();
+    expect(server.callCount('POST /v1/notes/$_noteId/process'), 2);
+    expect(local(), isNull);
+  });
+
+  test('recording creates the note on the server and syncs My notes', () async {
+    await boot();
+    final id = (await startNewNote())!;
+    await pumpEventQueue();
+    expect(server.notes[id]!['titleSource'], 'default');
+    expect(getAppState().notes.localNoteById[id]!.existsOnServer, isTrue);
+
+    await updateNotePersonalNotes(id, 'agenda');
+    await syncAllNotes();
+    expect(server.notes[id]!['personalNotes'], 'agenda');
+    expect(getAppState().notes.pendingEditById, isEmpty);
+  });
+
+  test('segments are uploaded with their index', () async {
+    await boot();
+    final id = (await startNewNote())!;
+    await File(recorder.path!).writeAsBytes(adtsFrames(5));
+    recorder.state = null;
+    await pauseRecording(id);
+    await disposeNotes();
+    await boot();
+    await resumeRecording(id);
+    await File(recorder.path!).writeAsBytes(adtsFrames(5));
+    await stopRecording(id);
+    await syncAllNotes();
+
+    final indexes = server.segments[id]!.values.map((s) => s['index']);
+    expect(indexes, [0, 1]);
+  });
 }

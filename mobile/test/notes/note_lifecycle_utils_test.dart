@@ -25,6 +25,9 @@ void main() {
       (LocalNotePhase.processing, LocalNoteEvent.fail): LocalNotePhase.failed,
       (LocalNotePhase.failed, LocalNoteEvent.retry):
           LocalNotePhase.pendingUpload,
+      (LocalNotePhase.ready, LocalNoteEvent.retry):
+          LocalNotePhase.pendingUpload,
+      (LocalNotePhase.ready, LocalNoteEvent.resume): LocalNotePhase.recording,
     };
 
     test('allows exactly the documented transitions', () {

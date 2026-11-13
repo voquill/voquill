@@ -43,7 +43,7 @@ void main() {
       final server = FakeNotesServer();
       final api = NotesApi(
         baseUrl: 'https://api.test',
-        getIdToken: () async => 't',
+        getIdToken: ({bool forceRefresh = false}) async => 't',
         client: server.client,
       );
       final events = await api.ask(question: 'What?').toList();
@@ -80,7 +80,7 @@ void main() {
       });
       final failing = NotesApi(
         baseUrl: 'https://api.test',
-        getIdToken: () async => 'ok',
+        getIdToken: ({bool forceRefresh = false}) async => 'ok',
         client: client,
       );
       await expectLater(
@@ -91,7 +91,7 @@ void main() {
       );
       final quota = NotesApi(
         baseUrl: 'https://api.test',
-        getIdToken: () async => 'quota',
+        getIdToken: ({bool forceRefresh = false}) async => 'quota',
         client: client,
       );
       await expectLater(

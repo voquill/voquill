@@ -46,6 +46,13 @@ class NoteView {
 
   NoteError? get error => local?.error ?? server?.error;
 
+  /// The note is ready but part of its audio could not be transcribed; that
+  /// audio is still on the device.
+  NoteError? get failedSegmentError =>
+      local?.phase == LocalNotePhase.ready && local!.segments.isNotEmpty
+      ? local!.error
+      : null;
+
   bool get canAsk => server?.hasTranscript ?? false;
 }
 
@@ -142,18 +149,32 @@ String formatNoteDuration(int ms) {
 
 const _genericNoteError = 'Something went wrong while processing this note.';
 
-/// Plain-language explanation for a failed note.
-String describeNoteError(NoteError? error) {
-  if (error == null) return _genericNoteError;
-  switch (error.code) {
-    case 'word_quota_exceeded':
-      return "You've used all of your free words for now. Upgrade to Pro to process this meeting.";
-    case 'no_audio':
-      return 'No audio was recorded for this note.';
-    default:
-      return error.message.isNotEmpty ? error.message : _genericNoteError;
-  }
-}
+/// User-facing text per server error code (server messages are for logs).
+const _noteErrorMessages = {
+  'word_quota_exceeded':
+      "You've used all of your free words for now. Upgrade to Pro to process this meeting.",
+  'audio_quota_exceeded':
+      "You've reached your monthly limit of meeting audio. It resets over the next days.",
+  'member_not_found':
+      'Your account is still being set up. Try again in a moment.',
+  'transcription_failed': 'The recording could not be transcribed right now.',
+  'unsupported_audio': 'Part of the recording could not be read.',
+  'audio_missing':
+      'The server no longer has this audio. Retry to upload it again.',
+  'generation_failed': 'The notes could not be written right now.',
+  'no_audio': 'No audio was recorded for this note.',
+  'note_not_found': 'This note was deleted on another device.',
+  'note_exists': 'This transcript could not be imported.',
+  'segment_too_large': 'This recording is too large to process.',
+  'segment_too_long': 'A single recording can be at most 4 hours long.',
+  'note_too_long': 'A note can contain at most 8 hours of audio.',
+  'too_many_segments': 'This note has too many recordings. Start a new note.',
+  'client_error': 'Something went wrong on this device.',
+};
+
+/// Plain-language explanation for a failed note or segment.
+String describeNoteError(NoteError? error) =>
+    _noteErrorMessages[error?.code] ?? _genericNoteError;
 
 bool isQuotaError(NoteError? error) =>
     error?.code == 'word_quota_exceeded' ||

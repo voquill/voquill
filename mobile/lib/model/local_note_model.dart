@@ -26,6 +26,10 @@ class LocalNoteSegment with EquatableMixin {
   /// File name inside the note's directory; never an absolute path because
   /// the iOS container path changes between app updates.
   final String fileName;
+
+  /// Position in the note; null when a resumed note's server segments were
+  /// unknown at recording time (the server then appends it).
+  final int? index;
   final int durationMs;
 
   /// The native recorder may still be appending to this file.
@@ -36,6 +40,7 @@ class LocalNoteSegment with EquatableMixin {
   const LocalNoteSegment({
     required this.id,
     required this.fileName,
+    this.index,
     this.durationMs = 0,
     this.isOpen = false,
     this.uploadUrl,
@@ -50,6 +55,7 @@ class LocalNoteSegment with EquatableMixin {
   List<Object?> get props => [
     id,
     fileName,
+    index,
     durationMs,
     isOpen,
     uploadUrl,

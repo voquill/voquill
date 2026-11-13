@@ -54,6 +54,9 @@ class FakeNotesServer {
   int processingPolls = 1;
   final _pollsLeft = <String, int>{};
   bool failProcessing = false;
+
+  /// Segments whose transcription fails with `unsupported_audio`.
+  final failSegmentIds = <String>{};
   bool dropUploadHalfway = false;
   int _sessionCounter = 0;
 
@@ -147,6 +150,25 @@ class FakeNotesServer {
                 'message': 'Bad audio',
               };
             } else {
+              final noteSegments = (segments[id] ?? {}).values;
+              for (final segment in noteSegments) {
+                final fails = failSegmentIds.contains(segment['id']);
+                segment['status'] = fails ? 'failed' : 'transcribed';
+                segment['error'] = fails
+                    ? {'code': 'unsupported_audio', 'message': 'Bad'}
+                    : null;
+                segment['transcript'] = fails
+                    ? null
+                    : {'text': 'hello', 'utterances': []};
+              }
+              if (noteSegments.isNotEmpty &&
+                  noteSegments.every((s) => s['status'] == 'failed')) {
+                note['status'] = 'failed';
+                note['error'] = {'code': 'unsupported_audio', 'message': 'Bad'};
+                return _json(200, {
+                  'note': _publicNote(note, withSegments: true),
+                });
+              }
               note['status'] = 'ready';
               note['generatedNotes'] = '# Summary';
               note['title'] = note['titleSource'] == 'user'
@@ -155,10 +177,6 @@ class FakeNotesServer {
               note['titleSource'] = note['titleSource'] == 'user'
                   ? 'user'
                   : 'ai';
-              for (final segment in (segments[id] ?? {}).values) {
-                segment['status'] = 'transcribed';
-                segment['transcript'] = {'text': 'hello', 'utterances': []};
-              }
             }
           }
           return _json(200, {'note': _publicNote(note, withSegments: true)});
@@ -222,7 +240,11 @@ class FakeNotesServer {
       final noteSegments = segments.putIfAbsent(id, () => {});
       noteSegments[segmentId] = {
         'id': segmentId,
-        'index': noteSegments[segmentId]?['index'] ?? noteSegments.length,
+        'index':
+            json['index'] ??
+            noteSegments[segmentId]?['index'] ??
+            noteSegments.length,
+        'error': null,
         'kind': 'audio',
         'status': 'uploading',
         'durationMs': json['durationMs'],
@@ -429,13 +451,13 @@ NotesServices fakeServices({
   return NotesServices(
     api: NotesApi(
       baseUrl: 'https://api.test',
-      getIdToken: () async => 'token',
+      getIdToken: ({bool forceRefresh = false}) async => 'token',
       client: server.client,
     ),
     store: LocalNoteStore(root),
     recorder: recorder,
     pollInterval: Duration.zero,
-    maxPollInterval: Duration.zero,
+    slowPollInterval: Duration.zero,
     retryDelays: const [],
   );
 }

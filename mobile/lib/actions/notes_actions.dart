@@ -29,8 +29,10 @@ class NotesServices {
     required this.api,
     required this.store,
     required this.recorder,
-    this.pollInterval = const Duration(seconds: 3),
-    this.maxPollInterval = const Duration(seconds: 15),
+    this.pollInterval = const Duration(seconds: 4),
+    this.slowPollInterval = const Duration(seconds: 30),
+    this.slowPollAfter = const Duration(minutes: 5),
+    this.reprocessAfter = const Duration(minutes: 10),
     this.retryDelays = const [
       Duration(seconds: 5),
       Duration(seconds: 15),
@@ -42,8 +44,13 @@ class NotesServices {
   final NotesApi api;
   final LocalNoteStore store;
   final NoteRecorder recorder;
+  /// Polling cadence from the contract: every few seconds, 30 s after five
+  /// minutes; `process` is sent again when a note stays processing for ten
+  /// minutes (the server's staleness window).
   final Duration pollInterval;
-  final Duration maxPollInterval;
+  final Duration slowPollInterval;
+  final Duration slowPollAfter;
+  final Duration reprocessAfter;
 
   /// Backoff for automatic retries after transient failures; empty disables
   /// them (tests drive retries explicitly).
@@ -57,6 +64,9 @@ int _retryAttempt = 0;
 Timer? _editFlushTimer;
 final _syncs = <String, Future<void>>{};
 final _watchingIds = <String>{};
+
+/// When this app session last sent `process` per note; absent after a launch.
+final _lastProcessAt = <String, DateTime>{};
 final _openNoteRequests = StreamController<String>.broadcast();
 
 /// Note ids the UI should open (Live Activity / notification taps).
@@ -233,6 +243,7 @@ Future<void> disposeNotes() async {
   }
   _syncs.clear();
   _watchingIds.clear();
+  _lastProcessAt.clear();
   produceAppState((draft) => draft.notes = const NotesState());
 }
 
@@ -348,7 +359,9 @@ Future<String?> startNewNote() async {
     createdAt: now.toUtc().toIso8601String(),
     phase: LocalNotePhase.recording,
   );
-  return await _startSegment(note, previous: null) ? note.id : null;
+  if (!await _startSegment(note, previous: null, index: 0)) return null;
+  unawaited(_createOnServer(services, note.id));
+  return note.id;
 }
 
 /// Records more audio into a note the server already finished.
@@ -356,8 +369,14 @@ Future<bool> resumeServerNote(String id) async {
   final services = _services;
   final view = buildNoteView(_notes, id);
   final server = view?.server;
-  if (services == null || server == null || view!.local != null) return false;
+  if (services == null || view == null || server == null) return false;
+  final local = view.local;
+  if (local != null && local.phase != LocalNotePhase.ready) return false;
   if (!await _ensureCanRecord()) return false;
+  if (local != null) {
+    return _startSegment(local, previous: local, index: _nextSegmentIndex(local));
+  }
+  final serverIndexes = server.segments?.map((s) => s.index);
   final note = LocalNote(
     id: id,
     title: view.title,
@@ -368,7 +387,22 @@ Future<bool> resumeServerNote(String id) async {
     priorDurationMs: server.durationMs,
     existsOnServer: true,
   );
-  return _startSegment(note, previous: null);
+  return _startSegment(
+    note,
+    previous: null,
+    index: serverIndexes == null
+        ? null
+        : serverIndexes.fold<int>(-1, max) + 1,
+  );
+}
+
+/// Next segment position, or null when it depends on server segments this
+/// device never saw (the server then appends).
+int? _nextSegmentIndex(LocalNote note) {
+  final local = note.segments.map((s) => s.index).toList();
+  if (local.isEmpty || local.contains(null)) return null;
+  final server = _notes.noteById[note.id]?.segments?.map((s) => s.index);
+  return [...local.whereType<int>(), ...?server].reduce(max) + 1;
 }
 
 /// Persists a new open segment, then starts the native recorder on it. On
@@ -376,12 +410,19 @@ Future<bool> resumeServerNote(String id) async {
 Future<bool> _startSegment(
   LocalNote note, {
   required LocalNote? previous,
+  required int? index,
 }) async {
   final services = _services!;
+  final phase = previous == null
+      ? LocalNotePhase.recording
+      : nextLocalNotePhase(previous.phase, LocalNoteEvent.resume);
+  if (phase == null) return false;
+
   final segmentId = const Uuid().v4();
   final segment = LocalNoteSegment(
     id: segmentId,
     fileName: '$segmentId.aac',
+    index: index,
     isOpen: true,
   );
   final file = services.store.segmentFile(note.id, segment.fileName);
@@ -391,7 +432,7 @@ Future<bool> _startSegment(
   final started =
       (note.draft()
             ..segments = [...note.segments, segment]
-            ..phase = LocalNotePhase.recording
+            ..phase = phase
             ..recordingStartedAt = DateTime.now().toUtc().toIso8601String()
             ..error = null)
           .save();
@@ -416,7 +457,7 @@ Future<bool> _startSegment(
       }
     });
     await _persist();
-    if (previous == null && !note.existsOnServer) {
+    if (previous == null) {
       await services.store.deleteNoteFiles(note.id);
     } else if (await file.exists()) {
       await file.delete();
@@ -426,6 +467,31 @@ Future<bool> _startSegment(
       type: SnackbarType.error,
     );
     return false;
+  }
+}
+
+/// Idempotent `PUT` creating the note; a no-op once the server has it.
+Future<void> _putNote(NotesServices services, String id) async {
+  final note = _local(id);
+  if (note == null || note.existsOnServer) return;
+  await services.api.putNote(
+    id,
+    title: note.titleSource == NoteTitleSource.ai ? null : note.title,
+    titleSource: note.titleSource,
+    personalNotes: note.personalNotes,
+    createdAt: note.createdAt,
+  );
+  _updateLocal(id, (n) => n.existsOnServer = true);
+  await _persist();
+}
+
+/// Creates the note while recording so My notes edits sync right away;
+/// offline it is sent again by [syncAllNotes] or at Stop.
+Future<void> _createOnServer(NotesServices services, String id) async {
+  try {
+    await _putNote(services, id);
+  } on NotesApiException catch (e) {
+    _logger.w('Note not created on server yet: ${e.code}');
   }
 }
 
@@ -471,7 +537,7 @@ Future<void> resumeRecording(String id) async {
     return;
   }
   final closed = await _closeOpenSegments(note!);
-  await _startSegment(closed, previous: closed);
+  await _startSegment(closed, previous: closed, index: _nextSegmentIndex(closed));
 }
 
 /// Finishes the meeting and queues it for upload and processing.
@@ -578,7 +644,8 @@ void _handleSyncFailure(
     _scheduleRetry();
     return;
   }
-  if (e.isNotFound) {
+  if (e.isNoteNotFound) {
+    // Deleted on another device: Retry recreates it from the local audio.
     _updateLocal(id, (note) {
       note.existsOnServer = false;
       for (final segment in note.segments) {
@@ -592,7 +659,7 @@ void _handleSyncFailure(
 }
 
 Future<void> _runSync(NotesServices services, String id) async {
-  var note = _local(id);
+  final note = _local(id);
   if (note == null) return;
   _setSyncStatus(id, const NoteSyncStatus());
 
@@ -611,8 +678,7 @@ Future<void> _runSync(NotesServices services, String id) async {
     await _persist();
   }
 
-  note = _local(id);
-  if (note?.phase == LocalNotePhase.processing) {
+  if (_local(id)?.phase == LocalNotePhase.processing) {
     await _pollLocalNote(services, id);
   }
 
@@ -626,6 +692,7 @@ String? _userTitle(LocalNote note) =>
 
 Future<Note> _sendImport(NotesServices services, LocalNote note) async {
   final transcript = await services.store.importFile(note.id).readAsString();
+  _lastProcessAt[note.id] = DateTime.now();
   return services.api.importNote(
     id: note.id,
     transcript: transcript,
@@ -635,43 +702,48 @@ Future<Note> _sendImport(NotesServices services, LocalNote note) async {
   );
 }
 
-Future<Note> _uploadAndProcess(NotesServices services, String id) async {
+/// `process` with the latest My notes (and the title only if the user set
+/// it, so an AI title can still replace a default one).
+Future<Note> _processLocalNote(NotesServices services, String id) {
   final note = _local(id)!;
-  await services.api.putNote(
-    id,
-    title: note.titleSource == NoteTitleSource.ai ? null : note.title,
-    titleSource: note.titleSource,
-    personalNotes: note.personalNotes,
-    createdAt: note.createdAt,
-  );
-  _updateLocal(id, (n) => n.existsOnServer = true);
-  await _persist();
+  _lastProcessAt[id] = DateTime.now();
+  return note.source == NoteSource.imported
+      ? _sendImport(services, note)
+      : services.api.processNote(
+          id,
+          title: _userTitle(note),
+          personalNotes: note.personalNotes,
+        );
+}
 
+Future<Note> _uploadAndProcess(NotesServices services, String id) async {
+  await _putNote(services, id);
   for (var attempt = 0; ; attempt++) {
     await _uploadSegments(services, id);
-    final current = _local(id)!;
     try {
-      return await services.api.processNote(
-        id,
-        title: _userTitle(current),
-        personalNotes: current.personalNotes,
-      );
+      return await _processLocalNote(services, id);
     } on NotesApiException catch (e) {
       final missing = (e.details?['segmentIds'] as List?)?.cast<String>();
       if (e.code != 'audio_missing' || missing == null || attempt > 0) rethrow;
-      _updateLocal(id, (n) {
-        for (final segment in n.segments.where((s) => missing.contains(s.id))) {
-          segment.isUploaded = false;
-          segment.uploadUrl = null;
-        }
-      });
+      _markForUpload(id, missing.contains);
       await _persist();
     }
   }
 }
 
+void _markForUpload(String id, bool Function(String segmentId) test) {
+  _updateLocal(id, (n) {
+    for (final segment in n.segments.where((s) => test(s.id))) {
+      segment.isUploaded = false;
+      segment.uploadUrl = null;
+    }
+  });
+}
+
 Future<void> _uploadSegments(NotesServices services, String id) async {
-  final pending = _local(id)!.segments.where((s) => !s.isUploaded).toList();
+  final pending = _local(id)!.segments
+      .where((s) => !s.isUploaded && !s.isOpen)
+      .toList();
   final sizes = <String, int>{};
   for (final segment in pending) {
     sizes[segment.id] = await services.store
@@ -691,52 +763,13 @@ Future<void> _uploadSegments(NotesServices services, String id) async {
 
   for (final segment in pending) {
     final size = sizes[segment.id]!;
-    final file = services.store.segmentFile(id, segment.fileName);
-    var uploadUrl = segment.uploadUrl;
-    var offset = 0;
-
-    if (uploadUrl != null) {
-      try {
-        offset = await services.api.queryUploadOffset(uploadUrl, size);
-      } on NotesApiException catch (e) {
-        if (e.statusCode != 404 && e.statusCode != 410) rethrow;
-        uploadUrl = null;
-      }
-    }
-    if (uploadUrl == null) {
-      try {
-        uploadUrl = await services.api.createSegmentUpload(
-          id,
-          segment.id,
-          durationMs: segment.durationMs,
-          sizeBytes: size,
-        );
-      } on NotesApiException catch (e) {
-        if (e.code != 'segment_transcribed') rethrow;
-        offset = size;
-      }
-      if (uploadUrl != null) {
-        final url = uploadUrl;
-        _updateLocal(id, (n) {
-          n.segments.firstWhere((s) => s.id == segment.id).uploadUrl = url;
-        });
-        await _persist();
-      }
-    }
-
-    if (offset < size) {
-      offset = await services.api.uploadBytes(
-        uploadUrl!,
-        file,
-        offset: offset,
-        totalBytes: size,
-        onProgress: (sent) => reportProgress(doneBytes + sent),
-      );
-      if (offset < size) {
-        throw const NotesApiException.network('The upload was cut off.');
-      }
-    }
-
+    await _uploadSegment(
+      services,
+      id,
+      segment.id,
+      size,
+      onProgress: (sent) => reportProgress(doneBytes + sent),
+    );
     doneBytes += size;
     reportProgress(doneBytes);
     _updateLocal(id, (n) {
@@ -746,61 +779,142 @@ Future<void> _uploadSegments(NotesServices services, String id) async {
   }
 }
 
-/// Polls with backoff while [isWanted] holds and the note is processing;
-/// returns the last copy seen, or null when polling was abandoned.
+/// Resumes the persisted upload session when possible; an expired session
+/// starts over with a new one.
+Future<void> _uploadSegment(
+  NotesServices services,
+  String noteId,
+  String segmentId,
+  int size, {
+  required void Function(int sentBytes) onProgress,
+}) async {
+  LocalNoteSegment current() =>
+      _local(noteId)!.segments.firstWhere((s) => s.id == segmentId);
+
+  for (var attempt = 0; ; attempt++) {
+    try {
+      var uploadUrl = current().uploadUrl;
+      var offset = 0;
+      if (uploadUrl != null) {
+        offset = await services.api.queryUploadOffset(uploadUrl, size);
+      } else {
+        try {
+          uploadUrl = await services.api.createSegmentUpload(
+            noteId,
+            segmentId,
+            durationMs: current().durationMs,
+            sizeBytes: size,
+            index: current().index,
+          );
+        } on NotesApiException catch (e) {
+          if (e.code == 'segment_transcribed') return;
+          rethrow;
+        }
+        final url = uploadUrl;
+        _updateLocal(noteId, (n) {
+          n.segments.firstWhere((s) => s.id == segmentId).uploadUrl = url;
+        });
+        await _persist();
+      }
+      if (offset < size) {
+        await services.api.uploadBytes(
+          uploadUrl,
+          services.store.segmentFile(noteId, current().fileName),
+          offset: offset,
+          totalBytes: size,
+          onProgress: onProgress,
+        );
+      }
+      return;
+    } on NotesApiException catch (e) {
+      if (!e.isUploadSessionExpired || attempt > 0) rethrow;
+      _markForUpload(noteId, (id) => id == segmentId);
+      await _persist();
+    }
+  }
+}
+
+/// Polls `GET /v1/notes/:id` while [isWanted] holds and the note is
+/// processing; returns the last copy seen, or null when abandoned. Sends
+/// [reprocess] when the note looks stale.
 Future<Note?> _pollWhileProcessing(
   NotesServices services,
-  String id,
-  bool Function() isWanted,
-) async {
-  var delay = services.pollInterval;
+  String id, {
+  required bool Function() isWanted,
+  required Future<Note> Function() reprocess,
+}) async {
+  final startedAt = DateTime.now();
   while (isWanted()) {
+    final lastProcess = _lastProcessAt[id];
+    if (lastProcess == null ||
+        DateTime.now().difference(lastProcess) >= services.reprocessAfter) {
+      _lastProcessAt[id] = DateTime.now();
+      final note = await reprocess();
+      _produceNotes((notes) => _storeServerNote(notes, note));
+    }
     final note = await services.api.getNote(id);
     _produceNotes((notes) => _storeServerNote(notes, note));
     if (note.status != NoteStatus.processing) return note;
-    await Future.delayed(delay);
-    final next = delay * 1.5;
-    delay = next > services.maxPollInterval ? services.maxPollInterval : next;
+    final isSlow =
+        DateTime.now().difference(startedAt) >= services.slowPollAfter;
+    await Future.delayed(
+      isSlow ? services.slowPollInterval : services.pollInterval,
+    );
   }
   return null;
 }
 
 Future<void> _pollLocalNote(NotesServices services, String id) async {
-  bool isWanted() => _local(id)?.phase == LocalNotePhase.processing;
   while (true) {
-    final note = await _pollWhileProcessing(services, id, isWanted);
-    if (note == null) return;
-    switch (note.status) {
+    final note = await _pollWhileProcessing(
+      services,
+      id,
+      isWanted: () => _local(id)?.phase == LocalNotePhase.processing,
+      reprocess: () => _processLocalNote(services, id),
+    );
+    switch (note?.status) {
+      case null:
+      case NoteStatus.processing:
+        return;
       case NoteStatus.ready:
         _transition(id, LocalNoteEvent.serverReady);
         await _persist();
         return;
       case NoteStatus.failed:
+        _markSegmentsNeedingUpload(id, note!);
         _transition(
           id,
           LocalNoteEvent.fail,
           (n) => n.error =
               note.error ??
-              const NoteError(code: 'processing_failed', message: ''),
+              const NoteError(code: 'internal_error', message: ''),
         );
         await _persist();
         return;
       case NoteStatus.draft:
-        final local = _local(id)!;
-        final processed = await services.api.processNote(
-          id,
-          title: _userTitle(local),
-          personalNotes: local.personalNotes,
-        );
-        _produceNotes((notes) => _storeServerNote(notes, processed));
-      case NoteStatus.processing:
-        return;
+        _lastProcessAt.remove(id);
     }
   }
 }
 
-/// The server holds the transcript and notes: make sure the full result is
-/// stored locally, then (and only then) delete the local audio.
+const _reuploadErrorCodes = {'unsupported_audio', 'audio_missing'};
+
+/// Segments the server could not use get uploaded again on Retry.
+void _markSegmentsNeedingUpload(String id, Note server) {
+  final ids = (server.segments ?? const <NoteSegment>[])
+      .where(
+        (s) =>
+            s.status == NoteSegmentStatus.failed &&
+            _reuploadErrorCodes.contains(s.error?.code),
+      )
+      .map((s) => s.id)
+      .toSet();
+  _markForUpload(id, ids.contains);
+}
+
+/// The server finished: store the full result, then delete the audio of
+/// every segment it transcribed, and only that. Segments that failed stay on
+/// the device (the note remains `ready` locally) until a Retry succeeds.
 Future<void> _finalizeReadyNote(NotesServices services, String id) async {
   var server = _notes.noteById[id];
   if (server?.status != NoteStatus.ready || server?.segments == null) {
@@ -808,13 +922,51 @@ Future<void> _finalizeReadyNote(NotesServices services, String id) async {
     final fetched = server;
     _produceNotes((notes) => _storeServerNote(notes, fetched));
   }
-  if (server!.status != NoteStatus.ready) return;
+  final ready = server!;
+  if (ready.status != NoteStatus.ready) return;
   await _saveCache();
-  await services.store.deleteNoteFiles(id);
-  _produceNotes((notes) {
-    notes.localNoteById.remove(id);
-    notes.syncById.remove(id);
+
+  final serverSegments = {for (final s in ready.segments!) s.id: s};
+  final local = _local(id)!;
+  final remaining = <LocalNoteSegment>[];
+  for (final segment in local.segments) {
+    if (serverSegments[segment.id]?.status == NoteSegmentStatus.transcribed) {
+      final file = services.store.segmentFile(id, segment.fileName);
+      if (await file.exists()) await file.delete();
+    } else {
+      remaining.add(segment);
+    }
+  }
+
+  if (remaining.isEmpty) {
+    await services.store.deleteNoteFiles(id);
+    _produceNotes((notes) {
+      notes.localNoteById.remove(id);
+      notes.syncById.remove(id);
+    });
+    await _persist();
+    return;
+  }
+
+  final failed = remaining
+      .map((s) => serverSegments[s.id])
+      .whereType<NoteSegment>()
+      .where((s) => s.status == NoteSegmentStatus.failed)
+      .toList();
+  _updateLocal(id, (n) {
+    n.segments = remaining;
+    n.title = ready.title;
+    n.titleSource = ready.titleSource;
+    n.priorDurationMs = ready.durationMs - remaining.fold(0, (a, s) => a + s.durationMs);
+    n.error =
+        failed.firstOrNull?.error ??
+        const NoteError(code: 'internal_error', message: '');
   });
+  _markSegmentsNeedingUpload(id, ready);
+  if (failed.length < remaining.length) {
+    // Audio the server never processed: send it again.
+    _transition(id, LocalNoteEvent.retry);
+  }
   await _persist();
 }
 
@@ -863,6 +1015,7 @@ Future<void> regenerateNote(String id) async {
 Future<void> _runServerAction(Future<Note> Function() action) async {
   try {
     final note = await action();
+    _lastProcessAt[note.id] = DateTime.now();
     _produceNotes((notes) => _storeServerNote(notes, note));
     unawaited(watchServerNote(note.id));
   } on NotesApiException catch (e) {
@@ -882,7 +1035,8 @@ Future<void> watchServerNote(String id) async {
     await _pollWhileProcessing(
       services,
       id,
-      () => _services == services && _local(id) == null,
+      isWanted: () => _services == services && _local(id) == null,
+      reprocess: () => services.api.processNote(id),
     );
   } on NotesApiException catch (e) {
     _logger.w('Stopped watching note: ${e.code}');
