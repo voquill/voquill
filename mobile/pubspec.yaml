@@ -49,6 +49,7 @@ dependencies:
   record: ^6.2.0
   smooth_page_indicator: ^1.2.0+3
   flutter_card_swiper: ^7.0.2
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:
