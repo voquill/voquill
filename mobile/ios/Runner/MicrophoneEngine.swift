@@ -12,6 +12,10 @@ protocol MicrophoneConsumer: AnyObject {
 /// The app's single microphone capture. Dictation and meeting notes attach as
 /// consumers of one input tap, so a meeting keeps recording while the user
 /// dictates and both share one audio session.
+enum MicrophoneEngineError: Error {
+    case noInput
+}
+
 final class MicrophoneEngine {
     static let shared = MicrophoneEngine()
 
@@ -84,16 +88,23 @@ final class MicrophoneEngine {
 
     private func startEngine() throws {
         let engine = self.engine ?? AVAudioEngine()
-        installTap(on: engine)
+        try installTap(on: engine)
         engine.prepare()
         try engine.start()
         self.engine = engine
     }
 
-    private func installTap(on engine: AVAudioEngine) {
+    /// While the session is switching routes or categories the input can
+    /// report 0 channels or 0 Hz; installing a tap on that raises an
+    /// exception, so it counts as "no input yet".
+    private func installTap(on engine: AVAudioEngine) throws {
         let input = engine.inputNode
+        let format = input.outputFormat(forBus: 0)
+        guard format.channelCount > 0, format.sampleRate > 0 else {
+            throw MicrophoneEngineError.noInput
+        }
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4096, format: input.outputFormat(forBus: 0)) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self = self else { return }
             for consumer in self.snapshot() {
                 consumer.microphone(didReceive: buffer)
@@ -109,14 +120,15 @@ final class MicrophoneEngine {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
-    /// Restarts capture after an interruption or route change; false when iOS
-    /// refuses (e.g. starting the mic from the background is not allowed).
+    /// Restarts capture after an interruption or route change, re-applying
+    /// the session configuration in case something else changed it; false
+    /// when iOS refuses (starting the mic from the background, no input).
     private func restart() -> Bool {
         do {
-            try AVAudioSession.sharedInstance().setActive(true)
+            try configureSession()
             if let engine = engine {
                 engine.stop()
-                installTap(on: engine)
+                try installTap(on: engine)
                 engine.prepare()
                 try engine.start()
             } else {
@@ -126,6 +138,33 @@ final class MicrophoneEngine {
         } catch {
             NSLog("[VoquillApp] Microphone restart failed: %@", error.localizedDescription)
             return false
+        }
+    }
+
+    private static let restartRetryDelays: [TimeInterval] = [0.3, 1, 2]
+
+    /// A restart that fails right after a route or category change often
+    /// works a moment later. Consumers see an interruption that ends when a
+    /// retry succeeds (or ends unresumed after the last one).
+    private func restartWithRetries() {
+        if restart() { return }
+        snapshot().forEach { $0.microphoneInterruptionBegan() }
+        retryRestart(attempt: 0)
+    }
+
+    private func retryRestart(attempt: Int) {
+        guard attempt < MicrophoneEngine.restartRetryDelays.count else {
+            snapshot().forEach { $0.microphoneInterruptionEnded(resumed: false) }
+            if snapshot().isEmpty { stopEngine() }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + MicrophoneEngine.restartRetryDelays[attempt]) {
+            guard self.engine != nil, !self.snapshot().isEmpty else { return }
+            if self.restart() {
+                self.snapshot().forEach { $0.microphoneInterruptionEnded(resumed: true) }
+            } else {
+                self.retryRestart(attempt: attempt + 1)
+            }
         }
     }
 
@@ -144,6 +183,9 @@ final class MicrophoneEngine {
         center.addObserver(self, selector: #selector(handleConfigurationChange(_:)),
                            name: .AVAudioEngineConfigurationChange,
                            object: nil)
+        center.addObserver(self, selector: #selector(handleRouteChange(_:)),
+                           name: AVAudioSession.routeChangeNotification,
+                           object: AVAudioSession.sharedInstance())
     }
 
     private func stopObserving() {
@@ -180,12 +222,21 @@ final class MicrophoneEngine {
         NSLog("[VoquillApp] Audio engine configuration changed")
         DispatchQueue.main.async {
             guard self.engine != nil, !self.snapshot().isEmpty else { return }
-            if !self.restart() {
-                self.snapshot().forEach {
-                    $0.microphoneInterruptionBegan()
-                    $0.microphoneInterruptionEnded(resumed: false)
-                }
-            }
+            self.restartWithRetries()
+        }
+    }
+
+    /// Other code in the app (the onboarding video player) may switch the
+    /// session to playback while we record; take the category back.
+    @objc private func handleRouteChange(_ notification: Notification) {
+        guard let info = notification.userInfo,
+              let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              AVAudioSession.RouteChangeReason(rawValue: rawReason) == .categoryChange else { return }
+        DispatchQueue.main.async {
+            guard self.engine != nil, !self.snapshot().isEmpty,
+                  AVAudioSession.sharedInstance().category != .playAndRecord else { return }
+            NSLog("[VoquillApp] Audio session category changed while recording; restoring it")
+            self.restartWithRetries()
         }
     }
 

@@ -60,5 +60,16 @@ final class MicrophonePcmStream: NSObject, FlutterStreamHandler, MicrophoneConsu
 
     func microphoneInterruptionBegan() {}
 
-    func microphoneInterruptionEnded(resumed: Bool) {}
+    /// The engine could not get the microphone back (a call, Siri, a failed
+    /// restart): tell Dart instead of going silent, so the dictation page
+    /// can reopen the stream.
+    func microphoneInterruptionEnded(resumed: Bool) {
+        guard !resumed else { return }
+        DispatchQueue.main.async {
+            self.lock.lock()
+            let sink = self.sink
+            self.lock.unlock()
+            sink?(FlutterError(code: "MIC_INTERRUPTED", message: "The microphone was interrupted", details: nil))
+        }
+    }
 }

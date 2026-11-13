@@ -46,6 +46,8 @@ final class MeetingRecorder: MicrophoneConsumer {
         var segmentFrames: AVAudioFramePosition = 0
         var sessionFrames: AVAudioFramePosition = 0
         var buffersSinceSizeCheck = 0
+        var silentFrames: AVAudioFramePosition = 0
+        var isSilent = false
         let priorElapsedMs: Int
         let maxSegmentMs: Int
         let maxSegmentBytes: Int64
@@ -144,6 +146,8 @@ final class MeetingRecorder: MicrophoneConsumer {
         guard session != nil else { lock.unlock(); return nil }
         session?.isPaused = true
         session?.isPausedByInterruption = false
+        session?.silentFrames = 0
+        session?.isSilent = false
         lock.unlock()
         microphone.detach(self)
         updateLiveActivity()
@@ -189,9 +193,25 @@ final class MeetingRecorder: MicrophoneConsumer {
             "segmentId": session.segmentId,
             "isPaused": session.isPaused,
             "segmentElapsedMs": milliseconds(session.segmentFrames),
+            "isSilent": session.isSilent,
         ]
         if let reason = reason { map["reason"] = reason }
         return map
+    }
+
+    /// Peak under -78 dBFS for 20 s means the OS is feeding silence (a call,
+    /// another app holding the mic); returns true when that state changes.
+    private static func trackSilence(_ session: inout Session, _ buffer: AVAudioPCMBuffer) -> Bool {
+        guard let samples = buffer.floatChannelData?[0] else { return false }
+        var peak: Float = 0
+        for i in 0..<Int(buffer.frameLength) {
+            peak = max(peak, abs(samples[i]))
+        }
+        session.silentFrames = peak < 0.000125 ? session.silentFrames + AVAudioFramePosition(buffer.frameLength) : 0
+        let isSilent = milliseconds(session.silentFrames) >= 20_000
+        guard isSilent != session.isSilent else { return false }
+        session.isSilent = isSilent
+        return true
     }
 
     /// Checks the file size every ~100 buffers (about 8 s of audio); the
@@ -228,6 +248,7 @@ final class MeetingRecorder: MicrophoneConsumer {
                 let frames = AVAudioFramePosition(output.frameLength)
                 current.segmentFrames += frames
                 current.sessionFrames += frames
+                let silenceChanged = MeetingRecorder.trackSilence(&current, output)
 
                 if current.priorElapsedMs + MeetingRecorder.milliseconds(current.sessionFrames) >= current.maxNoteMs {
                     current.isPaused = true
@@ -242,6 +263,8 @@ final class MeetingRecorder: MicrophoneConsumer {
                     current.segmentFrames = 0
                     current.buffersSinceSizeCheck = 0
                     event = MeetingRecorder.stateMap(current, reason: "rollover")
+                } else if silenceChanged {
+                    event = MeetingRecorder.stateMap(current, reason: "silence")
                 }
                 session = current
             } catch {

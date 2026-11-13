@@ -141,11 +141,26 @@ Future<void> _startMicrophone(String sessionId) async {
       dictation.sendAudio(chunk);
       final level = computeAudioLevel(chunk);
       _mutateSession(sessionId, (s) => s.audioLevel = level);
-    }, onError: (Object e) => _logger.e('Microphone stream failed: $e'));
+    }, onError: (Object e) => _onMicrophoneFailed(sessionId, e));
   } catch (e) {
     _logger.e('Failed to start microphone: $e');
     runtime.microphoneReady = null;
     await runtime.disposeMicrophone();
+  }
+}
+
+/// The shared microphone stopped (a call, Siri, a failed restart): drop the
+/// stream so the next press reopens it, and say so if a dictation was
+/// running.
+void _onMicrophoneFailed(String sessionId, Object error) {
+  _logger.e('Microphone stream failed: $error');
+  final runtime = _runtimes[sessionId];
+  if (runtime == null) return;
+  final wasRecording = getAppState().remote.session(sessionId).isRecording;
+  unawaited(runtime.disposeMicrophone());
+  if (wasRecording) {
+    cancelRemoteRecording(sessionId);
+    showSnackbar('The microphone was interrupted. Tap to dictate again.');
   }
 }
 
