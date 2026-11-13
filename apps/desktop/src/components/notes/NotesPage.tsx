@@ -23,11 +23,13 @@ import {
   openNotesAsk,
   searchNotes,
 } from "../../actions/note.actions";
+import { syncCloudNotes } from "../../actions/note-sync.actions";
 import { useStartMeetingNote } from "../../hooks/note.hooks";
 import { useAppStore } from "../../store";
 import {
   getNoteGenerationAvailable,
   getSortedNoteIds,
+  selectNoteStorage,
 } from "../../utils/note.utils";
 import {
   extractSearchTerms,
@@ -44,11 +46,18 @@ export default function NotesPage() {
   const startMeetingNote = useStartMeetingNote();
   const noteIds = useAppStore(getSortedNoteIds);
   const loaded = useAppStore((state) => state.notes.loaded);
-  const generationAvailable = useAppStore(getNoteGenerationAvailable);
+  const generationAvailable = useAppStore(
+    (state) =>
+      selectNoteStorage(state) === "cloud" || getNoteGenerationAvailable(state),
+  );
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<NoteSearchResult[] | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const terms = useMemo(() => extractSearchTerms(query), [query]);
+
+  useEffect(() => {
+    void syncCloudNotes({ force: true });
+  }, []);
 
   useEffect(() => {
     if (terms.length === 0) {

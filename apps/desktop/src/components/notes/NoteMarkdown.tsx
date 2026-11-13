@@ -1,6 +1,41 @@
-import { Box, type SxProps, type Theme } from "@mui/material";
-import Markdown from "react-markdown";
+import { Box, Link, type SxProps, type Theme } from "@mui/material";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { ComponentProps } from "react";
+import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+
+/** Link targets opened outside the app; everything else renders as text. */
+const EXTERNAL_LINK = /^(https?:|mailto:)/i;
+
+const keepExternalLinks = (url: string): string =>
+  EXTERNAL_LINK.test(url.trim()) ? url.trim() : "";
+
+/**
+ * Note and answer markdown comes from transcripts and pasted text that others
+ * can influence, so it never loads anything: images render as their alt
+ * text, raw HTML is dropped, and links open in the browser only on click.
+ */
+const components: Components = {
+  img: ({ alt }) => (alt ? <span>{alt}</span> : null),
+  a: ({ href, children }: ComponentProps<"a">) => {
+    if (!href) {
+      return <span>{children}</span>;
+    }
+    return (
+      <Link
+        href={href}
+        rel="noreferrer noopener"
+        onClick={(event) => {
+          event.preventDefault();
+          void openUrl(href);
+        }}
+        onAuxClick={(event) => event.preventDefault()}
+      >
+        {children}
+      </Link>
+    );
+  },
+};
 
 export const NoteMarkdown = ({
   children,
@@ -28,7 +63,6 @@ export const NoteMarkdown = ({
         "& li": { my: 0.25 },
         "& li.task-list-item": { listStyle: "none", ml: -3 },
         "& input[type=checkbox]": { mr: 1, verticalAlign: "middle" },
-        "& a": { color: "primary.main" },
         "& pre": {
           my: 1,
           p: 1,
@@ -58,6 +92,13 @@ export const NoteMarkdown = ({
       ...(Array.isArray(sx) ? sx : [sx]),
     ]}
   >
-    <Markdown remarkPlugins={[remarkGfm]}>{children}</Markdown>
+    <Markdown
+      remarkPlugins={[remarkGfm]}
+      skipHtml
+      urlTransform={keepExternalLinks}
+      components={components}
+    >
+      {children}
+    </Markdown>
   </Box>
 );

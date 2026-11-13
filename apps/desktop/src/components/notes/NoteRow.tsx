@@ -40,6 +40,9 @@ const HighlightedText = ({
 
 const NoteRowStatus = ({ noteId }: { noteId: string }) => {
   const status = useAppStore((state) => state.noteById[noteId]?.status);
+  const activityKind = useAppStore(
+    (state) => state.notes.cloudActivityByNoteId[noteId]?.kind ?? null,
+  );
   const isImport = useAppStore(
     (state) => state.noteById[noteId]?.source === "import",
   );
@@ -79,7 +82,13 @@ const NoteRowStatus = ({ noteId }: { noteId: string }) => {
         <Stack direction="row" alignItems="center" spacing={0.75}>
           <CircularProgress size={12} />
           <Typography variant="body2" color="text.secondary">
-            <FormattedMessage defaultMessage="Processing" />
+            {activityKind === "waiting-for-connection" ? (
+              <FormattedMessage defaultMessage="Waiting for connection" />
+            ) : activityKind === "uploading" ? (
+              <FormattedMessage defaultMessage="Uploading" />
+            ) : (
+              <FormattedMessage defaultMessage="Processing" />
+            )}
           </Typography>
         </Stack>
       );

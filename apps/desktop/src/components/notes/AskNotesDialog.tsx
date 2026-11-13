@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate } from "react-router-dom";
 import { askNotes, closeNotesAsk } from "../../actions/note.actions";
+import { openUpgradePlanDialog } from "../../actions/pricing.actions";
 import { getNotePath } from "../../hooks/note.hooks";
 import type { NoteAskMessage } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
@@ -30,33 +31,75 @@ const openPostProcessingSettings = () => {
   });
 };
 
+const AskError = ({ code, partial }: { code: string; partial: boolean }) => {
+  const text = (() => {
+    switch (code) {
+      case "post_processing_disabled":
+        return (
+          <FormattedMessage defaultMessage="Ask needs AI post-processing, which is turned off." />
+        );
+      case "transcript_unavailable":
+        return (
+          <FormattedMessage defaultMessage="Ask becomes available once the meeting is processed." />
+        );
+      case "word_quota_exceeded":
+        return (
+          <>
+            <FormattedMessage defaultMessage="You're out of free words. Upgrade to Pro to keep asking." />{" "}
+            <Link component="button" onClick={openUpgradePlanDialog}>
+              <FormattedMessage defaultMessage="Upgrade" />
+            </Link>
+          </>
+        );
+      case "network_unavailable":
+        return (
+          <FormattedMessage defaultMessage="You're offline. Ask about your Voquill cloud notes once you're back online." />
+        );
+      case "signed_out":
+        return (
+          <FormattedMessage defaultMessage="Sign in to Voquill to ask about your cloud notes." />
+        );
+      case "ask_incomplete":
+      case "ask_failed":
+        return partial ? (
+          <FormattedMessage defaultMessage="The answer was cut off. Ask again to retry." />
+        ) : (
+          <FormattedMessage defaultMessage="The answer couldn't be generated. Ask again to retry." />
+        );
+      default:
+        return (
+          <FormattedMessage defaultMessage="The answer couldn't be generated. Ask again to retry." />
+        );
+    }
+  })();
+  return (
+    <Alert severity={partial ? "warning" : "error"} variant="outlined">
+      {text}
+    </Alert>
+  );
+};
+
 const AskAnswer = ({ message }: { message: NoteAskMessage }) => {
   const navigate = useNavigate();
   const sourcesOnly = message.streaming && !message.content;
 
   return (
     <Stack spacing={1}>
-      {message.error ? (
-        <Alert severity="error" variant="outlined">
-          {message.error === "post_processing_disabled" ? (
-            <FormattedMessage defaultMessage="Ask needs AI post-processing, which is turned off." />
-          ) : (
-            <FormattedMessage
-              defaultMessage="Couldn't get an answer: {reason}"
-              values={{ reason: message.error }}
-            />
-          )}
-        </Alert>
-      ) : sourcesOnly ? (
-        <Typography variant="body2" color="text.secondary">
-          <FormattedMessage defaultMessage="Reading your notes…" />
-        </Typography>
-      ) : (
+      {message.content ? (
         <NoteMarkdown sx={{ typography: "body2" }}>
           {message.content}
         </NoteMarkdown>
+      ) : (
+        sourcesOnly && (
+          <Typography variant="body2" color="text.secondary">
+            <FormattedMessage defaultMessage="Reading your notes…" />
+          </Typography>
+        )
       )}
-      {message.sources.length > 0 && !message.error && (
+      {message.error && (
+        <AskError code={message.error} partial={!!message.content} />
+      )}
+      {message.sources.length > 0 && (
         <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
           {message.sources.map((source, index) => (
             <Chip
