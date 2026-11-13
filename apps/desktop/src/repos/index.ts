@@ -64,6 +64,8 @@ import {
   SpeachesModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
+import { MeetingAudioRepo } from "./meeting-audio.repo";
+import { BaseNoteRepo, LocalNoteRepo } from "./note.repo";
 import {
   BasePairedRemoteDeviceRepo,
   LocalPairedRemoteDeviceRepo,
@@ -169,6 +171,14 @@ export const getRemoteReceiverRepo = (): BaseRemoteReceiverRepo => {
 
 export const getTranscriptionRepo = (): BaseTranscriptionRepo => {
   return new LocalTranscriptionRepo();
+};
+
+export const getNoteRepo = (): BaseNoteRepo => {
+  return new LocalNoteRepo();
+};
+
+export const getMeetingAudioRepo = (): MeetingAudioRepo => {
+  return new MeetingAudioRepo();
 };
 
 export const getAppTargetRepo = (): BaseAppTargetRepo => {

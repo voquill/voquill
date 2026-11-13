@@ -1,0 +1,559 @@
+import type {
+  LlmChatInput,
+  LlmStreamEvent,
+  Note,
+  NoteSegment,
+} from "@voquill/types";
+import { describe, expect, it, vi } from "vitest";
+import type { GenerateTextInput } from "../repos/generate-text.repo";
+import type { NoteSearchCandidate } from "../repos/note.repo";
+import { NOTE_CHUNK_MAX_MS } from "../utils/note-audio.utils";
+import type { NoteAskEvent } from "./base-note.pipeline";
+import {
+  LocalNotePipeline,
+  type NoteChatGenerator,
+  type NoteStore,
+} from "./local-note.pipeline";
+
+vi.mock("../utils/log.utils", () => ({
+  getLogger: () => ({
+    info: () => {},
+    warning: () => {},
+    error: () => {},
+    verbose: () => {},
+  }),
+}));
+
+const NOW = "2026-05-01T12:00:00.000Z";
+
+const makeNote = (overrides: Partial<Note> = {}): Note => ({
+  id: "note",
+  storage: "local",
+  status: "pending",
+  title: "Meeting, May 1",
+  titleSource: "default",
+  error: null,
+  source: "recording",
+  personalNotes: "",
+  generatedNotes: null,
+  durationMs: 0,
+  createdAt: NOW,
+  updatedAt: NOW,
+  ...overrides,
+});
+
+const audioSegment = (
+  index: number,
+  durationMs: number,
+  overrides: Partial<NoteSegment> = {},
+): NoteSegment => ({
+  id: `seg-${index}`,
+  noteId: "note",
+  index,
+  kind: "audio",
+  status: "recorded",
+  durationMs,
+  createdAt: NOW,
+  transcript: null,
+  transcribedMs: 0,
+  audioPath: `/audio/seg-${index}.wav`,
+  ...overrides,
+});
+
+/** In-memory note store; `log` records writes and deletions in the order they became durable. */
+class FakeNoteStore implements NoteStore {
+  notes = new Map<string, Note>();
+  segments = new Map<string, NoteSegment[]>();
+  log: string[] = [];
+
+  getNote = (noteId: string) => this.notes.get(noteId) ?? null;
+  getNotes = () => [...this.notes.values()];
+  getSegments = (noteId: string) => this.segments.get(noteId) ?? [];
+  loadSegments = async (noteId: string) => this.getSegments(noteId);
+
+  insertNote = async (note: Note, segments: NoteSegment[]) => {
+    this.notes.set(note.id, structuredClone(note));
+    this.segments.set(note.id, structuredClone(segments));
+    this.log.push(`insert:${note.id}`);
+  };
+
+  updateNote = async (noteId: string, recipe: (note: Note) => void) => {
+    const note = this.notes.get(noteId);
+    if (!note) return;
+    const before = note.status;
+    recipe(note);
+    if (note.status !== before) {
+      this.log.push(`note:${note.status}`);
+    }
+  };
+
+  updateSegment = async (
+    noteId: string,
+    segmentId: string,
+    recipe: (segment: NoteSegment) => void,
+  ) => {
+    const segment = this.getSegments(noteId).find((s) => s.id === segmentId);
+    if (!segment) return;
+    recipe(segment);
+    this.log.push(
+      `segment:${segmentId}:${segment.status}:${segment.transcribedMs}`,
+    );
+  };
+
+  deleteNote = async (noteId: string) => {
+    this.notes.delete(noteId);
+    this.segments.delete(noteId);
+    this.log.push(`delete-note:${noteId}`);
+  };
+}
+
+type Harness = {
+  store: FakeNoteStore;
+  pipeline: LocalNotePipeline;
+  transcribeCalls: number[];
+  prompts: string[];
+  deleted: string[];
+  setTranscribeFailure: (failAtCall: number | null) => void;
+  setGenerator: (enabled: boolean) => void;
+};
+
+const createHarness = ({
+  note = makeNote(),
+  segments = [audioSegment(0, 10_000)],
+  searchResults = [] as NoteSearchCandidate[],
+  chatEvents = [] as LlmStreamEvent[],
+} = {}): Harness => {
+  const store = new FakeNoteStore();
+  store.notes.set(note.id, structuredClone(note));
+  store.segments.set(note.id, structuredClone(segments));
+
+  const transcribeCalls: number[] = [];
+  const prompts: string[] = [];
+  const deleted: string[] = [];
+  let failAtCall: number | null = null;
+  let generatorEnabled = true;
+
+  const generator: NoteChatGenerator = {
+    async generateText(input: GenerateTextInput) {
+      prompts.push(input.prompt);
+      return {
+        text: input.prompt.includes("short, specific title")
+          ? "Launch plan"
+          : "## Summary\nWe planned the launch.",
+      };
+    },
+    async *streamChat(input: LlmChatInput) {
+      prompts.push(JSON.stringify(input.messages));
+      yield* chatEvents;
+    },
+  };
+
+  const pipeline = new LocalNotePipeline({
+    store,
+    repo: { searchNotes: async () => searchResults },
+    audio: {
+      getEnvelope: async () => Array.from({ length: 100_000 }, () => 0.1),
+      readSamples: async (_path, startMs, endMs) =>
+        new Float32Array(Math.round(((endMs - startMs) / 1000) * 16_000)),
+      deleteSegmentAudio: async (path) => {
+        deleted.push(path);
+        store.log.push(`delete-audio:${path}`);
+      },
+    },
+    transcribe: async ({ samples }) => {
+      transcribeCalls.push(samples.length);
+      if (failAtCall !== null && transcribeCalls.length === failAtCall) {
+        throw new Error("network down");
+      }
+      return `chunk ${transcribeCalls.length}`;
+    },
+    getTextGenerator: () => (generatorEnabled ? generator : null),
+  });
+
+  return {
+    store,
+    pipeline,
+    transcribeCalls,
+    prompts,
+    deleted,
+    setTranscribeFailure: (value) => {
+      failAtCall = value;
+    },
+    setGenerator: (enabled) => {
+      generatorEnabled = enabled;
+    },
+  };
+};
+
+describe("LocalNotePipeline.process", () => {
+  it("transcribes, generates and only then releases the audio", async () => {
+    const harness = createHarness({
+      note: makeNote({ personalNotes: "ask about pricing" }),
+    });
+    await harness.pipeline.process("note");
+
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("ready");
+    expect(note.title).toBe("Launch plan");
+    expect(note.titleSource).toBe("ai");
+    expect(note.generatedNotes).toBe("## Summary\nWe planned the launch.");
+    expect(note.personalNotes).toBe("ask about pricing");
+    expect(harness.prompts[0]).toContain("ask about pricing");
+
+    const [segment] = harness.store.getSegments("note");
+    expect(segment.status).toBe("transcribed");
+    expect(segment.transcript?.text).toBe("chunk 1");
+    expect(segment.audioPath).toBeNull();
+
+    const log = harness.store.log;
+    const committed = log.indexOf("segment:seg-0:transcribed:10000");
+    const ready = log.indexOf("note:ready");
+    const deletedAt = log.indexOf("delete-audio:/audio/seg-0.wav");
+    expect(committed).toBeGreaterThan(-1);
+    expect(ready).toBeGreaterThan(committed);
+    expect(deletedAt).toBeGreaterThan(ready);
+  });
+
+  it("keeps a user-chosen title", async () => {
+    const harness = createHarness({
+      note: makeNote({ title: "Board call", titleSource: "user" }),
+    });
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.title).toBe("Board call");
+    expect(
+      harness.prompts.some((prompt) =>
+        prompt.includes("short, specific title"),
+      ),
+    ).toBe(false);
+  });
+
+  it("fails mid-way keeping progress and audio, and the retry resumes", async () => {
+    const longMs = NOTE_CHUNK_MAX_MS * 2 + 60_000;
+    const harness = createHarness({ segments: [audioSegment(0, longMs)] });
+    harness.setTranscribeFailure(2);
+
+    await harness.pipeline.process("note");
+
+    let note = harness.store.getNote("note")!;
+    expect(note.status).toBe("failed");
+    expect(note.error).toEqual({
+      code: "transcription_failed",
+      message: "network down",
+    });
+    let [segment] = harness.store.getSegments("note");
+    expect(segment.status).toBe("recorded");
+    expect(segment.transcript?.utterances).toHaveLength(1);
+    const committedMs = segment.transcribedMs;
+    expect(committedMs).toBeGreaterThan(0);
+    expect(segment.audioPath).toBe("/audio/seg-0.wav");
+    expect(harness.deleted).toEqual([]);
+
+    harness.setTranscribeFailure(null);
+    await harness.store.updateNote("note", (draft) => {
+      draft.status = "pending";
+    });
+    const callsBeforeRetry = harness.transcribeCalls.length;
+    await harness.pipeline.process("note");
+
+    note = harness.store.getNote("note")!;
+    expect(note.status).toBe("ready");
+    expect(note.error).toBeNull();
+    [segment] = harness.store.getSegments("note");
+    expect(segment.transcript?.utterances[0].endMs).toBe(committedMs);
+    expect(segment.transcript?.utterances[1].startMs).toBe(committedMs);
+    expect(segment.transcript?.utterances.at(-1)?.endMs).toBe(longMs);
+    const retriedSamples = harness.transcribeCalls
+      .slice(callsBeforeRetry)
+      .reduce((sum, count) => sum + count, 0);
+    expect(retriedSamples).toBe(((longMs - committedMs) / 1000) * 16_000);
+    expect(harness.deleted).toEqual(["/audio/seg-0.wav"]);
+  });
+
+  it("records a generation failure and never deletes the audio", async () => {
+    const harness = createHarness();
+    harness.pipeline = new LocalNotePipeline({
+      store: harness.store,
+      repo: { searchNotes: async () => [] },
+      audio: {
+        getEnvelope: async () => [0.1],
+        readSamples: async () => new Float32Array(16),
+        deleteSegmentAudio: async (path) => {
+          harness.deleted.push(path);
+        },
+      },
+      transcribe: async () => "hello",
+      getTextGenerator: () => ({
+        generateText: async () => {
+          throw new Error("model unavailable");
+        },
+        // eslint-disable-next-line require-yield
+        async *streamChat() {
+          return;
+        },
+      }),
+    });
+    await harness.pipeline.process("note");
+
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("failed");
+    expect(note.error?.code).toBe("generation_failed");
+    expect(harness.store.getSegments("note")[0].status).toBe("transcribed");
+    expect(harness.deleted).toEqual([]);
+  });
+
+  it("ends ready with the transcript only when post-processing is off", async () => {
+    const harness = createHarness();
+    harness.setGenerator(false);
+    await harness.pipeline.process("note");
+
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("ready");
+    expect(note.generatedNotes).toBeNull();
+    expect(note.title).toBe("Meeting, May 1");
+    expect(note.titleSource).toBe("default");
+    expect(harness.store.getSegments("note")[0].transcript?.text).toBe(
+      "chunk 1",
+    );
+    expect(harness.deleted).toEqual(["/audio/seg-0.wav"]);
+  });
+
+  it("ends ready for a recording without speech", async () => {
+    const harness = createHarness({ segments: [audioSegment(0, 5_000)] });
+    harness.pipeline = new LocalNotePipeline({
+      store: harness.store,
+      repo: { searchNotes: async () => [] },
+      audio: {
+        getEnvelope: async () => Array.from({ length: 50 }, () => 0),
+        readSamples: async () => new Float32Array(0),
+        deleteSegmentAudio: async () => {},
+      },
+      transcribe: async () => {
+        throw new Error("silence must not be sent");
+      },
+      getTextGenerator: () => {
+        throw new Error("nothing to generate from");
+      },
+    });
+    await harness.pipeline.process("note");
+
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("ready");
+    expect(note.generatedNotes).toBeNull();
+    expect(harness.store.getSegments("note")[0].transcript).toEqual({
+      text: "",
+      utterances: [],
+    });
+  });
+
+  it("does nothing for notes that are not pending", async () => {
+    const harness = createHarness({ note: makeNote({ status: "paused" }) });
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.status).toBe("paused");
+    expect(harness.transcribeCalls).toEqual([]);
+  });
+
+  it("stops quietly when the note is deleted while processing", async () => {
+    const harness = createHarness();
+    harness.pipeline = new LocalNotePipeline({
+      store: harness.store,
+      repo: { searchNotes: async () => [] },
+      audio: {
+        getEnvelope: async () => [0.1],
+        readSamples: async () => new Float32Array(16),
+        deleteSegmentAudio: async () => {},
+      },
+      transcribe: async () => {
+        await harness.store.deleteNote("note");
+        return "late";
+      },
+      getTextGenerator: () => null,
+    });
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")).toBeNull();
+    expect(harness.store.log).toEqual(["note:processing", "delete-note:note"]);
+  });
+});
+
+describe("LocalNotePipeline resume and regenerate", () => {
+  it("transcribes only the new segment and regenerates from everything", async () => {
+    const harness = createHarness({
+      note: makeNote({
+        status: "pending",
+        title: "Launch plan",
+        titleSource: "ai",
+        generatedNotes: "old notes",
+      }),
+      segments: [
+        audioSegment(0, 10_000, {
+          status: "transcribed",
+          transcribedMs: 10_000,
+          audioPath: null,
+          transcript: { text: "earlier talk", utterances: [] },
+        }),
+        audioSegment(1, 4_000),
+      ],
+    });
+    await harness.pipeline.process("note");
+
+    expect(harness.transcribeCalls).toEqual([64_000]);
+    const notesPrompt = harness.prompts[0];
+    expect(notesPrompt).toContain("earlier talk\n\nchunk 1");
+    expect(harness.store.getNote("note")?.generatedNotes).toBe(
+      "## Summary\nWe planned the launch.",
+    );
+    expect(harness.deleted).toEqual(["/audio/seg-1.wav"]);
+  });
+
+  it("regenerates a ready note without transcribing again", async () => {
+    const harness = createHarness({
+      note: makeNote({ status: "ready", generatedNotes: "old" }),
+      segments: [
+        audioSegment(0, 10_000, {
+          status: "transcribed",
+          transcribedMs: 10_000,
+          audioPath: null,
+          transcript: { text: "the talk", utterances: [] },
+        }),
+      ],
+    });
+    await harness.pipeline.regenerate("note");
+
+    expect(harness.transcribeCalls).toEqual([]);
+    expect(harness.store.log.slice(0, 3)).toEqual([
+      "note:pending",
+      "note:processing",
+      "note:ready",
+    ]);
+    expect(harness.store.getNote("note")?.generatedNotes).toContain(
+      "We planned the launch.",
+    );
+  });
+
+  it("releases audio left behind by a crash after the note was ready", async () => {
+    const harness = createHarness({
+      note: makeNote({ status: "ready" }),
+      segments: [
+        audioSegment(0, 1_000, {
+          status: "transcribed",
+          transcribedMs: 1_000,
+          transcript: { text: "hi", utterances: [] },
+        }),
+        audioSegment(1, 1_000),
+      ],
+    });
+    await harness.pipeline.resumeAfterRestart("note");
+    expect(harness.deleted).toEqual(["/audio/seg-0.wav"]);
+  });
+
+  it("re-runs a note left pending by a restart", async () => {
+    const harness = createHarness();
+    await harness.pipeline.resumeAfterRestart("note");
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+  });
+});
+
+describe("LocalNotePipeline.importTranscript", () => {
+  it("creates an import note and generates its notes", async () => {
+    const harness = createHarness();
+    await harness.pipeline.importTranscript({
+      id: "imported",
+      transcript: "  pasted words  ",
+      title: null,
+      defaultTitle: "Imported transcript, May 1",
+    });
+
+    const note = harness.store.getNote("imported")!;
+    expect(note.source).toBe("import");
+    expect(note.status).toBe("ready");
+    expect(note.title).toBe("Launch plan");
+    expect(harness.store.getSegments("imported")[0]).toMatchObject({
+      kind: "import",
+      status: "transcribed",
+      transcript: { text: "pasted words", utterances: [] },
+    });
+    expect(harness.transcribeCalls).toEqual([]);
+  });
+
+  it("keeps a title given at import", async () => {
+    const harness = createHarness();
+    await harness.pipeline.importTranscript({
+      id: "imported",
+      transcript: "words",
+      title: "Customer call",
+      defaultTitle: "unused",
+    });
+    expect(harness.store.getNote("imported")).toMatchObject({
+      title: "Customer call",
+      titleSource: "user",
+    });
+  });
+});
+
+describe("LocalNotePipeline search and ask", () => {
+  const candidate = (id: string, title: string, transcript: string) => ({
+    note: makeNote({ id, title, status: "ready" }),
+    transcript,
+  });
+
+  it("requires every search term and ranks with snippets", async () => {
+    const harness = createHarness({
+      searchResults: [candidate("a", "Budget", "the budget for q3")],
+    });
+    const results = await harness.pipeline.search("Budget  Q3");
+    expect(results).toHaveLength(1);
+    expect(results[0].snippet).toBe("the budget for q3");
+    expect(await harness.pipeline.search("   ")).toEqual([]);
+  });
+
+  it("streams an answer with the cited sources", async () => {
+    const harness = createHarness({
+      searchResults: [
+        candidate("a", "Planning", "the budget is 10k"),
+        candidate("b", "Retro", "the budget went over"),
+      ],
+      chatEvents: [
+        { type: "text-delta", text: "It is 10k " },
+        { type: "text-delta", text: "[1]." },
+        { type: "finish", finishReason: "stop" },
+      ],
+    });
+    const events: NoteAskEvent[] = [];
+    for await (const event of harness.pipeline.ask({
+      question: "What is the budget?",
+      noteId: null,
+      history: [],
+    })) {
+      events.push(event);
+    }
+    expect(events[0]).toEqual({
+      type: "sources",
+      sources: [
+        { noteId: "a", title: "Planning" },
+        { noteId: "b", title: "Retro" },
+      ],
+    });
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      sources: [{ noteId: "a", title: "Planning" }],
+    });
+    const messages = harness.prompts.at(-1)!;
+    expect(messages).toContain("the budget is 10k");
+    expect(messages).toContain("What is the budget?");
+  });
+
+  it("explains that Ask needs post-processing", async () => {
+    const harness = createHarness();
+    harness.setGenerator(false);
+    const events: NoteAskEvent[] = [];
+    for await (const event of harness.pipeline.ask({
+      question: "anything?",
+      noteId: "note",
+      history: [],
+    })) {
+      events.push(event);
+    }
+    expect(events).toEqual([
+      { type: "error", message: "post_processing_disabled" },
+    ]);
+  });
+});

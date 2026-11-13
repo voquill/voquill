@@ -8,6 +8,8 @@ import {
   FullConfig,
   Hotkey,
   Member,
+  Note,
+  NoteSegment,
   Nullable,
   OidcProvider,
   PairedRemoteDevice,
@@ -31,6 +33,7 @@ import { AgentRunState } from "./agent.state";
 import { DictionaryState, INITIAL_DICTIONARY_STATE } from "./dictionary.state";
 import { INITIAL_LOCAL_STATE, LocalState } from "./local.state";
 import { INITIAL_LOGIN_STATE, LoginState } from "./login.state";
+import { INITIAL_NOTES_STATE, NotesState } from "./notes.state";
 import {
   INITIAL_ONBOARDING_STATE,
   type OnboardingState,
@@ -101,6 +104,9 @@ export type AppState = {
   pairedRemoteDeviceById: Record<string, PairedRemoteDevice>;
   remoteReceiverStatus: Nullable<RemoteReceiverStatus>;
   transcriptionById: Record<string, Transcription>;
+  noteById: Record<string, Note>;
+  /** Loaded on demand, ordered by segment index. */
+  noteSegmentsByNoteId: Record<string, NoteSegment[]>;
   hotkeyById: Record<string, Hotkey>;
   apiKeyById: Record<string, ApiKey>;
   toneById: Record<string, Tone>;
@@ -120,6 +126,7 @@ export type AppState = {
   local: LocalState;
   onboarding: OnboardingState;
   transcriptions: TranscriptionsState;
+  notes: NotesState;
   dictionary: DictionaryState;
   tones: TonesState;
   toneEditor: ToneEditorState;
@@ -162,6 +169,8 @@ export const INITIAL_APP_STATE: AppState = {
   pairedRemoteDeviceById: {},
   remoteReceiverStatus: null,
   transcriptionById: {},
+  noteById: {},
+  noteSegmentsByNoteId: {},
   priceValueByKey: {},
   apiKeyById: {},
   toneById: {},
@@ -197,6 +206,7 @@ export const INITIAL_APP_STATE: AppState = {
   local: INITIAL_LOCAL_STATE,
   onboarding: INITIAL_ONBOARDING_STATE,
   transcriptions: INITIAL_TRANSCRIPTIONS_STATE,
+  notes: INITIAL_NOTES_STATE,
   dictionary: INITIAL_DICTIONARY_STATE,
   tones: INITIAL_TONES_STATE,
   toneEditor: INITIAL_TONE_EDITOR_STATE,
