@@ -90,7 +90,10 @@ export const getSortedNoteIds = (state: AppState): string[] => {
 export const getNoteElapsedMs = (state: AppState, noteId: string): number => {
   const note = state.noteById[noteId];
   const capture = state.notes.capture;
-  const live = capture?.noteId === noteId ? capture.durationMs : 0;
+  const live =
+    capture?.noteId === noteId
+      ? capture.durationMs - capture.initialDurationMs
+      : 0;
   return (note?.durationMs ?? 0) + live;
 };
 

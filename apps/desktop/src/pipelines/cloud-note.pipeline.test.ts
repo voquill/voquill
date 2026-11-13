@@ -367,6 +367,7 @@ const createHarness = ({
   const activities: (NoteCloudActivity | null)[] = [];
   const deletions: string[] = [];
   let uploadScript: UploadScript = () => "complete";
+  const yields = { count: 0, gate: Promise.resolve() };
 
   const pipeline = new CloudNotePipeline({
     store,
@@ -387,7 +388,12 @@ const createHarness = ({
           outcome,
           uploadedBytes: 0,
           totalBytes: 32_044,
-          status: outcome === "interrupted" ? 503 : null,
+          status:
+            outcome === "interrupted"
+              ? 503
+              : outcome === "rejected"
+                ? 400
+                : null,
           message: null,
         };
       },
@@ -410,6 +416,10 @@ const createHarness = ({
     getCloudNotesUserId: () => userId,
     setActivity: (_noteId, activity) => activities.push(activity),
     onSettled: () => {},
+    yieldToDictation: async () => {
+      yields.count++;
+      await yields.gate;
+    },
   });
 
   return {
@@ -420,6 +430,7 @@ const createHarness = ({
     cancelled,
     activities,
     deletions,
+    yields,
     setOnline(value: boolean) {
       online = value;
       if (value) {
@@ -848,5 +859,106 @@ describe("CloudNotePipeline.search", () => {
     harness.setOnline(false);
     expect(await harness.pipeline.search("budget")).toEqual([]);
     expect(harness.server.calls.filter((c) => c === "search")).toHaveLength(1);
+  });
+});
+
+describe("CloudNotePipeline limits and priorities", () => {
+  it("queues behind the plan's processing limit: two imports both finish", async () => {
+    const harness = createHarness({ segments: [] });
+    harness.server.pollsUntilDone = 0;
+    harness.server.failNext(
+      "importNote",
+      new NotesApiError(429, "too_many_processing", "one at a time"),
+      new NotesApiError(429, "too_many_processing", "one at a time"),
+    );
+    await Promise.all([
+      harness.pipeline.importTranscript({
+        id: "a",
+        transcript: "one",
+        title: null,
+        defaultTitle: "Imported",
+      }),
+      harness.pipeline.importTranscript({
+        id: "b",
+        transcript: "two",
+        title: null,
+        defaultTitle: "Imported",
+      }),
+    ]);
+    expect(harness.store.getNote("a")?.status).toBe("ready");
+    expect(harness.store.getNote("b")?.status).toBe("ready");
+    expect(harness.activities).toContainEqual({ kind: "server-busy" });
+  });
+
+  it("uploads in passes and yields to dictation before each one", async () => {
+    const harness = createHarness();
+    let passes = 0;
+    harness.setUploads(() => (++passes % 3 === 0 ? "complete" : "partial"));
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+    expect(harness.uploads).toHaveLength(6);
+    expect(harness.yields.count).toBe(6);
+  });
+
+  it("does not start an upload while a dictation is running", async () => {
+    const harness = createHarness();
+    let release: () => void = () => {};
+    harness.yields.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const run = harness.pipeline.process("note");
+    await flush();
+    expect(harness.uploads).toEqual([]);
+    release();
+    await run;
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+  });
+
+  it("starts over with a fresh session when storage refuses the byte count", async () => {
+    const harness = createHarness({ segments: [recordedSegment(0)] });
+    let first = true;
+    harness.setUploads(() => {
+      if (first) {
+        first = false;
+        return "rejected";
+      }
+      return "complete";
+    });
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+    expect(new Set(harness.uploads.map((u) => u.url)).size).toBe(2);
+  });
+
+  it("treats a segment already accepted by a running job as uploaded", async () => {
+    const harness = createHarness({ segments: [recordedSegment(0)] });
+    harness.server.failNext(
+      "requestSegmentUpload",
+      new NotesApiError(409, "segment_processing", "busy"),
+    );
+    harness.server.notes.set("note", {
+      ...(await harness.server.putNote("note", {
+        title: "t",
+        titleSource: "default",
+        personalNotes: "",
+        createdAt: NOW,
+      })),
+      segments: [
+        {
+          id: "seg-0",
+          index: 0,
+          kind: "audio",
+          status: "uploaded",
+          error: null,
+          durationMs: 1000,
+          createdAt: NOW,
+          transcript: null,
+        },
+      ],
+    });
+    harness.server.audio.set("seg-0", 1);
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.error).toBeNull();
+    expect(harness.uploads).toEqual([]);
+    expect(harness.store.getNote("note")?.status).toBe("ready");
   });
 });

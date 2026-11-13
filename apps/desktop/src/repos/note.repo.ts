@@ -215,8 +215,15 @@ export abstract class BaseNoteRepo extends BaseRepo {
   /** Local notes plus the cloud notes of `cloudOwnerUserId`. */
   abstract listNotes(cloudOwnerUserId: string | null): Promise<Note[]>;
   abstract upsertNote(note: Note): Promise<Note>;
-  /** Removes the note, its segments and any local audio recorded for it. */
-  abstract deleteNote(noteId: string): Promise<void>;
+  /**
+   * Removes the note and its segments. `deleteAudio` also removes every audio
+   * file recorded for it (the user deleted it); otherwise files stay on disk
+   * for recovery.
+   */
+  abstract deleteNote(
+    noteId: string,
+    options: { deleteAudio: boolean },
+  ): Promise<void>;
   abstract listSegments(noteId: string): Promise<NoteSegment[]>;
   abstract upsertSegment(segment: NoteSegment): Promise<NoteSegment>;
   abstract deleteSegment(noteId: string, segmentId: string): Promise<void>;
@@ -240,8 +247,11 @@ export class LocalNoteRepo extends BaseNoteRepo {
     return fromLocalNote(stored);
   }
 
-  async deleteNote(noteId: string): Promise<void> {
-    await invoke<void>("note_delete", { id: noteId });
+  async deleteNote(
+    noteId: string,
+    { deleteAudio }: { deleteAudio: boolean },
+  ): Promise<void> {
+    await invoke<void>("note_delete", { id: noteId, deleteAudio });
   }
 
   async listSegments(noteId: string): Promise<NoteSegment[]> {

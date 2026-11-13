@@ -7,7 +7,11 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import type { GenerateTextInput } from "../repos/generate-text.repo";
 import type { NoteSearchCandidate } from "../repos/note.repo";
-import { NOTE_CHUNK_MAX_MS } from "../utils/note-audio.utils";
+import {
+  DEFAULT_NOTE_CHUNK_LIMITS,
+  LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+  NOTE_CHUNK_MAX_MS,
+} from "../utils/note-audio.utils";
 import { EMPTY_TRANSCRIPT_NOTES } from "../utils/note-prompt.utils";
 import type { NoteAskEvent } from "./base-note.pipeline";
 import { FakeNoteStore } from "./fake-note-store.test-utils";
@@ -133,6 +137,8 @@ const createHarness = ({
       generatorEnabled ? { generator, contextTokens: 32_768 } : null,
     getChatGenerator: () => (generatorEnabled ? generator : null),
     getCloudNotesUserId: () => null,
+    getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+    yieldToDictation: async () => {},
   });
 
   return {
@@ -255,6 +261,8 @@ describe("LocalNotePipeline.process", () => {
       }),
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
+      getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
 
@@ -299,6 +307,8 @@ describe("LocalNotePipeline.process", () => {
       },
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
+      getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
 
@@ -335,6 +345,8 @@ describe("LocalNotePipeline.process", () => {
       getGenerationModel: () => null,
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
+      getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
     expect(harness.store.getNote("note")).toBeNull();
@@ -524,6 +536,69 @@ describe("LocalNotePipeline search and ask", () => {
     }
     expect(events).toEqual([
       { type: "error", message: "post_processing_disabled" },
+    ]);
+  });
+});
+
+describe("LocalNotePipeline and dictation", () => {
+  it("waits for a dictation to finish before each chunk and each model call", async () => {
+    const events: string[] = [];
+    let releaseDictation: () => void = () => {};
+    let dictating = true;
+    const store = new FakeNoteStore();
+    store.notes.set("note", makeNote());
+    store.segments.set("note", [audioSegment(0, 70_000)]);
+    const pipeline = new LocalNotePipeline({
+      store,
+      repo: { searchNotes: async () => [] },
+      audio: {
+        getEnvelope: async () => Array.from({ length: 700 }, () => 0.1),
+        readSamples: async () => new Float32Array(16),
+        deleteSegmentAudio: async () => {},
+      },
+      transcribe: async () => {
+        events.push("transcribe");
+        return "words";
+      },
+      getGenerationModel: () => ({
+        contextTokens: 32_768,
+        generator: {
+          generateText: async () => {
+            events.push("generate");
+            return { text: '{"title":"T","notes":"N"}' };
+          },
+        },
+      }),
+      getChatGenerator: () => null,
+      getCloudNotesUserId: () => null,
+      getChunkLimits: () => LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+      yieldToDictation: async () => {
+        events.push("yield");
+        if (dictating) {
+          await new Promise<void>((resolve) => {
+            releaseDictation = resolve;
+          });
+        }
+      },
+    });
+
+    const run = pipeline.process("note");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(events).toEqual(["yield"]);
+
+    dictating = false;
+    releaseDictation();
+    await run;
+
+    expect(events).toEqual([
+      "yield",
+      "transcribe",
+      "yield",
+      "transcribe",
+      "yield",
+      "transcribe",
+      "yield",
+      "generate",
     ]);
   });
 });

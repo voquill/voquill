@@ -223,6 +223,24 @@ describe("CloudNoteRepo requests", () => {
   });
 });
 
+describe("cooldown errors", () => {
+  it("reads Retry-After from the details or the header", async () => {
+    const { repo } = repoWith(
+      () =>
+        new Response(
+          JSON.stringify({
+            error: { code: "regenerate_cooldown", message: "wait" },
+          }),
+          { status: 429, headers: { "Retry-After": "95" } },
+        ),
+    );
+    await expect(repo.regenerateNote("n")).rejects.toMatchObject({
+      code: "regenerate_cooldown",
+      retryAfterSeconds: 95,
+    });
+  });
+});
+
 describe("getNotesErrorHandling", () => {
   it.each([
     [new NotesNetworkError("x"), "retry"],
@@ -231,7 +249,9 @@ describe("getNotesErrorHandling", () => {
     [new NotesApiError(403, "word_quota_exceeded", ""), "blocked"],
     [new NotesApiError(403, "audio_quota_exceeded", ""), "blocked"],
     [new NotesApiError(429, "regenerate_cooldown", ""), "blocked"],
-    [new NotesApiError(429, "too_many_processing_notes", ""), "busy"],
+    [new NotesApiError(429, "too_many_processing", ""), "busy"],
+    [new NotesApiError(429, "too_many_pending_uploads", ""), "blocked"],
+    [new NotesApiError(503, "notes_unavailable", ""), "retry"],
     [new NotesApiError(413, "segment_too_large", ""), "blocked"],
     [new NotesApiError(404, "note_not_found", ""), "missing"],
   ] as const)("%o is %s", (error, handling) => {

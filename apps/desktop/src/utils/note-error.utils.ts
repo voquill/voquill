@@ -52,13 +52,59 @@ export const describeNoteError = (
           defaultMessage: "Finish signing in to Voquill, then retry.",
         }),
       );
-    case "too_many_processing_notes":
+    case "too_many_processing":
       return describe(
-        intl.formatMessage({ defaultMessage: "Other meetings are processing" }),
+        intl.formatMessage({ defaultMessage: "Waiting for your other notes" }),
         intl.formatMessage({
           defaultMessage:
-            "Voquill processes a few meetings at a time. Retry in a few minutes.",
+            "Your plan processes a limited number of notes at a time. This one starts when another finishes.",
         }),
+      );
+    case "too_many_pending_uploads":
+      return describe(
+        intl.formatMessage({
+          defaultMessage: "Too many recordings are waiting to upload",
+        }),
+        intl.formatMessage({
+          defaultMessage:
+            "Finish or delete other notes that are waiting to upload, then retry.",
+        }),
+      );
+    case "notes_unavailable":
+      return describe(
+        intl.formatMessage({
+          defaultMessage: "Voquill Notes is unavailable right now",
+        }),
+        intl.formatMessage({ defaultMessage: "Retry in a little while." }),
+      );
+    case "capture_interrupted":
+      return describe(
+        intl.formatMessage({
+          defaultMessage: "Recording stopped unexpectedly",
+        }),
+        intl.formatMessage({
+          defaultMessage:
+            "The microphone stopped delivering audio or Voquill closed. Everything recorded until then is saved. Resume to keep recording, or Stop to write the notes.",
+        }),
+      );
+    case "capture_write_failed":
+      return describe(
+        intl.formatMessage({ defaultMessage: "Recording stopped: disk error" }),
+        intl.formatMessage({
+          defaultMessage:
+            "Voquill couldn't save more audio, for example because the disk is full. Everything recorded until then is saved. Free up space, then Resume or Stop.",
+        }),
+      );
+    case "note_length_limit":
+      return describe(
+        intl.formatMessage({
+          defaultMessage: "This meeting reached its length limit",
+        }),
+        intl.formatMessage({
+          defaultMessage:
+            "A note can hold up to 8 hours of recording. Everything recorded is saved: Stop to write the notes, then start a new note to keep recording.",
+        }),
+        { retryable: false },
       );
     case "regenerate_cooldown":
       return describe(
@@ -69,7 +115,6 @@ export const describeNoteError = (
       );
     case "segment_too_large":
     case "segment_too_long":
-    case "too_many_segments":
     case "note_too_long":
       return describe(
         intl.formatMessage({
@@ -78,6 +123,15 @@ export const describeNoteError = (
         intl.formatMessage({
           defaultMessage:
             "Meetings can be up to 8 hours, in parts of up to 4 hours. Remove a part or keep it as a local recording.",
+        }),
+        { retryable: false },
+      );
+    case "too_many_segments":
+      return describe(
+        intl.formatMessage({ defaultMessage: "This note has too many parts" }),
+        intl.formatMessage({
+          defaultMessage:
+            "A note can have up to 50 recorded parts. Start a new note to keep recording.",
         }),
         { retryable: false },
       );

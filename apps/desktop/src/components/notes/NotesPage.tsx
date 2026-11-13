@@ -39,7 +39,7 @@ import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { ImportTranscriptDialog } from "./ImportTranscriptDialog";
 import { NoteRow } from "./NoteRow";
 
-const SEARCH_DEBOUNCE_MS = 250;
+const SEARCH_DEBOUNCE_MS = 350;
 
 export default function NotesPage() {
   const intl = useIntl();

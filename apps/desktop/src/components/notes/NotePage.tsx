@@ -27,11 +27,11 @@ import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../../actions/app.actions";
 import {
-  CAPTURE_INTERRUPTED_ERROR_CODE,
   loadNoteSegments,
   openNotesAsk,
   pauseMeetingNote,
   dropNoteSegment,
+  NoteRecordingBlockedError,
   regenerateNote,
   renameNote,
   resumeMeetingNote,
@@ -116,7 +116,12 @@ const useResumeNote = () => {
         );
         navigate(getNotePath(otherNoteId));
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof NoteRecordingBlockedError) {
+        const problem = describeNoteError(intl, error.code);
+        showErrorSnackbar(`${problem.title}. ${problem.body}`);
+        return;
+      }
       showErrorSnackbar(
         intl.formatMessage({
           defaultMessage:
@@ -139,14 +144,11 @@ const RecordingPanel = ({ note }: { note: Note }) => {
     formatNoteDuration(getNoteElapsedMs(state, note.id)),
   );
   const resumeNote = useResumeNote();
-  const interrupted = note.error?.code === CAPTURE_INTERRUPTED_ERROR_CODE;
 
   return (
     <Stack spacing={3}>
-      {interrupted && !isCapturing && (
-        <Alert severity="warning">
-          <FormattedMessage defaultMessage="Recording stopped unexpectedly, for example because the microphone was disconnected or Voquill closed. Everything recorded until then is saved. Resume to keep recording, or Stop to write the notes." />
-        </Alert>
+      {note.error && !isCapturing && (
+        <NoteProblem severity="warning" code={note.error.code} />
       )}
       <Stack alignItems="center" spacing={2} sx={{ py: 2 }}>
         <Stack direction="row" alignItems="center" spacing={1.5}>

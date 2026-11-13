@@ -1,4 +1,4 @@
-import { Box, Link, type SxProps, type Theme } from "@mui/material";
+import { Box, Link, Tooltip, type SxProps, type Theme } from "@mui/material";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import type { ComponentProps } from "react";
 import Markdown, { type Components } from "react-markdown";
@@ -13,7 +13,8 @@ const keepExternalLinks = (url: string): string =>
 /**
  * Note and answer markdown comes from transcripts and pasted text that others
  * can influence, so it never loads anything: images render as their alt
- * text, raw HTML is dropped, and links open in the browser only on click.
+ * text, raw HTML is dropped, and links show their URL and open in the
+ * system browser only on click (docs/notes.md "Rendering").
  */
 const components: Components = {
   img: ({ alt }) => (alt ? <span>{alt}</span> : null),
@@ -22,17 +23,19 @@ const components: Components = {
       return <span>{children}</span>;
     }
     return (
-      <Link
-        href={href}
-        rel="noreferrer noopener"
-        onClick={(event) => {
-          event.preventDefault();
-          void openUrl(href);
-        }}
-        onAuxClick={(event) => event.preventDefault()}
-      >
-        {children}
-      </Link>
+      <Tooltip title={href}>
+        <Link
+          href={href}
+          rel="noreferrer noopener"
+          onClick={(event) => {
+            event.preventDefault();
+            void openUrl(href);
+          }}
+          onAuxClick={(event) => event.preventDefault()}
+        >
+          {children}
+        </Link>
+      </Tooltip>
     );
   },
 };

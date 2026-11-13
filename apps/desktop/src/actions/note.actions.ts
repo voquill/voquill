@@ -1,4 +1,9 @@
-import type { Note, NoteEditableField, NoteSegment } from "@voquill/types";
+import type {
+  Note,
+  NoteEditableField,
+  NoteError,
+  NoteSegment,
+} from "@voquill/types";
 import dayjs from "dayjs";
 import {
   getCloudNotePipeline,
@@ -19,6 +24,7 @@ import {
   createNoteCloudSync,
   getCloudNotesUserId,
   getDefaultNoteTitle,
+  getNoteElapsedMs,
 } from "../utils/note.utils";
 import {
   canTransitionNote,
@@ -26,11 +32,28 @@ import {
   transitionNote,
 } from "../utils/note-state.utils";
 import { getMyPreferredMicrophone } from "../utils/user.utils";
+import {
+  canAppendToNoteSegment,
+  getNoteCaptureAction,
+  getNoteResumeBlocker,
+} from "../utils/note-audio.utils";
 import { needsFullNoteFetch } from "../utils/note-sync.utils";
 import { syncCloudNotes } from "./note-sync.actions";
 import { addNoteSegment, loadNotes, noteStore } from "./note-store.actions";
 
 export const CAPTURE_INTERRUPTED_ERROR_CODE = "capture_interrupted";
+export const CAPTURE_WRITE_FAILED_ERROR_CODE = "capture_write_failed";
+export const NOTE_LENGTH_LIMIT_ERROR_CODE = "note_length_limit";
+
+/** Recording cannot continue in this note (`code` says why). */
+export class NoteRecordingBlockedError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+  }
+}
 
 let captureQueue: Promise<unknown> = Promise.resolve();
 
@@ -61,36 +84,105 @@ const processNote = (noteId: string) => {
 const sumSegmentDurations = (segments: NoteSegment[]) =>
   segments.reduce((total, segment) => total + segment.durationMs, 0);
 
+const nextSegmentIndex = (segments: NoteSegment[]) =>
+  segments.reduce((max, segment) => Math.max(max, segment.index + 1), 0);
+
+const lastSegment = (segments: NoteSegment[]) =>
+  [...segments].sort((left, right) => right.index - left.index)[0];
+
+/**
+ * Starts capturing, continuing the last segment when it has not been sent
+ * anywhere yet (so pauses never use up segments), otherwise in a new one.
+ */
 const startSegmentCapture = async (noteId: string): Promise<void> => {
   const segments = await noteStore.loadSegments(noteId);
+  const audio = getMeetingAudioRepo();
+  const preferredMicrophone = getMyPreferredMicrophone(getAppState());
+  const markCapturing = (status: MeetingCaptureStatus) =>
+    produceAppState((draft) => {
+      draft.notes.capture = status;
+      draft.notes.activeNoteId = noteId;
+    });
+
+  const last = lastSegment(segments);
+  if (last && canAppendToNoteSegment(last)) {
+    try {
+      const status = await audio.startCapture({
+        noteId,
+        segmentId: last.id,
+        append: true,
+        preferredMicrophone,
+      });
+      markCapturing(status);
+      await noteStore.updateSegment(noteId, last.id, (segment) => {
+        segment.status = "recording";
+      });
+      return;
+    } catch (error) {
+      getLogger().warning(`Could not continue the last segment: ${error}`);
+    }
+  }
+
   const segmentId = createId();
-  const status = await getMeetingAudioRepo().startCapture({
+  const status = await audio.startCapture({
     noteId,
     segmentId,
-    preferredMicrophone: getMyPreferredMicrophone(getAppState()),
+    append: false,
+    preferredMicrophone,
   });
-  produceAppState((draft) => {
-    draft.notes.capture = status;
-    draft.notes.activeNoteId = noteId;
-  });
-  await addNoteSegment({
-    id: segmentId,
-    noteId,
-    index: segments.reduce(
-      (max, segment) => Math.max(max, segment.index + 1),
-      0,
-    ),
-    kind: "audio",
-    status: "recording",
-    durationMs: 0,
-    createdAt: dayjs().toISOString(),
-    transcript: null,
-    transcribedMs: 0,
-    audioPath: status.audioPath,
-    error: null,
-    upload: null,
-  });
+  markCapturing(status);
+  await addNoteSegment(
+    newRecordingSegment(noteId, segmentId, segments, status),
+  );
 };
+
+const newRecordingSegment = (
+  noteId: string,
+  segmentId: string,
+  segments: NoteSegment[],
+  status: MeetingCaptureStatus,
+): NoteSegment => ({
+  id: segmentId,
+  noteId,
+  index: nextSegmentIndex(segments),
+  kind: "audio",
+  status: "recording",
+  error: null,
+  durationMs: 0,
+  createdAt: dayjs().toISOString(),
+  transcript: null,
+  transcribedMs: 0,
+  audioPath: status.audioPath,
+  upload: null,
+});
+
+/** Continues the running capture in a new segment before the file grows too big. */
+const rollSegmentCapture = (noteId: string): Promise<void> =>
+  serializeCapture(async () => {
+    if (getAppState().notes.capture?.noteId !== noteId) {
+      return;
+    }
+    const segments = noteStore.getSegments(noteId);
+    const segmentId = createId();
+    const rolled = await getMeetingAudioRepo().rollCapture(noteId, segmentId);
+    produceAppState((draft) => {
+      draft.notes.capture = rolled.status;
+    });
+    await noteStore.updateSegment(
+      noteId,
+      rolled.finished.segmentId,
+      (segment) => {
+        segment.status = "recorded";
+        segment.durationMs = rolled.finished.durationMs;
+      },
+    );
+    await addNoteSegment(
+      newRecordingSegment(noteId, segmentId, segments, rolled.status),
+    );
+    await noteStore.updateNote(noteId, (note) => {
+      note.durationMs = sumSegmentDurations(noteStore.getSegments(noteId));
+    });
+  });
 
 /**
  * Finalizes the segment being captured. If the native layer no longer has
@@ -158,7 +250,7 @@ export const startMeetingNote = (): Promise<{
     try {
       await startSegmentCapture(note.id);
     } catch (error) {
-      await noteStore.deleteNote(note.id);
+      await noteStore.deleteNote(note.id, { deleteAudio: true });
       throw error;
     }
     if (note.cloud) {
@@ -200,6 +292,13 @@ export const resumeMeetingNote = (noteId: string): Promise<string | null> =>
     ) {
       return null;
     }
+    const blocker = getNoteResumeBlocker({
+      noteElapsedMs: note.durationMs,
+      segments: await loadNoteSegments(noteId),
+    });
+    if (blocker) {
+      throw new NoteRecordingBlockedError(blocker);
+    }
     await startSegmentCapture(noteId);
     await noteStore.updateNote(noteId, (draft) => {
       draft.status = transitionNote(draft.status, "resume");
@@ -231,20 +330,44 @@ export const stopMeetingNote = (noteId: string): Promise<void> =>
   });
 
 /** The microphone stopped delivering audio: keep what was captured, pause. */
-const interruptMeetingNote = (noteId: string): Promise<void> =>
+/**
+ * Pauses a capture that cannot continue, keeping everything recorded:
+ * the microphone stopped, the disk refused writes, or the note reached the
+ * recording limit.
+ */
+const haltMeetingNote = (
+  noteId: string,
+  event: "interrupt" | "pause",
+  error: NoteError,
+): Promise<void> =>
   serializeCapture(async () => {
     if (getAppState().notes.capture?.noteId !== noteId) {
       return;
     }
     await stopSegmentCapture();
     await noteStore.updateNote(noteId, (note) => {
-      note.status = transitionNote(note.status, "interrupt");
-      note.error = {
-        code: CAPTURE_INTERRUPTED_ERROR_CODE,
-        message: "The microphone stopped delivering audio",
-      };
+      if (canTransitionNote(note.status, event)) {
+        note.status = transitionNote(note.status, event);
+      }
+      note.error = error;
     });
   });
+
+let captureActionInFlight = false;
+
+const runCaptureAction = (task: () => Promise<void>) => {
+  if (captureActionInFlight) {
+    return;
+  }
+  captureActionInFlight = true;
+  void task()
+    .catch((error) => {
+      getLogger().error(`Meeting capture action failed: ${error}`);
+    })
+    .finally(() => {
+      captureActionInFlight = false;
+    });
+};
 
 export const handleMeetingCaptureProgress = (status: MeetingCaptureStatus) => {
   const current = getAppState().notes.capture;
@@ -254,10 +377,35 @@ export const handleMeetingCaptureProgress = (status: MeetingCaptureStatus) => {
   produceAppState((draft) => {
     draft.notes.capture = status;
   });
-  if (status.interrupted && !current.interrupted) {
-    void interruptMeetingNote(status.noteId).catch((error) => {
-      getLogger().error(`Failed to pause interrupted meeting: ${error}`);
-    });
+  const noteId = status.noteId;
+
+  if (status.interruption) {
+    runCaptureAction(() =>
+      haltMeetingNote(noteId, "interrupt", {
+        code:
+          status.interruption === "write-failed"
+            ? CAPTURE_WRITE_FAILED_ERROR_CODE
+            : CAPTURE_INTERRUPTED_ERROR_CODE,
+        message: "Recording stopped unexpectedly",
+      }),
+    );
+    return;
+  }
+
+  const action = getNoteCaptureAction({
+    noteElapsedMs: getNoteElapsedMs(getAppState(), noteId),
+    segmentMs: status.durationMs,
+    segmentCount: noteStore.getSegments(noteId).length,
+  });
+  if (action === "roll") {
+    runCaptureAction(() => rollSegmentCapture(noteId));
+  } else if (action === "stop") {
+    runCaptureAction(() =>
+      haltMeetingNote(noteId, "pause", {
+        code: NOTE_LENGTH_LIMIT_ERROR_CODE,
+        message: "The meeting reached the recording limit",
+      }),
+    );
   }
 };
 
@@ -300,6 +448,75 @@ const recoverRecordingNote = async (
   });
 };
 
+const RECOVERED_AUDIO_ERROR: NoteError = {
+  code: CAPTURE_INTERRUPTED_ERROR_CODE,
+  message: "Recording was interrupted",
+};
+
+/**
+ * Meeting audio on disk that no segment references (a crash between the
+ * native layer creating a file and the app storing its segment) becomes a
+ * segment of its note again, or of a recovered note, never discarded.
+ */
+const adoptUnreferencedAudio = async (): Promise<void> => {
+  const orphans = await getMeetingAudioRepo().listUnreferencedAudio();
+  for (const orphan of orphans) {
+    if (orphan.durationMs <= 0) {
+      continue;
+    }
+    let note = noteStore.getNote(orphan.noteId);
+    if (!note && orphan.noteExists) {
+      // Another account's note: it adopts the file when that account is back.
+      continue;
+    }
+    if (note && note.status !== "paused" && note.status !== "recording") {
+      getLogger().warning(
+        "Meeting audio found for a note that is not recording",
+      );
+      continue;
+    }
+    if (!note) {
+      const now = dayjs().toISOString();
+      const storage = selectNoteStorage(getAppState());
+      note = {
+        id: orphan.noteId,
+        storage,
+        status: "paused",
+        title: getDefaultNoteTitle("recording", now),
+        titleSource: "default",
+        error: RECOVERED_AUDIO_ERROR,
+        source: "recording",
+        personalNotes: "",
+        generatedNotes: null,
+        durationMs: 0,
+        createdAt: now,
+        updatedAt: now,
+        cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
+      };
+      await noteStore.insertNote(note, []);
+    }
+    const segments = await noteStore.loadSegments(note.id);
+    await addNoteSegment({
+      id: orphan.segmentId,
+      noteId: note.id,
+      index: nextSegmentIndex(segments),
+      kind: "audio",
+      status: "recorded",
+      error: null,
+      durationMs: orphan.durationMs,
+      createdAt: dayjs().toISOString(),
+      transcript: null,
+      transcribedMs: 0,
+      audioPath: orphan.audioPath,
+      upload: null,
+    });
+    await noteStore.updateNote(note.id, (draft) => {
+      draft.durationMs = sumSegmentDurations(noteStore.getSegments(draft.id));
+      draft.error = RECOVERED_AUDIO_ERROR;
+    });
+  }
+};
+
 /**
  * Loads notes and re-enters every note's lifecycle, after a launch or when
  * the signed-in account changes: recordings cut off by a quit or crash
@@ -330,6 +547,10 @@ export const initializeNotes = async (): Promise<void> => {
       });
     }
   }
+
+  await adoptUnreferencedAudio().catch((error) => {
+    getLogger().error(`Failed to recover unreferenced meeting audio: ${error}`);
+  });
 
   for (const note of noteStore.getNotes()) {
     const pipeline = getNotePipeline(note.storage);

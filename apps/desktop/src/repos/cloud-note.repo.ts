@@ -68,6 +68,21 @@ export type ServerNoteSearchResult = {
 
 /** Meeting audio is uploaded as recorded: 16 kHz mono 16-bit WAV. */
 export const NOTE_AUDIO_CONTENT_TYPE = "audio/wav";
+const NOTE_AUDIO_BYTES_PER_SECOND = 32_000;
+
+/** Server limits that a recording must never outgrow (docs/notes.md "Limits"). */
+export const NOTE_SERVER_LIMITS = {
+  /** The smallest per-plan segment cap (free plan). */
+  maxSegmentBytes: 120_000_000,
+  maxSegmentMs: 4 * 60 * 60_000,
+  maxNoteMs: 8 * 60 * 60_000,
+  maxSegments: 50,
+  maxPendingUploadsPerNote: 10,
+};
+
+/** How long a WAV segment may record before its file reaches `bytes`. */
+export const getNoteAudioDurationForBytes = (bytes: number): number =>
+  Math.floor((bytes / NOTE_AUDIO_BYTES_PER_SECOND) * 1000);
 
 /** The server's fixed id for an imported note's only segment. */
 const SERVER_IMPORT_SEGMENT_ID = "import";
@@ -86,17 +101,20 @@ export class NotesApiError extends Error {
   readonly status: number;
   readonly code: string;
   readonly segmentIds: string[];
+  readonly retryAfterSeconds: number | null;
 
   constructor(
     status: number,
     code: string,
     message: string,
     segmentIds: string[] = [],
+    retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.segmentIds = segmentIds;
+    this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -106,9 +124,11 @@ export class NotesNetworkError extends Error {}
 /**
  * How the client treats an error code:
  * - `retry`: transient (network, 5xx, queue); retry the same call with backoff.
- * - `busy`: the account is processing too much at once; retry later.
- * - `blocked`: needs the user (plan, quota, limits, bad audio); never auto-retried.
- * - `missing`: the note or segment is gone on the server.
+ * - `busy`: the account's processing slots are full; queued, retry later
+ *   (clears on its own when another note finishes).
+ * - `blocked`: needs the user (plan, quota, limits, bad audio, cooldown);
+ *   never auto-retried.
+ * - `missing`: the note is gone on the server.
  */
 export type NotesErrorHandling = "retry" | "busy" | "blocked" | "missing";
 
@@ -117,6 +137,7 @@ const BLOCKING_CODES = new Set([
   "word_quota_exceeded",
   "audio_quota_exceeded",
   "regenerate_cooldown",
+  "too_many_pending_uploads",
   "segment_too_large",
   "segment_too_long",
   "too_many_segments",
@@ -130,7 +151,7 @@ const BLOCKING_CODES = new Set([
   "invalid_request",
 ]);
 
-const BUSY_CODES = new Set(["too_many_processing_notes"]);
+const BUSY_CODES = new Set(["too_many_processing"]);
 
 export const getNotesErrorHandling = (error: unknown): NotesErrorHandling => {
   if (error instanceof NotesNetworkError) return "retry";
@@ -228,14 +249,19 @@ const readApiError = async (response: Response): Promise<NotesApiError> => {
       error?: {
         code?: string;
         message?: string;
-        details?: { segmentIds?: string[] };
+        details?: { segmentIds?: string[]; retryAfterSeconds?: number };
       };
     };
+    const retryAfterHeader = Number(response.headers.get("Retry-After"));
     return new NotesApiError(
       response.status,
       body.error?.code ?? "unknown",
       body.error?.message ?? response.statusText,
       body.error?.details?.segmentIds ?? [],
+      body.error?.details?.retryAfterSeconds ??
+        (Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+          ? retryAfterHeader
+          : null),
     );
   } catch {
     return new NotesApiError(response.status, "unknown", response.statusText);

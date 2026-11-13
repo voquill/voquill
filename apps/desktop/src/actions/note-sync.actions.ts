@@ -26,17 +26,21 @@ const syncCloudNotesNow = async (ownerUserId: string): Promise<void> => {
 
   const pendingDeletes = new Set<string>();
   for (const deletion of await repo.listDeletions(ownerUserId)) {
-    try {
-      await api.deleteNote(deletion.noteId);
-      await repo.removeDeletion(deletion.noteId);
-    } catch {
-      pendingDeletes.add(deletion.noteId);
-    }
+    pendingDeletes.add(deletion.noteId);
+    await api.deleteNote(deletion.noteId).catch(() => undefined);
   }
 
   const serverNotes = await api.listAllNotes();
   if (getCloudNotesUserId(getAppState()) !== ownerUserId) {
     return;
+  }
+
+  // A delete is done once the server no longer lists the note.
+  const listedIds = new Set(serverNotes.map((note) => note.id));
+  for (const noteId of pendingDeletes) {
+    if (!listedIds.has(noteId)) {
+      await repo.removeDeletion(noteId);
+    }
   }
 
   const serverIds = new Set<string>();
@@ -65,7 +69,7 @@ const syncCloudNotesNow = async (ownerUserId: string): Promise<void> => {
     }
     const segments = await noteStore.loadSegments(note.id);
     if (canRemoveMissingCloudNote(note, segments)) {
-      await noteStore.deleteNote(note.id);
+      await noteStore.deleteNote(note.id, { deleteAudio: false });
     }
   }
 };

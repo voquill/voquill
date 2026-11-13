@@ -12,6 +12,14 @@ const fakes = vi.hoisted(() => ({
   repairedPaths: [] as string[],
   processed: [] as string[],
   resumed: [] as string[],
+  rolls: [] as string[],
+  orphans: [] as {
+    noteId: string;
+    segmentId: string;
+    audioPath: string;
+    durationMs: number;
+    noteExists: boolean;
+  }[],
 }));
 
 vi.mock("../utils/log.utils", () => ({
@@ -64,25 +72,49 @@ vi.mock("../repos", () => ({
     startCapture: async ({
       noteId,
       segmentId,
+      append,
     }: {
       noteId: string;
       segmentId: string;
+      append: boolean;
     }) => {
+      const existing = append
+        ? (fakes.segments.get(segmentId)?.durationMs ?? 0)
+        : 0;
       fakes.nativeCapture = {
         noteId,
         segmentId,
         audioPath: `/audio/${segmentId}.wav`,
-        durationMs: 0,
+        durationMs: existing,
+        initialDurationMs: existing,
         level: 0,
-        interrupted: false,
+        interruption: null,
       };
       return fakes.nativeCapture;
     },
     stopCapture: async () => {
       const capture = fakes.nativeCapture;
       fakes.nativeCapture = null;
-      return capture ? { ...capture, durationMs: 42_000 } : null;
+      return capture
+        ? { ...capture, durationMs: capture.durationMs + 42_000 }
+        : null;
     },
+    rollCapture: async (noteId: string, segmentId: string) => {
+      const current = fakes.nativeCapture!;
+      fakes.rolls.push(segmentId);
+      fakes.nativeCapture = {
+        ...current,
+        segmentId,
+        audioPath: `/audio/${segmentId}.wav`,
+        durationMs: 0,
+        initialDurationMs: 0,
+      };
+      return {
+        finished: { ...current, noteId, durationMs: current.durationMs },
+        status: fakes.nativeCapture,
+      };
+    },
+    listUnreferencedAudio: async () => fakes.orphans,
     getCaptureStatus: async () => fakes.capture,
     repairSegment: async (path: string) => {
       fakes.repairedPaths.push(path);
@@ -99,6 +131,9 @@ const {
   startMeetingNote,
   stopMeetingNote,
 } = await import("./note.actions");
+
+const { NOTE_RECORDING_LIMIT_MS, NOTE_SEGMENT_ROLL_MS } =
+  await import("../utils/note-audio.utils");
 
 const NOW = "2026-05-01T12:00:00.000Z";
 
@@ -148,6 +183,8 @@ beforeEach(() => {
   fakes.repairedPaths = [];
   fakes.processed = [];
   fakes.resumed = [];
+  fakes.rolls = [];
+  fakes.orphans = [];
   setAppState(structuredClone(INITIAL_APP_STATE));
 });
 
@@ -210,8 +247,9 @@ describe("initializeNotes", () => {
       segmentId: "live-0",
       audioPath: "/audio/live-0.wav",
       durationMs: 3_000,
+      initialDurationMs: 0,
       level: 0,
-      interrupted: false,
+      interruption: null,
     };
     fakes.segments.set("live-0", storedSegment("live", 0, "recording", 0));
 
@@ -245,8 +283,8 @@ describe("meeting capture actions", () => {
     expect(state.noteById[noteId].status).toBe("pending");
     expect(state.noteById[noteId].durationMs).toBe(84_000);
     expect(state.notes.activeNoteId).toBeNull();
+    // Resuming continues the same segment, so pauses never add segments.
     expect(state.noteSegmentsByNoteId[noteId].map((s) => s.status)).toEqual([
-      "recorded",
       "recorded",
     ]);
     expect(fakes.processed).toEqual([noteId]);
@@ -273,7 +311,7 @@ describe("meeting capture actions", () => {
     handleMeetingCaptureProgress({ ...capture, durationMs: 9_000 });
     expect(getAppState().notes.capture?.durationMs).toBe(9_000);
 
-    handleMeetingCaptureProgress({ ...capture, interrupted: true });
+    handleMeetingCaptureProgress({ ...capture, interruption: "no-audio" });
     await vi.waitFor(() =>
       expect(getAppState().noteById[noteId].status).toBe("paused"),
     );
@@ -299,9 +337,135 @@ describe("meeting capture actions", () => {
     const capture = getAppState().notes.capture!;
     await pauseMeetingNote(noteId);
 
-    handleMeetingCaptureProgress({ ...capture, interrupted: true });
+    handleMeetingCaptureProgress({ ...capture, interruption: "no-audio" });
     await flushWrites();
     expect(getAppState().notes.capture).toBeNull();
     expect(getAppState().noteById[noteId].error).toBeNull();
+  });
+});
+
+describe("recording limits", () => {
+  it("rolls to a new segment before the file grows past the smallest segment cap", async () => {
+    const { noteId } = await startMeetingNote();
+    const capture = getAppState().notes.capture!;
+    fakes.nativeCapture = {
+      ...fakes.nativeCapture!,
+      durationMs: NOTE_SEGMENT_ROLL_MS,
+    };
+
+    handleMeetingCaptureProgress({
+      ...capture,
+      durationMs: NOTE_SEGMENT_ROLL_MS,
+    });
+    await vi.waitFor(() => expect(fakes.rolls).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(getAppState().noteSegmentsByNoteId[noteId]).toHaveLength(2),
+    );
+
+    const [first, second] = getAppState().noteSegmentsByNoteId[noteId];
+    expect(first).toMatchObject({
+      status: "recorded",
+      durationMs: NOTE_SEGMENT_ROLL_MS,
+    });
+    expect(second).toMatchObject({ status: "recording", index: 1 });
+    expect(getAppState().notes.capture?.segmentId).toBe(second.id);
+    expect(getAppState().noteById[noteId].durationMs).toBe(
+      NOTE_SEGMENT_ROLL_MS,
+    );
+  });
+
+  it("stops at the note limit with the audio kept, and refuses to resume", async () => {
+    const { noteId } = await startMeetingNote();
+    const capture = getAppState().notes.capture!;
+    fakes.nativeCapture = {
+      ...fakes.nativeCapture!,
+      durationMs: NOTE_RECORDING_LIMIT_MS,
+    };
+
+    handleMeetingCaptureProgress({
+      ...capture,
+      durationMs: NOTE_RECORDING_LIMIT_MS,
+    });
+    await vi.waitFor(() =>
+      expect(getAppState().noteById[noteId].status).toBe("paused"),
+    );
+    expect(getAppState().noteById[noteId].error?.code).toBe(
+      "note_length_limit",
+    );
+    expect(getAppState().noteSegmentsByNoteId[noteId][0].status).toBe(
+      "recorded",
+    );
+
+    await expect(resumeMeetingNote(noteId)).rejects.toMatchObject({
+      code: "note_length_limit",
+    });
+  });
+
+  it("pauses at once when the disk refuses writes", async () => {
+    const { noteId } = await startMeetingNote();
+    const capture = getAppState().notes.capture!;
+    handleMeetingCaptureProgress({ ...capture, interruption: "write-failed" });
+    await vi.waitFor(() =>
+      expect(getAppState().noteById[noteId].error?.code).toBe(
+        "capture_write_failed",
+      ),
+    );
+    expect(getAppState().noteById[noteId].status).toBe("paused");
+  });
+});
+
+describe("unreferenced meeting audio", () => {
+  it("adopts files no segment references instead of dropping them", async () => {
+    fakes.notes.set("paused", storedNote("paused", "paused"));
+    fakes.orphans = [
+      {
+        noteId: "paused",
+        segmentId: "lost-1",
+        audioPath: "/audio/lost-1.wav",
+        durationMs: 5_000,
+        noteExists: true,
+      },
+      {
+        noteId: "gone",
+        segmentId: "lost-2",
+        audioPath: "/audio/lost-2.wav",
+        durationMs: 9_000,
+        noteExists: false,
+      },
+      {
+        noteId: "other-account",
+        segmentId: "lost-3",
+        audioPath: "/audio/lost-3.wav",
+        durationMs: 9_000,
+        noteExists: true,
+      },
+      {
+        noteId: "empty",
+        segmentId: "lost-4",
+        audioPath: "/audio/lost-4.wav",
+        durationMs: 0,
+        noteExists: false,
+      },
+    ];
+
+    await initializeNotes();
+    await flushWrites();
+
+    const state = getAppState();
+    expect(state.noteSegmentsByNoteId.paused.map((s) => s.id)).toEqual([
+      "lost-1",
+    ]);
+    expect(state.noteById.paused.durationMs).toBe(5_000);
+    expect(state.noteById.gone).toMatchObject({
+      status: "paused",
+      durationMs: 9_000,
+    });
+    expect(state.noteSegmentsByNoteId.gone[0]).toMatchObject({
+      id: "lost-2",
+      status: "recorded",
+      audioPath: "/audio/lost-2.wav",
+    });
+    expect(state.noteById["other-account"]).toBeUndefined();
+    expect(state.noteById.empty).toBeUndefined();
   });
 });

@@ -16,6 +16,7 @@ import {
   isNoteAudioChunkSilent,
   NOTE_ENVELOPE_WINDOW_MS,
   planNoteAudioChunks,
+  type NoteChunkLimits,
 } from "../utils/note-audio.utils";
 import {
   buildAskMessages,
@@ -61,8 +62,11 @@ export type NoteStore = {
     segmentId: string,
     recipe: (segment: NoteSegment) => void,
   ): Promise<void>;
-  /** Removes the note, its segments and its local audio. */
-  deleteNote(noteId: string): Promise<void>;
+  /**
+   * Removes the note and its segments; `deleteAudio` (the user deleted it)
+   * also removes its audio files, otherwise they stay for recovery.
+   */
+  deleteNote(noteId: string, options: { deleteAudio: boolean }): Promise<void>;
 };
 
 export type NoteChatGenerator = NoteTextGenerator & {
@@ -86,6 +90,13 @@ export type LocalNotePipelineDeps = {
   getChatGenerator(): NoteChatGenerator | null;
   /** Whose cloud notes (local copies) search may include. */
   getCloudNotesUserId(): string | null;
+  /** Chunk sizes for the transcription mode in use. */
+  getChunkLimits(): NoteChunkLimits;
+  /**
+   * Resolves when no dictation is running. Called before each chunk and each
+   * generation request, so dictation never waits behind a whole note.
+   */
+  yieldToDictation(): Promise<void>;
 };
 
 export type NoteErrorCode =
@@ -265,7 +276,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
   }
 
   async deleteNote(noteId: string): Promise<void> {
-    await this.deps.store.deleteNote(noteId);
+    await this.deps.store.deleteNote(noteId, { deleteAudio: true });
   }
 
   async search(query: string): Promise<NoteSearchResult[]> {
@@ -399,6 +410,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
           windowMs: NOTE_ENVELOPE_WINDOW_MS,
           fromMs: segment.transcribedMs,
           durationMs: segment.durationMs,
+          limits: this.deps.getChunkLimits(),
         });
 
         for (const chunk of chunks) {
@@ -407,6 +419,10 @@ export class LocalNotePipeline extends BaseNotePipeline {
             windowMs: NOTE_ENVELOPE_WINDOW_MS,
             chunk,
           });
+          if (!silent) {
+            await this.deps.yieldToDictation();
+            this.assertNoteExists(noteId);
+          }
           const text = silent
             ? ""
             : await this.deps.transcribe({
@@ -455,7 +471,17 @@ export class LocalNotePipeline extends BaseNotePipeline {
 
     try {
       const note = store.getNote(noteId);
-      const content = await generateNoteContent(model, {
+      const yielding: NoteGenerationModel = {
+        contextTokens: model.contextTokens,
+        generator: {
+          generateText: async (input) => {
+            await this.deps.yieldToDictation();
+            this.assertNoteExists(noteId);
+            return model.generator.generateText(input);
+          },
+        },
+      };
+      const content = await generateNoteContent(yielding, {
         transcript,
         personalNotes: note?.personalNotes ?? "",
         wantTitle: note?.titleSource !== "user",

@@ -69,6 +69,8 @@ export type CloudNotePipelineDeps = {
   setActivity(noteId: string, activity: NoteCloudActivity | null): void;
   /** Called after a note settled, so the list can refresh. */
   onSettled(noteId: string): void;
+  /** Resolves when no dictation is running, so background work never competes with it. */
+  yieldToDictation(): Promise<void>;
 };
 
 /** The note was deleted, or its account signed out: stop without failing it. */
@@ -85,8 +87,9 @@ class NoteBlockedError extends Error {
 }
 
 const MAX_SERVER_RETRIES = 6;
-const MAX_BUSY_WAITS = 20;
 const BUSY_WAIT_MS = 30_000;
+/** Upload passes are this size so a dictation never waits behind a long upload. */
+const UPLOAD_PASS_BYTES = 8 * 1024 * 1024;
 const MAX_BACKOFF_MS = 60_000;
 const MAX_UPLOAD_SESSIONS = 3;
 const MAX_AUDIO_MISSING_ROUNDS = 3;
@@ -276,8 +279,9 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   /**
-   * Deletes on the server, then here. If the server cannot be reached the
-   * delete is remembered and retried by the next sync.
+   * Deletes on the server, then here. The delete is remembered until a sync
+   * sees the server without the note, so a request that was still in flight
+   * (an upload session creates a draft) cannot bring it back.
    */
   async deleteNote(noteId: string): Promise<void> {
     const { store, api, repo, audio } = this.deps;
@@ -287,17 +291,14 @@ export class CloudNotePipeline extends BaseNotePipeline {
     }
     const ownerUserId = note?.cloud?.ownerUserId;
     if (ownerUserId) {
-      try {
-        await api.deleteNote(noteId);
-      } catch {
-        await repo.addDeletion({
-          noteId,
-          ownerUserId,
-          createdAt: this.deps.now(),
-        });
-      }
+      await repo.addDeletion({
+        noteId,
+        ownerUserId,
+        createdAt: this.deps.now(),
+      });
+      await api.deleteNote(noteId).catch(() => undefined);
     }
-    await store.deleteNote(noteId);
+    await store.deleteNote(noteId, { deleteAudio: true });
   }
 
   /** Retries a segment the server could not transcribe: upload it again, then process. */
@@ -436,7 +437,6 @@ export class CloudNotePipeline extends BaseNotePipeline {
   private async request<T>(noteId: string, call: () => Promise<T>): Promise<T> {
     let serverFailures = 0;
     let networkFailures = 0;
-    let busyWaits = 0;
     for (;;) {
       this.assertOwned(noteId);
       if (!this.deps.connectivity.isOnline()) {
@@ -458,7 +458,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
             await this.deps.sleep(backoffMs(serverFailures));
             continue;
           case "busy":
-            if (++busyWaits > MAX_BUSY_WAITS) throw error;
+            // Queued behind the account's other notes; clears on its own.
             this.deps.setActivity(noteId, { kind: "server-busy" });
             await this.deps.sleep(BUSY_WAIT_MS);
             continue;
@@ -610,9 +610,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
             }),
           );
         } catch (error) {
+          // Transcribed, or accepted by a running job: nothing to upload.
           if (
             error instanceof NotesApiError &&
-            error.code === "segment_transcribed"
+            (error.code === "segment_transcribed" ||
+              error.code === "segment_processing")
           ) {
             await store.updateSegment(noteId, segmentId, (draft) => {
               draft.upload = { url: "", sizeBytes, complete: true };
@@ -637,6 +639,8 @@ export class CloudNotePipeline extends BaseNotePipeline {
           this.deps.setActivity(noteId, { kind: "waiting-for-connection" });
           await this.deps.connectivity.waitUntilOnline();
         }
+        await this.deps.yieldToDictation();
+        this.assertOwned(noteId);
         this.deps.setActivity(noteId, {
           kind: "uploading",
           segmentId,
@@ -648,7 +652,12 @@ export class CloudNotePipeline extends BaseNotePipeline {
           filePath: audioPath,
           url: upload.url,
           contentType: NOTE_AUDIO_CONTENT_TYPE,
+          maxBytes: UPLOAD_PASS_BYTES,
         });
+        if (result.outcome === "partial") {
+          interruptions = 0;
+          continue;
+        }
         if (result.outcome === "complete") {
           await store.updateSegment(noteId, segmentId, (draft) => {
             if (draft.upload) draft.upload.complete = true;
@@ -659,6 +668,13 @@ export class CloudNotePipeline extends BaseNotePipeline {
           throw new NoteUnavailableError();
         }
         if (result.outcome === "expired") {
+          await store.updateSegment(noteId, segmentId, (draft) => {
+            draft.upload = null;
+          });
+          break;
+        }
+        if (result.outcome === "rejected" && result.status === 400) {
+          // Storage refused the byte count: start over with a fresh session.
           await store.updateSegment(noteId, segmentId, (draft) => {
             draft.upload = null;
           });

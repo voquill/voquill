@@ -1,6 +1,16 @@
 import type { NoteSegment } from "@voquill/types";
 import { describe, expect, it } from "vitest";
 import {
+  getNoteAudioDurationForBytes,
+  NOTE_SERVER_LIMITS,
+} from "../repos/cloud-note.repo";
+import {
+  canAppendToNoteSegment,
+  getNoteCaptureAction,
+  getNoteResumeBlocker,
+  LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+  NOTE_RECORDING_LIMIT_MS,
+  NOTE_SEGMENT_ROLL_MS,
   appendChunkTranscript,
   buildNoteTranscriptText,
   isNoteAudioChunkSilent,
@@ -178,5 +188,107 @@ describe("buildNoteTranscriptText", () => {
         segment(3, "  "),
       ]),
     ).toBe("first\n\nthird");
+  });
+});
+
+describe("recording limits", () => {
+  const recorded = (
+    index: number,
+    overrides: Partial<NoteSegment> = {},
+  ): NoteSegment => ({
+    id: `s${index}`,
+    noteId: "n",
+    index,
+    kind: "audio",
+    status: "recorded",
+    error: null,
+    durationMs: 60_000,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    transcript: null,
+    transcribedMs: 0,
+    audioPath: `/a/s${index}.wav`,
+    upload: null,
+    ...overrides,
+  });
+
+  it("rolls segments well under the free plan's 120 MB and the 4-hour cap", () => {
+    expect(NOTE_SEGMENT_ROLL_MS).toBeLessThan(
+      getNoteAudioDurationForBytes(NOTE_SERVER_LIMITS.maxSegmentBytes) * 0.95,
+    );
+    expect(NOTE_SEGMENT_ROLL_MS).toBeLessThan(NOTE_SERVER_LIMITS.maxSegmentMs);
+    const segmentsFor8Hours = Math.ceil(
+      NOTE_SERVER_LIMITS.maxNoteMs / NOTE_SEGMENT_ROLL_MS,
+    );
+    expect(segmentsFor8Hours).toBeLessThanOrEqual(
+      NOTE_SERVER_LIMITS.maxPendingUploadsPerNote,
+    );
+  });
+
+  it("rolls, stops at the note limit, and never exceeds the segment count", () => {
+    const base = { noteElapsedMs: 60_000, segmentMs: 60_000, segmentCount: 1 };
+    expect(getNoteCaptureAction(base)).toBeNull();
+    expect(
+      getNoteCaptureAction({ ...base, segmentMs: NOTE_SEGMENT_ROLL_MS }),
+    ).toBe("roll");
+    expect(
+      getNoteCaptureAction({
+        ...base,
+        segmentMs: NOTE_SEGMENT_ROLL_MS,
+        segmentCount: 50,
+      }),
+    ).toBe("stop");
+    expect(
+      getNoteCaptureAction({ ...base, noteElapsedMs: NOTE_RECORDING_LIMIT_MS }),
+    ).toBe("stop");
+    expect(NOTE_RECORDING_LIMIT_MS).toBeLessThan(NOTE_SERVER_LIMITS.maxNoteMs);
+  });
+
+  it("continues the last segment while it has not been sent anywhere", () => {
+    expect(canAppendToNoteSegment(recorded(0))).toBe(true);
+    expect(
+      canAppendToNoteSegment(
+        recorded(0, { upload: { url: "u", sizeBytes: 1, complete: false } }),
+      ),
+    ).toBe(false);
+    expect(canAppendToNoteSegment(recorded(0, { status: "transcribed" }))).toBe(
+      false,
+    );
+    expect(
+      canAppendToNoteSegment(recorded(0, { durationMs: NOTE_SEGMENT_ROLL_MS })),
+    ).toBe(false);
+    expect(canAppendToNoteSegment(undefined)).toBe(false);
+  });
+
+  it("refuses to resume past the limits", () => {
+    expect(
+      getNoteResumeBlocker({
+        noteElapsedMs: NOTE_RECORDING_LIMIT_MS,
+        segments: [recorded(0)],
+      }),
+    ).toBe("note_length_limit");
+    const full = Array.from({ length: 50 }, (_, i) =>
+      recorded(i, { status: "transcribed" }),
+    );
+    expect(getNoteResumeBlocker({ noteElapsedMs: 0, segments: full })).toBe(
+      "too_many_segments",
+    );
+    const fullButAppendable = [...full.slice(0, 49), recorded(49)];
+    expect(
+      getNoteResumeBlocker({ noteElapsedMs: 0, segments: fullButAppendable }),
+    ).toBeNull();
+  });
+
+  it("plans short chunks for on-device Whisper", () => {
+    const chunks = planNoteAudioChunks({
+      envelope: loudEnvelope(120_000),
+      windowMs: WINDOW_MS,
+      fromMs: 0,
+      durationMs: 120_000,
+      limits: LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+    });
+    expect(chunks.length).toBeGreaterThanOrEqual(4);
+    for (const chunk of chunks) {
+      expect(chunk.endMs - chunk.startMs).toBeLessThanOrEqual(30_000);
+    }
   });
 });

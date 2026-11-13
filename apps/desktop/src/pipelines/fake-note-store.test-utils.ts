@@ -41,7 +41,7 @@ export class FakeNoteStore implements NoteStore {
     );
   };
 
-  deleteNote = async (noteId: string) => {
+  deleteNote = async (noteId: string, _options?: { deleteAudio: boolean }) => {
     this.notes.delete(noteId);
     this.segments.delete(noteId);
     this.log.push(`delete-note:${noteId}`);

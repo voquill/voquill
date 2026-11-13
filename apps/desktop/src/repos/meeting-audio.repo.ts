@@ -6,14 +6,33 @@ export const MEETING_CAPTURE_PROGRESS_EVENT = "meeting_capture_progress";
 export const RESUMABLE_UPLOAD_PROGRESS_EVENT = "resumable_upload_progress";
 export const MEETING_AUDIO_SAMPLE_RATE = 16_000;
 
+export type MeetingCaptureInterruption = "no-audio" | "write-failed";
+
 export type MeetingCaptureStatus = {
   noteId: string;
   segmentId: string;
   audioPath: string;
+  /** The whole segment file, including audio it held before this capture. */
   durationMs: number;
+  /** What the segment file held when this capture started appending. */
+  initialDurationMs: number;
   level: number;
-  /** Audio stopped arriving; everything captured so far is on disk. */
-  interrupted: boolean;
+  /** Why audio stopped arriving; everything captured so far is on disk. */
+  interruption: MeetingCaptureInterruption | null;
+};
+
+export type MeetingCaptureRolled = {
+  finished: MeetingCaptureStopped;
+  status: MeetingCaptureStatus;
+};
+
+export type UnreferencedMeetingAudio = {
+  noteId: string;
+  segmentId: string;
+  audioPath: string;
+  durationMs: number;
+  /** A note with this id exists on this device (for any account). */
+  noteExists: boolean;
 };
 
 export type MeetingCaptureStopped = {
@@ -24,7 +43,13 @@ export type MeetingCaptureStopped = {
 };
 
 export type ResumableUploadOutcome = {
-  outcome: "complete" | "expired" | "interrupted" | "rejected" | "cancelled";
+  outcome:
+    | "complete"
+    | "partial"
+    | "expired"
+    | "interrupted"
+    | "rejected"
+    | "cancelled";
   uploadedBytes: number;
   totalBytes: number;
   status: number | null;
@@ -53,12 +78,30 @@ export const decodePcm16Base64 = (base64: string): Float32Array => {
 
 /** Meeting microphone capture and the segment audio files it writes. */
 export class MeetingAudioRepo extends BaseRepo {
+  /** Starts capturing into a new segment, or `append`s to an existing one. */
   async startCapture(args: {
     noteId: string;
     segmentId: string;
+    append: boolean;
     preferredMicrophone: Nullable<string>;
   }): Promise<MeetingCaptureStatus> {
     return invoke<MeetingCaptureStatus>("meeting_capture_start", { args });
+  }
+
+  /** Continues the running capture in a new segment, with no gap. */
+  async rollCapture(
+    noteId: string,
+    segmentId: string,
+  ): Promise<MeetingCaptureRolled> {
+    return invoke<MeetingCaptureRolled>("meeting_capture_roll", {
+      noteId,
+      segmentId,
+    });
+  }
+
+  /** Segment files on disk that no stored segment references. */
+  async listUnreferencedAudio(): Promise<UnreferencedMeetingAudio[]> {
+    return invoke<UnreferencedMeetingAudio[]>("meeting_audio_unreferenced");
   }
 
   async stopCapture(): Promise<Nullable<MeetingCaptureStopped>> {
@@ -111,6 +154,8 @@ export class MeetingAudioRepo extends BaseRepo {
     filePath: string;
     url: string;
     contentType: string;
+    /** Stop after about this many bytes so the caller can yield between passes. */
+    maxBytes: number | null;
   }): Promise<ResumableUploadOutcome> {
     return invoke<ResumableUploadOutcome>("resumable_upload", {
       args: {
@@ -118,6 +163,7 @@ export class MeetingAudioRepo extends BaseRepo {
         filePath: args.filePath,
         url: args.url,
         headers: [{ name: "Content-Type", value: args.contentType }],
+        maxBytes: args.maxBytes,
       },
     });
   }

@@ -8,7 +8,12 @@ import {
   getMeetingAudioRepo,
   getNoteRepo,
 } from "../repos";
-import { getAppState, produceAppState } from "../store";
+import { getAppState, produceAppState, useAppStore } from "../store";
+import {
+  DEFAULT_NOTE_CHUNK_LIMITS,
+  LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+} from "../utils/note-audio.utils";
+import { getTranscriptionPrefs } from "../utils/user.utils";
 import {
   getCloudNotesUserId,
   getNoteGenerationAvailable,
@@ -21,6 +26,38 @@ import { CloudNotePipeline, type Connectivity } from "./cloud-note.pipeline";
 import { LocalNotePipeline } from "./local-note.pipeline";
 
 export { selectNoteStorage } from "../utils/note.utils";
+
+const DICTATION_SETTLE_MS = 1_500;
+
+/**
+ * Resolves once no dictation is recording or transcribing (and a moment has
+ * passed since), so note work queued behind it starts only after the user's
+ * dictation is done.
+ */
+const yieldToDictation = async (): Promise<void> => {
+  const isDictating = () => getAppState().overlayPhase !== "idle";
+  if (!isDictating()) {
+    return;
+  }
+  for (;;) {
+    await new Promise<void>((resolve) => {
+      const unsubscribe = useAppStore.subscribe((state) => {
+        if (state.overlayPhase === "idle") {
+          unsubscribe();
+          resolve();
+        }
+      });
+      if (!isDictating()) {
+        unsubscribe();
+        resolve();
+      }
+    });
+    await new Promise((resolve) => setTimeout(resolve, DICTATION_SETTLE_MS));
+    if (!isDictating()) {
+      return;
+    }
+  }
+};
 
 const getChatGenerator = () =>
   getNoteGenerationAvailable(getAppState()) ? getGenerateTextRepo().repo : null;
@@ -53,6 +90,11 @@ const getLocalNotePipeline = (): LocalNotePipeline => {
     },
     getChatGenerator,
     getCloudNotesUserId: () => getCloudNotesUserId(getAppState()),
+    getChunkLimits: () =>
+      getTranscriptionPrefs(getAppState()).mode === "local"
+        ? LOCAL_WHISPER_NOTE_CHUNK_LIMITS
+        : DEFAULT_NOTE_CHUNK_LIMITS,
+    yieldToDictation,
   });
   return localNotePipeline;
 };
@@ -105,6 +147,7 @@ export const getCloudNotePipeline = (): CloudNotePipeline => {
     onSettled: () => {
       void syncCloudNotes({ force: true });
     },
+    yieldToDictation,
   });
   return cloudNotePipeline;
 };

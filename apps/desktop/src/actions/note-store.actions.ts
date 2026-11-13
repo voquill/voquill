@@ -177,12 +177,14 @@ export const noteStore: NoteStore = {
     await persistSegment(noteId, segmentId);
   },
 
-  deleteNote: async (noteId) => {
+  deleteNote: async (noteId, options) => {
     produceAppState((draft) => {
       delete draft.noteById[noteId];
       delete draft.noteSegmentsByNoteId[noteId];
     });
-    await enqueueNoteWrite(noteId, () => getNoteRepo().deleteNote(noteId));
+    await enqueueNoteWrite(noteId, () =>
+      getNoteRepo().deleteNote(noteId, options),
+    );
   },
 };
 
