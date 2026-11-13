@@ -178,7 +178,7 @@ export class DictationStrategy extends BaseStrategy {
 
     await this.pasteQueue;
 
-    if (sanitizedTranscript) {
+    if (sanitizedTranscript && !args.signal.aborted) {
       getLogger().warning(
         `Live output was interrupted after ${this.streamedSegmentCount} segments; delivering recovered transcript ${remoteDeviceId ? "to paired device" : "to clipboard"}`,
       );
@@ -269,7 +269,7 @@ export class DictationStrategy extends BaseStrategy {
         }
       }
 
-      if (transcript) {
+      if (transcript && !args.signal.aborted) {
         await new Promise<void>((resolve) => setTimeout(resolve, 20));
         try {
           getLogger().verbose(

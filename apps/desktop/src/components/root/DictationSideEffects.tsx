@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { AppTarget } from "@voquill/types";
 import { delayed } from "@voquill/utilities";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIntl } from "react-intl";
@@ -23,9 +22,10 @@ import {
   setToolAlwaysAllow,
 } from "../../actions/tool.actions";
 import {
-  finishDictation,
-  type FinishDictationOutcome,
-} from "../../actions/dictation.actions";
+  type DictationNotice,
+  DictationRunner,
+  type DictationRunnerEffects,
+} from "../../actions/dictation-runner";
 import { recordStreak } from "../../actions/user.actions";
 import {
   useHotkeyFire,
@@ -39,14 +39,10 @@ import { createTranscriptionSession } from "../../sessions";
 import { RecordingMode } from "../../state/app.state";
 import { getAppState, produceAppState, useAppStore } from "../../store";
 import { AgentStrategy } from "../../strategies/agent.strategy";
-import { BaseStrategy } from "../../strategies/base.strategy";
 import { DictationStrategy } from "../../strategies/dictation.strategy";
 import { TextFieldInfo } from "../../types/accessibility.types";
 import type { OverlayResolvePermissionPayload } from "../../types/overlay.types";
-import {
-  StopRecordingResponse,
-  TranscriptionSession,
-} from "../../types/transcription-session.types";
+import { StopRecordingResponse } from "../../types/transcription-session.types";
 import {
   ActivationController,
   debouncedToggle,
@@ -98,22 +94,14 @@ type StartRecordingResponse = {
   sampleRate: number;
 };
 
-type AbortMessage = {
-  title?: string;
-  body: unknown;
-};
-
 export const DictationSideEffects = () => {
   const intl = useIntl();
 
-  const strategyRef = useRef<BaseStrategy | null>(null);
-  const sessionRef = useRef<TranscriptionSession | null>(null);
+  const runnerEffectsRef = useRef<DictationRunnerEffects | null>(null);
   const preDictationVolumeRef = useRef<number | null>(null);
   const recordingWarningTimerRef = useRef<NodeJS.Timeout | null>(null);
   const recordingAutoStopTimerRef = useRef<NodeJS.Timeout | null>(null);
   const cancelPromptTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const isStoppingRef = useRef(false);
-  const stopIdRef = useRef(0);
   const [isStopping, setIsStopping] = useState(false);
   const assistantModeEnabled = useAppStore(getIsAssistantModeEnabled);
 
@@ -230,195 +218,26 @@ export const DictationSideEffects = () => {
     );
   }, [additionalLanguageControllers, agentController, dictationController]);
 
-  const releaseStopping = useCallback(() => {
-    hardResetHotkeyState();
-    isStoppingRef.current = false;
-    setIsStopping(false);
-  }, [hardResetHotkeyState]);
-
-  const abortRecording = useCallback(
-    async (message?: AbortMessage) => {
-      getLogger().info(
-        `Aborting recording (hasSession=${!!sessionRef.current}, hasStrategy=${!!strategyRef.current}${message ? `, reason=${String(message.body).slice(0, 120)}` : ""})`,
-      );
-      clearRecordingTimers();
-      clearCancelPromptTimer();
-      hardResetHotkeyState();
-      restoreSystemVolume();
-      invoke<void>("set_phase", { phase: "idle" });
-      invoke("stop_recording").catch((e) =>
-        getLogger().verbose(`stop_recording failed during abort: ${e}`),
-      );
-
-      sessionRef.current?.cleanup();
-      strategyRef.current?.cleanup();
-      strategyRef.current = null;
-      sessionRef.current = null;
-
-      clearRecordingState();
-      if (isStoppingRef.current) {
-        // Cancelling during transcription frees the hotkeys right away; the
-        // in-flight stop sees it was superseded and does nothing further.
-        stopIdRef.current++;
-        releaseStopping();
-      }
-
-      if (message) {
-        playAlertSound();
-        showToast({
-          message: String(message.body),
-          toastType: "error",
-          duration: 8_000,
-        });
-      }
-    },
-    [
-      clearCancelPromptTimer,
-      clearRecordingState,
-      clearRecordingTimers,
-      hardResetHotkeyState,
-      releaseStopping,
-      restoreSystemVolume,
-      intl,
-    ],
+  const runner = useMemo(
+    () => new DictationRunner(() => runnerEffectsRef.current!),
+    [],
   );
 
-  const stopRecordingRaw =
-    useCallback(async (): Promise<FinishDictationOutcome> => {
-      getLogger().info("Stopping recording");
-      clearRecordingTimers();
-      restoreSystemVolume();
+  const startRecording = useCallback(
+    (args: { mode: RecordingMode; language?: string | null }) =>
+      runner.start({
+        mode: args.mode,
+        language: args.language || getMyPrimaryDictationLanguage(getAppState()),
+      }),
+    [runner],
+  );
 
-      const [audio, a11yInfo, appTarget] = await getLogger().stopwatch(
-        "stopRecording",
-        async () => {
-          let audio: StopRecordingResponse | null = null;
-          let a11yInfo: TextFieldInfo | null = null;
-          let appTarget: AppTarget | null = null;
-          try {
-            tryPlayAudioChime("stop_recording_clip");
+  const stopRecording = useCallback(() => runner.stop(), [runner]);
 
-            getLogger().verbose(
-              "Invoking stop_recording and fetching a11y info",
-            );
-            const [, outAudio, outA11yInfo, outAppTarget] = await Promise.all([
-              strategyRef.current?.setPhase("loading"),
-              invoke<StopRecordingResponse>("stop_recording"),
-              invoke<TextFieldInfo>("get_text_field_info").catch((error) => {
-                getLogger().verbose(`Failed to get text field info: ${error}`);
-                return null;
-              }),
-              tryRegisterCurrentAppTarget().catch((error) => {
-                getLogger().verbose(
-                  `Failed to get current app target: ${error}`,
-                );
-                return null;
-              }),
-            ]);
-
-            audio = outAudio;
-            a11yInfo = outA11yInfo;
-            appTarget = outAppTarget;
-            getLogger().verbose(
-              `Recording stopped (hasSamples=${!!audio?.samples})`,
-            );
-          } catch (error) {
-            getLogger().error(`Failed to stop recording: ${error}`);
-            showToast({
-              message: intl.formatMessage({
-                defaultMessage: "Failed to stop recording",
-              }),
-              toastType: "error",
-              duration: 8_000,
-            });
-          }
-
-          return [audio, a11yInfo, appTarget];
-        },
-      );
-
-      if (!audio) {
-        getLogger().warning("stopRecordingRaw: no audio data received");
-        return {
-          shouldContinue: false,
-          abortMessage: "No audio data received",
-        };
-      }
-
-      getLogger().info("Finalizing transcription session");
-      trackAppUsed(appTarget?.name ?? "Unknown");
-
-      if (appTarget) {
-        saveManualStyleForApp(appTarget);
-      }
-
-      const toneId = getToneIdToUse(getAppState(), {
-        currentAppToneId: appTarget?.toneId ?? null,
-      });
-
-      const session = sessionRef.current;
-      const strategy = strategyRef.current;
-      if (!session || !strategy) {
-        getLogger().warning(
-          `stopRecordingRaw: refs cleared (session=${!!session}, strategy=${!!strategy})`,
-        );
-        return { shouldContinue: false };
-      }
-
-      return await finishDictation({
-        session,
-        strategy,
-        audio,
-        toneId,
-        a11yInfo,
-        appTarget,
-        isCurrent: () =>
-          sessionRef.current === session && strategyRef.current === strategy,
-      });
-    }, [restoreSystemVolume]);
-
-  const stopRecording = useCallback(async () => {
-    if (isStoppingRef.current) {
-      getLogger().info("stopRecording skipped (already stopping)");
-      return;
-    }
-
-    const hasOnboarded = getIsOnboarded(getAppState());
-    if (hasOnboarded) {
-      delayed(2000).then(() => recordStreak());
-    }
-
-    getLogger().info("stopRecording entered");
-    const stopId = ++stopIdRef.current;
-    isStoppingRef.current = true;
-    setIsStopping(true);
-    try {
-      const res: FinishDictationOutcome = await stopRecordingRaw().catch(
-        (error) => {
-          getLogger().error(
-            `Error during stopRecording: ${error}${error instanceof Error ? ` [name=${error.name}, stack=${error.stack}]` : ""}`,
-          );
-          return {
-            shouldContinue: false,
-            abortMessage: String(error),
-          };
-        },
-      );
-
-      getLogger().info(
-        `stopRecording result: shouldContinue=${res.shouldContinue}, superseded=${!!res.superseded}, abortMessage=${res.abortMessage ?? "none"}`,
-      );
-      if (!res.shouldContinue && !res.superseded) {
-        await abortRecording(
-          res.abortMessage ? { body: res.abortMessage } : undefined,
-        );
-      }
-    } finally {
-      if (stopIdRef.current === stopId) {
-        releaseStopping();
-      }
-    }
-  }, [abortRecording, releaseStopping, stopRecordingRaw]);
+  const abortRecording = useCallback(
+    (notice?: DictationNotice) => runner.cancel(notice),
+    [runner],
+  );
 
   const startRecordingTimers = useCallback(() => {
     clearRecordingTimers();
@@ -468,34 +287,22 @@ export const DictationSideEffects = () => {
     }
   }, [stopRecording, intl, clearRecordingTimers]);
 
-  const startRecording = useCallback(
-    async (args: { mode: RecordingMode; language?: string | null }) => {
+  runnerEffectsRef.current = {
+    createStrategy: (mode) =>
+      mode === "agent" ? new AgentStrategy() : new DictationStrategy(),
+    createSession: () => {
+      const transcriptPrefs = getTranscriptionPrefs(getAppState());
+      getLogger().info(`Transcription prefs: mode=${transcriptPrefs.mode}`);
+      const session = createTranscriptionSession(transcriptPrefs);
+      tryPlayAudioChime("start_recording_clip");
+      return session;
+    },
+    beginRecording: (mode, language) => {
       const state = getAppState();
-      const mode = args.mode;
-      const language = args.language || getMyPrimaryDictationLanguage(state);
       produceAppState((draft) => {
         draft.activeRecordingMode = mode;
         draft.dictationLanguageOverride = language;
       });
-
-      let strategy: BaseStrategy | null = strategyRef.current ?? null;
-      if (!strategy) {
-        if (mode === "agent") {
-          strategy = new AgentStrategy();
-        } else {
-          strategy = new DictationStrategy();
-        }
-      }
-
-      const validationError = strategy.validateAvailability();
-      if (validationError) {
-        abortRecording({
-          title: validationError.title,
-          body: validationError.body,
-        });
-        return;
-      }
-
       if (
         mode === "dictate" &&
         !state.onboarding.dictationOverrideEnabled &&
@@ -503,86 +310,114 @@ export const DictationSideEffects = () => {
       ) {
         loadManualStyleForCurrentApp();
       }
+    },
+    startRecorder: async (strategy) => {
+      const preferredMicrophone = getMyPreferredMicrophone(getAppState());
+      getLogger().info(
+        `Starting recording (mic=${preferredMicrophone ?? "default"})`,
+      );
+      const [, startRecordingResult] = await Promise.all([
+        strategy.setPhase("recording"),
+        invoke<StartRecordingResponse>("start_recording", {
+          args: { preferredMicrophone },
+        }),
+      ]);
+      getLogger().verbose(
+        `Recording started (sampleRate=${startRecordingResult.sampleRate})`,
+      );
+      return startRecordingResult.sampleRate;
+    },
+    onRecordingLive: () => {
+      startRecordingTimers();
+      dimSystemVolume();
+    },
+    stopRecorder: async (strategy) => {
+      getLogger().info("Stopping recording");
+      if (getIsOnboarded(getAppState())) {
+        delayed(2000).then(() => recordStreak());
+      }
+      clearRecordingTimers();
+      restoreSystemVolume();
 
-      const preferredMicrophone = getMyPreferredMicrophone(state);
-      const transcriptPrefs = getTranscriptionPrefs(state);
-      try {
-        getLogger().info(`Transcription prefs: mode=${transcriptPrefs.mode}`);
-        const session = createTranscriptionSession(transcriptPrefs);
-        getLogger().info(`Created transcription session: ${session.name}`);
-
-        tryPlayAudioChime("start_recording_clip");
-        if (session.supportsStreaming()) {
-          session.setInterimResultCallback((segment) => {
-            strategy.handleInterimSegment(segment);
-          });
-        }
-
-        sessionRef.current = session;
-        strategyRef.current = strategy;
-        await strategy.onBeforeStart();
-
-        getLogger().info(
-          `Starting recording (mic=${preferredMicrophone ?? "default"})`,
-        );
-        const [, startRecordingResult] = await Promise.all([
-          strategy.setPhase("recording"),
-          invoke<StartRecordingResponse>("start_recording", {
-            args: { preferredMicrophone },
-          }),
-        ]);
-
-        const sampleRate = startRecordingResult.sampleRate;
-        getLogger().verbose(`Recording started (sampleRate=${sampleRate})`);
-        await session.onRecordingStart(sampleRate);
-        if (!sessionRef.current || !strategyRef.current) {
-          abortRecording();
-          return;
-        }
-        if (sessionRef.current !== session || isStoppingRef.current) {
-          getLogger().info(
-            "Recording already stopping or superseded; skipping start-up timers",
-          );
-          return;
-        }
-
-        startRecordingTimers();
-        dimSystemVolume();
-      } catch (error) {
-        getLogger().error(`Failed to start recording: ${error}`);
-
-        sessionRef.current?.cleanup();
-        sessionRef.current = null;
-        strategyRef.current = null;
-        clearRecordingState();
-        abortRecording();
-
-        hardResetHotkeyState();
-        clearRecordingTimers();
-        invoke("stop_recording").catch((e) =>
+      return await getLogger().stopwatch("stopRecording", async () => {
+        try {
+          tryPlayAudioChime("stop_recording_clip");
+          const [, audio, a11yInfo, appTarget] = await Promise.all([
+            strategy.setPhase("loading"),
+            invoke<StopRecordingResponse>("stop_recording"),
+            invoke<TextFieldInfo>("get_text_field_info").catch((error) => {
+              getLogger().verbose(`Failed to get text field info: ${error}`);
+              return null;
+            }),
+            tryRegisterCurrentAppTarget().catch((error) => {
+              getLogger().verbose(`Failed to get current app target: ${error}`);
+              return null;
+            }),
+          ]);
           getLogger().verbose(
-            `stop_recording failed during error handling: ${e}`,
-          ),
-        );
+            `Recording stopped (hasSamples=${!!audio?.samples})`,
+          );
+          return { audio, a11yInfo, appTarget };
+        } catch (error) {
+          getLogger().error(`Failed to stop recording: ${error}`);
+          showToast({
+            message: intl.formatMessage({
+              defaultMessage: "Failed to stop recording",
+            }),
+            toastType: "error",
+            duration: 8_000,
+          });
+          return { audio: null, a11yInfo: null, appTarget: null };
+        }
+      });
+    },
+    resolveToneId: (appTarget) => {
+      getLogger().info("Finalizing transcription session");
+      trackAppUsed(appTarget?.name ?? "Unknown");
+      if (appTarget) {
+        saveManualStyleForApp(appTarget);
+      }
+      return getToneIdToUse(getAppState(), {
+        currentAppToneId: appTarget?.toneId ?? null,
+      });
+    },
+    resetToIdle: (notice) => {
+      clearRecordingTimers();
+      clearCancelPromptTimer();
+      hardResetHotkeyState();
+      restoreSystemVolume();
+      invoke<void>("set_phase", { phase: "idle" });
+      invoke("stop_recording").catch((e) =>
+        getLogger().verbose(`stop_recording failed during abort: ${e}`),
+      );
+      clearRecordingState();
 
+      if (notice) {
+        playAlertSound();
         showToast({
-          message: intl.formatMessage({
-            defaultMessage: "Recording failed",
-          }),
+          message: notice.body,
           toastType: "error",
           duration: 8_000,
+          action: notice.action ?? undefined,
         });
       }
     },
-    [
-      abortRecording,
-      clearRecordingState,
-      clearRecordingTimers,
-      dimSystemVolume,
-      hardResetHotkeyState,
-      intl,
-    ],
-  );
+    setStopping: (stopping) => {
+      if (!stopping) {
+        hardResetHotkeyState();
+      }
+      setIsStopping(stopping);
+    },
+    onStartFailed: () => {
+      showToast({
+        message: intl.formatMessage({
+          defaultMessage: "Recording failed",
+        }),
+        toastType: "error",
+        duration: 8_000,
+      });
+    },
+  };
 
   const startDictationRecording = useCallback(async () => {
     const state = getAppState();
@@ -735,8 +570,7 @@ export const DictationSideEffects = () => {
         `stop_recording failed during type mode switch: ${e}`,
       ),
     );
-    sessionRef.current?.cleanup();
-    sessionRef.current = null;
+    runner.detachRecording();
 
     produceAppState((draft) => {
       draft.assistantInputMode = "type";

@@ -79,8 +79,9 @@ export class AgentStrategy extends BaseStrategy {
 
   async handleTranscript({
     rawTranscript,
+    signal,
   }: HandleTranscriptParams): Promise<HandleTranscriptResult> {
-    if (!this.conversationId) {
+    if (!this.conversationId || signal.aborted) {
       return {
         shouldContinue: false,
         transcript: null,

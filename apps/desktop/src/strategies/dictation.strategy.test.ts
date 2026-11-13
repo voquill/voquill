@@ -66,6 +66,7 @@ const params = (
   transcriptionMetadata: {},
   transcriptionWarnings: [],
   transcriptionRecovered: false,
+  signal: new AbortController().signal,
   ...overrides,
 });
 
@@ -171,5 +172,45 @@ describe("DictationStrategy.handleTranscript", () => {
       remoteStatus: "sent",
       remoteDeviceId: "laptop",
     });
+  });
+
+  it("does not paste or post-process output of a cancelled dictation", async () => {
+    const controller = new AbortController();
+    let finishPostProcess: (value: unknown) => void = () => {};
+    mocks.postProcessTranscript.mockReturnValue(
+      new Promise((resolve) => (finishPostProcess = resolve)),
+    );
+    const strategy = new DictationStrategy();
+
+    const pending = strategy.handleTranscript(
+      params({ signal: controller.signal }),
+    );
+    controller.abort();
+    finishPostProcess({
+      transcript: "Hello there, world.",
+      warnings: [],
+      metadata: {},
+    });
+    await pending;
+
+    expect(mocks.routeTranscriptOutput).not.toHaveBeenCalled();
+  });
+
+  it("does not deliver a recovered transcript after the dictation was cancelled", async () => {
+    mocks.realtimeOutputEnabled = true;
+    const controller = new AbortController();
+    const strategy = new DictationStrategy();
+    strategy.handleInterimSegment("hello there");
+    controller.abort();
+
+    await strategy.handleTranscript(
+      params({ transcriptionRecovered: true, signal: controller.signal }),
+    );
+
+    expect(routedTexts()).toEqual(["hello there "]);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "copy_to_clipboard",
+      expect.anything(),
+    );
   });
 });
