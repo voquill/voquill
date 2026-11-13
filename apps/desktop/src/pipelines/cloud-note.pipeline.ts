@@ -9,6 +9,7 @@ import {
   NOTE_SLOW_POLL_INTERVAL_MS,
   NotesApiError,
   NotesNetworkError,
+  segmentNeedsReupload,
   type CloudNoteRepo,
   type ServerNote,
   type ServerNoteWithSegments,
@@ -304,10 +305,15 @@ export class CloudNotePipeline extends BaseNotePipeline {
     await store.deleteNote(noteId, { deleteAudio: true });
   }
 
-  /** Retries a segment the server could not transcribe: upload it again, then process. */
+  /**
+   * Retries a segment the server could not transcribe: `process` alone, or
+   * after uploading it again when its error says the server lacks the audio.
+   */
   async retrySegment(noteId: string, segmentId: string): Promise<void> {
     await this.deps.store.updateSegment(noteId, segmentId, (segment) => {
-      segment.upload = null;
+      if (segmentNeedsReupload(segment)) {
+        segment.upload = null;
+      }
       segment.error = null;
     });
     await this.deps.store.updateNote(noteId, (note) => {
@@ -408,6 +414,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
         getNotesErrorHandling(error) === "missing" ||
         !this.deps.store.getNote(noteId);
       if (gone) {
+        return;
+      }
+      if (error instanceof NotesApiError && error.code === "note_deleted") {
+        // Deleted on another device: the contract says to treat it as deleted here.
+        await this.deps.store.deleteNote(noteId, { deleteAudio: true });
         return;
       }
       const noteError = toNoteError(error);
@@ -585,6 +596,13 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   private async uploadSegments(noteId: string): Promise<void> {
+    for (const segment of this.deps.store.getSegments(noteId)) {
+      if (segmentNeedsReupload(segment) && segment.audioPath) {
+        await this.deps.store.updateSegment(noteId, segment.id, (draft) => {
+          draft.upload = null;
+        });
+      }
+    }
     for (const segment of this.segmentsToUpload(noteId)) {
       await this.uploadSegment(noteId, segment.id);
     }

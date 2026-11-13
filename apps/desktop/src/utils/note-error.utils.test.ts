@@ -36,21 +36,33 @@ describe("describeNoteError", () => {
   });
 });
 
+describe("removed codes", () => {
+  it("no longer explains a dictation word quota for notes", () => {
+    expect(describeNoteError(intl, "word_quota_exceeded").title).toBe(
+      "Processing didn't finish",
+    );
+  });
+});
+
 describe("getNoteErrorAvailableAt", () => {
-  it("reads retryAfterSeconds or the earliest future timestamp", () => {
-    expect(
-      getNoteErrorAvailableAt({ retryAfterSeconds: 120 }, 0)?.getTime(),
-    ).toBe(120_000);
+  it("prefers availableAt over the next release of the allowance", () => {
     expect(
       getNoteErrorAvailableAt(
         {
-          freesAt: "1970-01-01T00:10:00.000Z",
-          windowEndsAt: "1970-01-01T00:05:00.000Z",
-          startedAt: "1969-12-31T00:00:00.000Z",
+          usedMs: 7_200_000,
+          allowanceMs: 7_200_000,
+          nextReleaseAt: "1970-01-01T00:05:00.000Z",
+          availableAt: "1970-01-01T00:10:00.000Z",
         },
         0,
       )?.getTime(),
-    ).toBe(300_000);
+    ).toBe(600_000);
+  });
+
+  it("falls back to retryAfterSeconds", () => {
+    expect(
+      getNoteErrorAvailableAt({ retryAfterSeconds: 120 }, 0)?.getTime(),
+    ).toBe(120_000);
     expect(getNoteErrorAvailableAt(null)).toBeNull();
   });
 });

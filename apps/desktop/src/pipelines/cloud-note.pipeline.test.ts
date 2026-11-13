@@ -651,13 +651,13 @@ describe("CloudNotePipeline.process", () => {
     const harness = createHarness();
     harness.server.failNext(
       "processNote",
-      new NotesApiError(403, "word_quota_exceeded", "no words"),
+      new NotesApiError(403, "audio_quota_exceeded", "allowance used"),
     );
     await harness.pipeline.process("note");
 
     const note = harness.store.getNote("note")!;
     expect(note.status).toBe("failed");
-    expect(note.error?.code).toBe("word_quota_exceeded");
+    expect(note.error?.code).toBe("audio_quota_exceeded");
     expect(
       harness.server.calls.filter((c) => c === "processNote"),
     ).toHaveLength(1);
@@ -964,5 +964,50 @@ describe("CloudNotePipeline limits and priorities", () => {
     expect(harness.store.getNote("note")?.error).toBeNull();
     expect(harness.uploads).toEqual([]);
     expect(harness.store.getNote("note")?.status).toBe("ready");
+  });
+});
+
+describe("CloudNotePipeline third contract revision", () => {
+  const failedSegmentHarness = async (code: string) => {
+    const harness = createHarness();
+    harness.server.failSegmentIds.add("seg-1");
+    await harness.pipeline.process("note");
+    const failed = harness.store.getSegments("note")[1];
+    await harness.store.updateSegment("note", failed.id, (segment) => {
+      segment.error = { code, message: "x" };
+    });
+    harness.server.failSegmentIds.clear();
+    return harness;
+  };
+
+  it("retries a segment with process alone when the server still has its audio", async () => {
+    const harness = await failedSegmentHarness("transcription_failed");
+    const sessionsBefore = harness.server.calls.filter(
+      (c) => c === "requestSegmentUpload",
+    ).length;
+    await harness.pipeline.retrySegment("note", "seg-1");
+    expect(
+      harness.server.calls.filter((c) => c === "requestSegmentUpload").length,
+    ).toBe(sessionsBefore);
+    expect(harness.store.getSegments("note")[1].status).toBe("transcribed");
+  });
+
+  it("uploads again for codes that mean the server lacks the audio", async () => {
+    const harness = await failedSegmentHarness("unsupported_audio");
+    const uploadsBefore = harness.uploads.length;
+    await harness.pipeline.retrySegment("note", "seg-1");
+    expect(harness.uploads.length).toBe(uploadsBefore + 1);
+    expect(harness.store.getSegments("note")[1].status).toBe("transcribed");
+  });
+
+  it("treats a note deleted on another device as deleted here", async () => {
+    const harness = createHarness();
+    harness.server.failNext(
+      "putNote",
+      new NotesApiError(409, "note_deleted", "deleted"),
+    );
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")).toBeNull();
+    expect(harness.server.calls.filter((c) => c === "processNote")).toEqual([]);
   });
 });

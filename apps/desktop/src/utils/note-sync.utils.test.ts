@@ -114,14 +114,14 @@ describe("mergeServerNote", () => {
       mergeServerNote(
         local({
           status: "failed",
-          error: { code: "word_quota_exceeded", message: "" },
+          error: { code: "audio_quota_exceeded", message: "" },
         }),
         server({ status: "draft" }),
         "u1",
       ),
     ).toMatchObject({
       status: "failed",
-      error: { code: "word_quota_exceeded" },
+      error: { code: "audio_quota_exceeded" },
     });
   });
 });

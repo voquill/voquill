@@ -52,6 +52,17 @@ const messages = defineMessages({
     defaultMessage:
       "Finish or delete other notes that are waiting to upload, then retry.",
   },
+  uploadSessionsTitle: {
+    defaultMessage: "Daily upload limit reached",
+  },
+  uploadSessionsBody: {
+    defaultMessage:
+      "Voquill accepts a limited number of recording uploads per day. This one continues when the limit resets.",
+  },
+  deletedTitle: { defaultMessage: "This note was deleted on another device" },
+  deletedBody: {
+    defaultMessage: "It can't be sent to Voquill cloud again.",
+  },
   unavailableTitle: {
     defaultMessage: "Voquill Notes is unavailable right now",
   },
@@ -122,11 +133,6 @@ const messages = defineMessages({
 
 /** Every local and server error code the notes UI explains; unknown codes get the generic text. */
 const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
-  word_quota_exceeded: {
-    title: messages.wordQuotaTitle,
-    body: messages.wordQuotaBody,
-    upgrade: true,
-  },
   audio_quota_exceeded: {
     title: messages.audioQuotaTitle,
     body: messages.audioQuotaBody,
@@ -144,6 +150,15 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
   too_many_pending_uploads: {
     title: messages.pendingUploadsTitle,
     body: messages.pendingUploadsBody,
+  },
+  too_many_upload_sessions: {
+    title: messages.uploadSessionsTitle,
+    body: messages.uploadSessionsBody,
+  },
+  note_deleted: {
+    title: messages.deletedTitle,
+    body: messages.deletedBody,
+    retryable: false,
   },
   notes_unavailable: {
     title: messages.unavailableTitle,
@@ -220,22 +235,26 @@ const GENERIC_ERROR: NoteErrorEntry = {
 };
 
 /**
- * When a limit frees up, from the error details: `retryAfterSeconds`, or
- * any future timestamp field (e.g. `resetsAt`, `availableAt`).
+ * When the refused call could go through, from the error details
+ * (docs/notes.md, third revision): `availableAt` (allowance, cooldown),
+ * `resetsAt` (daily caps), else `retryAfterSeconds`.
  */
 export const getNoteErrorAvailableAt = (
   details: Record<string, unknown> | null | undefined,
   now = Date.now(),
 ): Date | null => {
   if (!details) return null;
+  for (const key of ["availableAt", "resetsAt"]) {
+    const value = details[key];
+    const time = typeof value === "string" ? Date.parse(value) : NaN;
+    if (Number.isFinite(time) && time > now) {
+      return new Date(time);
+    }
+  }
   if (typeof details.retryAfterSeconds === "number") {
     return new Date(now + details.retryAfterSeconds * 1000);
   }
-  const candidates = Object.entries(details)
-    .filter(([key, value]) => key.endsWith("At") && typeof value === "string")
-    .map(([, value]) => Date.parse(value as string))
-    .filter((time) => Number.isFinite(time) && time > now);
-  return candidates.length > 0 ? new Date(Math.min(...candidates)) : null;
+  return null;
 };
 
 /** Plain-language text for a note or request error, local or cloud. */

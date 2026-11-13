@@ -145,10 +145,11 @@ export type NotesErrorHandling = "retry" | "busy" | "blocked" | "missing";
 
 const BLOCKING_CODES = new Set([
   "member_not_found",
-  "word_quota_exceeded",
   "audio_quota_exceeded",
   "regenerate_cooldown",
   "too_many_pending_uploads",
+  "too_many_upload_sessions",
+  "note_deleted",
   "segment_too_large",
   "segment_too_long",
   "too_many_segments",
@@ -176,6 +177,23 @@ export const getNotesErrorHandling = (error: unknown): NotesErrorHandling => {
   }
   return "blocked";
 };
+
+/**
+ * Stored segment errors that `process` skips until the audio is uploaded
+ * again; every other stored code is retried by `process` alone.
+ */
+const REUPLOAD_SEGMENT_ERROR_CODES = new Set([
+  "unsupported_audio",
+  "audio_missing",
+  "segment_too_large",
+]);
+
+export const segmentNeedsReupload = (segment: {
+  status: string;
+  error: NoteError | null;
+}): boolean =>
+  segment.status === "failed" &&
+  REUPLOAD_SEGMENT_ERROR_CODES.has(segment.error?.code ?? "");
 
 export const toClientNoteStatus = (status: ServerNoteStatus): NoteStatus =>
   status === "draft" ? "paused" : status;
