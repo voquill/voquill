@@ -4,6 +4,7 @@ import 'package:app/state/app_state.dart';
 import 'package:app/state/notes_state.dart';
 import 'package:app/store/store.dart';
 import 'package:app/widgets/notes/active_note_banner.dart';
+import 'package:app/widgets/notes/ask_dock.dart';
 import 'package:app/widgets/notes/note_page.dart';
 import 'package:app/widgets/notes/notes_page.dart';
 import 'package:flutter/material.dart';
@@ -112,6 +113,17 @@ void main() {
     expect(find.text('Speaker 1 · 0:00'), findsOneWidget);
     expect(find.text('Hello team'), findsOneWidget);
     expect(find.textContaining("couldn't be transcribed"), findsOneWidget);
+
+    // Typing the title moves the Ask box aside without unmounting it, so a
+    // conversation (and a streaming answer) survives.
+    expect(find.text('Ask about this meeting'), findsOneWidget);
+    await tester.tap(find.text('Roadmap review'));
+    await tester.pump();
+    expect(find.text('Ask about this meeting'), findsNothing);
+    expect(find.byType(AskDock, skipOffstage: false), findsOneWidget);
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump();
+    expect(find.text('Ask about this meeting'), findsOneWidget);
 
     await show(const Scaffold(bottomNavigationBar: ActiveNoteBanner()));
     expect(find.textContaining('Notes paused'), findsOneWidget);
