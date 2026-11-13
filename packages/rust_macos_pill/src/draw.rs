@@ -752,15 +752,6 @@ fn draw_assistant_panel(ctx: &Ctx, state: &PillState, ww: f64, wh: f64) {
             draw_user_prompt_preview(ctx, panel_x, py, panel_w, prompt, alpha);
         }
 
-        let open_x = panel_x + PANEL_HEADER_OFFSET_LEFT + HEADER_BUTTON_SIZE + 4.0;
-        draw_panel_button(ctx, open_x, py + PANEL_HEADER_OFFSET_TOP,
-            HEADER_BUTTON_SIZE, alpha, ButtonIcon::OpenInNew);
-        state.click_regions.borrow_mut().push(ClickRegion {
-            x: open_x, y: py + PANEL_HEADER_OFFSET_TOP,
-            w: HEADER_BUTTON_SIZE, h: HEADER_BUTTON_SIZE,
-            action: ClickAction::OpenInNew,
-        });
-
         // Input bar
         if is_typing {
             let input_y = py + panel_h - PANEL_INPUT_HEIGHT;
@@ -792,8 +783,8 @@ fn draw_assistant_panel(ctx: &Ctx, state: &PillState, ww: f64, wh: f64) {
     }
 
     // Close button drawn last
-    draw_panel_button(ctx, panel_x + PANEL_HEADER_OFFSET_LEFT, py + PANEL_HEADER_OFFSET_TOP,
-        HEADER_BUTTON_SIZE, alpha, ButtonIcon::Close);
+    draw_close_button(ctx, panel_x + PANEL_HEADER_OFFSET_LEFT, py + PANEL_HEADER_OFFSET_TOP,
+        HEADER_BUTTON_SIZE, alpha);
     state.click_regions.borrow_mut().push(ClickRegion {
         x: panel_x + PANEL_HEADER_OFFSET_LEFT,
         y: py + PANEL_HEADER_OFFSET_TOP,
@@ -1069,29 +1060,13 @@ fn draw_user_prompt_preview(
     ctx.show_text(&display);
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ButtonIcon {
-    Close,
-    OpenInNew,
-}
-
-fn draw_panel_button(
-    ctx: &Ctx,
-    x: f64, y: f64, size: f64, alpha: f64, icon: ButtonIcon,
-) {
+fn draw_close_button(ctx: &Ctx, x: f64, y: f64, size: f64, alpha: f64) {
     gfx::rounded_rect(ctx, x, y, size, size, size / 4.0);
     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.06 * alpha);
     ctx.fill();
 
-    let cx = x + size / 2.0;
-    let cy = y + size / 2.0;
-
     ctx.set_source_rgba(1.0, 1.0, 1.0, 0.82 * alpha);
-    let sym = match icon {
-        ButtonIcon::Close => "xmark",
-        ButtonIcon::OpenInNew => "arrow.up.forward.app",
-    };
-    ctx.draw_symbol(sym, cx, cy, 11.0);
+    ctx.draw_symbol("xmark", x + size / 2.0, y + size / 2.0, 11.0);
 }
 
 fn draw_keyboard_button(ctx: &Ctx, state: &PillState, ww: f64, wh: f64) {

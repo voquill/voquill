@@ -401,7 +401,6 @@ fn perform_tick() {
                     active,
                     input_mode,
                     compact,
-                    conversation_id,
                     user_prompt,
                     messages,
                     streaming,
@@ -411,7 +410,6 @@ fn perform_tick() {
                     ctx.state.assistant_active.set(active);
                     *ctx.state.assistant_input_mode.borrow_mut() = input_mode;
                     ctx.state.assistant_compact.set(compact);
-                    *ctx.state.assistant_conversation_id.borrow_mut() = conversation_id;
                     *ctx.state.assistant_user_prompt.borrow_mut() = user_prompt;
                     *ctx.state.assistant_messages.borrow_mut() = messages;
                     *ctx.state.assistant_streaming.borrow_mut() = streaming;
@@ -1033,7 +1031,6 @@ unsafe fn setup(receiver: Receiver<InMessage>, embedded: bool) {
         assistant_active: Cell::new(false),
         assistant_input_mode: RefCell::new("voice".to_string()),
         assistant_compact: Cell::new(true),
-        assistant_conversation_id: RefCell::new(None),
         assistant_user_prompt: RefCell::new(None),
         assistant_messages: RefCell::new(Vec::new()),
         assistant_streaming: RefCell::new(None),

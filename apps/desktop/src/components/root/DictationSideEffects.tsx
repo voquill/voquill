@@ -87,7 +87,6 @@ import {
   getPillVisibilityToApply,
   getTranscriptionPrefs,
 } from "../../utils/user.utils";
-import { surfaceMainWindow } from "../../utils/window.utils";
 
 type StartRecordingResponse = {
   sampleRate: number;
@@ -742,11 +741,6 @@ export const DictationSideEffects = () => {
       });
     },
   );
-
-  useTauriListen<void>("open-pill-conversation", async () => {
-    await surfaceMainWindow();
-    await abortRecording();
-  });
 
   useTauriListen<void>("cancel-dictation", () => {
     abortRecording();

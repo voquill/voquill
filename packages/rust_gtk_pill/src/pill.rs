@@ -123,7 +123,6 @@ pub fn run(receiver: Receiver<InMessage>) {
         assistant_active: Cell::new(false),
         assistant_input_mode: RefCell::new("voice".to_string()),
         assistant_compact: Cell::new(true),
-        assistant_conversation_id: RefCell::new(None),
         assistant_user_prompt: RefCell::new(None),
         assistant_messages: RefCell::new(Vec::new()),
         assistant_streaming: RefCell::new(None),
@@ -400,7 +399,6 @@ pub fn run(receiver: Receiver<InMessage>) {
                     active,
                     input_mode,
                     compact,
-                    conversation_id,
                     user_prompt,
                     messages,
                     streaming,
@@ -410,7 +408,6 @@ pub fn run(receiver: Receiver<InMessage>) {
                     state_tick.assistant_active.set(active);
                     *state_tick.assistant_input_mode.borrow_mut() = input_mode;
                     state_tick.assistant_compact.set(compact);
-                    *state_tick.assistant_conversation_id.borrow_mut() = conversation_id;
                     *state_tick.assistant_user_prompt.borrow_mut() = user_prompt;
                     *state_tick.assistant_messages.borrow_mut() = messages;
                     *state_tick.assistant_streaming.borrow_mut() = streaming;

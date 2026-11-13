@@ -42,12 +42,6 @@ pub(crate) fn handle_click(state: &PillState, x: f64, y: f64) {
                 ClickAction::AssistantClose => {
                     ipc::send(&OutMessage::AssistantClose);
                 }
-                ClickAction::OpenInNew => {
-                    if let Some(ref id) = *state.assistant_conversation_id.borrow() {
-                        ipc::send(&OutMessage::OpenConversation { conversation_id: id.clone() });
-                    }
-                    ipc::send(&OutMessage::AssistantClose);
-                }
                 ClickAction::KeyboardButton => {
                     ipc::send(&OutMessage::EnableTypeMode);
                 }
