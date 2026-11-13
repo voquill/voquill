@@ -10,6 +10,17 @@ fn handle_run_event(app_handle: &tauri::AppHandle, event: RunEvent) {
         RunEvent::ExitRequested { .. } => {
             let _ = app_handle.save_window_state(StateFlags::SIZE | StateFlags::POSITION);
         }
+        RunEvent::Exit => {
+            // Finalize a running meeting segment; the note is shown as paused
+            // with this audio on next launch.
+            if let Some(capture) = app_handle
+                .try_state::<std::sync::Arc<crate::system::meeting_capture::MeetingCapture>>()
+            {
+                if let Err(err) = capture.stop() {
+                    log::error!("Failed to finalize meeting capture on exit: {err}");
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             if let Some(window) = app_handle.get_webview_window("main") {
@@ -191,6 +202,9 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
                 let recorder = crate::platform::audio::new_recorder();
 
                 app.manage(recorder);
+                app.manage(std::sync::Arc::new(
+                    crate::system::meeting_capture::MeetingCapture::new(),
+                ));
 
                 crate::system::audio_feedback::start_audio_thread();
 
@@ -320,6 +334,20 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::floating_window_create,
             crate::commands::floating_window_destroy,
             crate::commands::floating_window_list,
+            crate::commands::note_upsert,
+            crate::commands::note_list,
+            crate::commands::note_delete,
+            crate::commands::note_segment_upsert,
+            crate::commands::note_segment_list,
+            crate::commands::note_search,
+            crate::commands::meeting_capture_start,
+            crate::commands::meeting_capture_stop,
+            crate::commands::meeting_capture_status,
+            crate::commands::meeting_audio_repair,
+            crate::commands::meeting_audio_envelope,
+            crate::commands::meeting_audio_read,
+            crate::commands::meeting_audio_delete,
+            crate::commands::set_tray_meeting_menu,
         ])
 }
 

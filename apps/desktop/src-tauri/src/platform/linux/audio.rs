@@ -19,6 +19,7 @@ const READ_CHUNK_FRAMES: usize = 1024;
 pub struct PulseRecorder {
     inner: Arc<Mutex<Option<ActiveRecording>>>,
     preferred_source: Arc<Mutex<Option<String>>>,
+    retain_samples: bool,
 }
 
 struct ActiveRecording {
@@ -38,9 +39,14 @@ impl Default for PulseRecorder {
 
 impl PulseRecorder {
     pub fn new() -> Self {
+        Self::with_sample_retention(true)
+    }
+
+    pub fn with_sample_retention(retain_samples: bool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
             preferred_source: Arc::new(Mutex::new(None)),
+            retain_samples,
         }
     }
 }
@@ -82,6 +88,7 @@ impl Recorder for PulseRecorder {
 
         let stop_signal = Arc::new(Mutex::new(false));
         let stop_signal_clone = Arc::clone(&stop_signal);
+        let retain_samples = self.retain_samples;
 
         let thread = std::thread::Builder::new()
             .name("pulse-recorder".into())
@@ -92,6 +99,7 @@ impl Recorder for PulseRecorder {
                     stop_signal_clone,
                     level_callback,
                     chunk_callback,
+                    retain_samples,
                 )
             })
             .map_err(|err| RecordingError::StreamBuild(err.to_string()))?;
@@ -199,6 +207,7 @@ fn record_loop(
     stop_signal: Arc<Mutex<bool>>,
     level_callback: Option<LevelCallback>,
     chunk_callback: Option<ChunkCallback>,
+    retain_samples: bool,
 ) -> RecordingResult {
     let spec = pulse::sample::Spec {
         format: pulse::sample::Format::F32le,
@@ -270,8 +279,9 @@ fn record_loop(
             .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
 
-        // Accumulate for final result
-        all_samples.extend_from_slice(&samples);
+        if retain_samples {
+            all_samples.extend_from_slice(&samples);
+        }
 
         // Emit level bins
         if let Some(ref cb) = level_callback {

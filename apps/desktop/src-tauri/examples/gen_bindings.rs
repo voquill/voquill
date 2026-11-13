@@ -108,6 +108,20 @@ fn main() {
         floating_window_create,
         floating_window_destroy,
         floating_window_list,
+        note_upsert,
+        note_list,
+        note_delete,
+        note_segment_upsert,
+        note_segment_list,
+        note_search,
+        meeting_capture_start,
+        meeting_capture_stop,
+        meeting_capture_status,
+        meeting_audio_repair,
+        meeting_audio_envelope,
+        meeting_audio_read,
+        meeting_audio_delete,
+        set_tray_meeting_menu,
     ]);
 
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

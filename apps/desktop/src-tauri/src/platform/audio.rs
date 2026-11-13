@@ -11,13 +11,27 @@ pub struct InputDeviceDescriptor {
 }
 
 pub fn new_recorder() -> Arc<dyn Recorder> {
+    new_recorder_with_sample_retention(true)
+}
+
+/// A recorder that only delivers audio through its chunk callback and never
+/// accumulates the capture in memory, for recordings that can run for hours.
+pub fn new_streaming_recorder() -> Arc<dyn Recorder> {
+    new_recorder_with_sample_retention(false)
+}
+
+fn new_recorder_with_sample_retention(retain_samples: bool) -> Arc<dyn Recorder> {
     #[cfg(target_os = "linux")]
     {
-        Arc::new(crate::platform::linux::audio::PulseRecorder::new())
+        Arc::new(
+            crate::platform::linux::audio::PulseRecorder::with_sample_retention(retain_samples),
+        )
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Arc::new(cpal_impl::RecordingManager::new())
+        Arc::new(cpal_impl::RecordingManager::with_sample_retention(
+            retain_samples,
+        ))
     }
 }
 
@@ -57,6 +71,7 @@ mod cpal_impl {
         inner: Arc<Mutex<Option<ActiveRecording>>>,
         preferred_input_name: Arc<Mutex<Option<String>>>,
         last_successful_device: Arc<Mutex<Option<CachedDeviceInfo>>>,
+        retain_samples: bool,
     }
 
     struct ActiveRecording {
@@ -222,10 +237,15 @@ mod cpal_impl {
 
     impl RecordingManager {
         pub fn new() -> Self {
+            Self::with_sample_retention(true)
+        }
+
+        pub fn with_sample_retention(retain_samples: bool) -> Self {
             Self {
                 inner: Arc::new(Mutex::new(None)),
                 preferred_input_name: Arc::new(Mutex::new(None)),
                 last_successful_device: Arc::new(Mutex::new(None)),
+                retain_samples,
             }
         }
 
@@ -265,6 +285,7 @@ mod cpal_impl {
                 Some(&cached.device_name),
                 level_emitter,
                 chunk_emitter,
+                self.retain_samples,
             );
 
             match result {
@@ -348,6 +369,7 @@ mod cpal_impl {
                     chunk_emitter.clone(),
                     preferred_trimmed.as_deref(),
                     preferred_normalized.as_deref(),
+                    self.retain_samples,
                 ) {
                     Ok((active, device_name)) => {
                         *guard = Some(active);
@@ -574,6 +596,7 @@ mod cpal_impl {
         device_name: Option<&str>,
         level_emitter: Option<Arc<LevelEmitter>>,
         chunk_emitter: Option<Arc<ChunkEmitter>>,
+        retain_samples: bool,
     ) -> Result<ActiveRecording, RecordingError> {
         let label = device_name.unwrap_or("<unknown>");
 
@@ -593,6 +616,7 @@ mod cpal_impl {
                 buffer.clone(),
                 level_emitter.clone(),
                 chunk_emitter.clone(),
+                retain_samples,
             ),
             SampleFormat::U16 => build_input_stream::<u16>(
                 device,
@@ -600,6 +624,7 @@ mod cpal_impl {
                 buffer.clone(),
                 level_emitter.clone(),
                 chunk_emitter.clone(),
+                retain_samples,
             ),
             SampleFormat::F32 => build_input_stream::<f32>(
                 device,
@@ -607,6 +632,7 @@ mod cpal_impl {
                 buffer.clone(),
                 level_emitter.clone(),
                 chunk_emitter.clone(),
+                retain_samples,
             ),
             other => return Err(RecordingError::UnsupportedFormat(other)),
         }?;
@@ -633,6 +659,7 @@ mod cpal_impl {
         chunk_emitter: Option<Arc<ChunkEmitter>>,
         preferred_label: Option<&str>,
         preferred_normalized: Option<&str>,
+        retain_samples: bool,
     ) -> Result<(ActiveRecording, String), RecordingError> {
         let default_output_name = host
             .default_output_device()
@@ -680,6 +707,7 @@ mod cpal_impl {
                     buffer.clone(),
                     level_emitter.clone(),
                     chunk_emitter.clone(),
+                    retain_samples,
                 ),
                 SampleFormat::U16 => build_input_stream::<u16>(
                     &device,
@@ -687,6 +715,7 @@ mod cpal_impl {
                     buffer.clone(),
                     level_emitter.clone(),
                     chunk_emitter.clone(),
+                    retain_samples,
                 ),
                 SampleFormat::F32 => build_input_stream::<f32>(
                     &device,
@@ -694,6 +723,7 @@ mod cpal_impl {
                     buffer.clone(),
                     level_emitter.clone(),
                     chunk_emitter.clone(),
+                    retain_samples,
                 ),
                 other => {
                     log::warn!("device '{label}' has unsupported sample format: {other:?}");
@@ -925,6 +955,7 @@ mod cpal_impl {
         buffer: Arc<Mutex<Vec<f32>>>,
         level_emitter: Option<Arc<LevelEmitter>>,
         chunk_emitter: Option<Arc<ChunkEmitter>>,
+        retain_samples: bool,
     ) -> Result<Stream, RecordingError>
     where
         T: cpal::Sample + cpal::SizedSample,
@@ -974,8 +1005,10 @@ mod cpal_impl {
                         chunk_emitter.emit(&mono_samples);
                     }
 
-                    if let Ok(mut shared_buffer) = callback_buffer.lock() {
-                        shared_buffer.extend_from_slice(&mono_samples);
+                    if retain_samples {
+                        if let Ok(mut shared_buffer) = callback_buffer.lock() {
+                            shared_buffer.extend_from_slice(&mono_samples);
+                        }
                     }
                 },
                 |err| log::error!("stream error: {err}"),

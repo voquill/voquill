@@ -808,6 +808,122 @@ async floatingWindowList() : Promise<Result<FloatingWindowInfo[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async noteUpsert(note: Note) : Promise<Result<Note, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_upsert", { note }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteList() : Promise<Result<Note[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_list") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Deletes the note's rows and every audio file recorded for it.
+ */
+async noteDelete(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_delete", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentUpsert(segment: NoteSegment) : Promise<Result<NoteSegment, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_upsert", { segment }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentList(noteId: string) : Promise<Result<NoteSegment[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_list", { noteId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSearch(terms: string[], matchAll: boolean, limit: number) : Promise<Result<NoteSearchCandidate[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_search", { terms, matchAll, limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStart(args: MeetingCaptureStartArgs) : Promise<Result<MeetingCaptureStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_start", { args }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStop() : Promise<Result<MeetingCaptureStopped | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_stop") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStatus() : Promise<MeetingCaptureStatus | null> {
+    return await TAURI_INVOKE("meeting_capture_status");
+},
+/**
+ * Makes an interrupted segment file valid again and returns its duration.
+ */
+async meetingAudioRepair(path: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_repair", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingAudioEnvelope(path: string, windowMs: number) : Promise<Result<number[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_envelope", { path, windowMs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Base64 of 16 kHz mono little-endian i16 PCM for `[startMs, endMs)`.
+ */
+async meetingAudioRead(path: string, startMs: number, endMs: number) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_read", { path, startMs, endMs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingAudioDelete(path: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_delete", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setTrayMeetingMenu(menu: TrayMeetingMenu) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_tray_meeting_menu", { menu }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -966,10 +1082,29 @@ wroteFile: boolean;
  * it picks up the bridge. Always true when `wrote_file` is true.
  */
 restartRequired: boolean }
+export type MeetingCaptureStartArgs = { noteId: string; segmentId: string; preferredMicrophone: string | null }
+export type MeetingCaptureStatus = { noteId: string; segmentId: string; audioPath: string; durationMs: number; level: number; 
+/**
+ * Audio stopped arriving (device unplugged, stream died, disk error).
+ * Everything captured so far is on disk.
+ */
+interrupted: boolean }
+export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
 export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
 export type NativeSetupResult = "success" | "require-restart" | "failed"
 export type NativeSetupStatus = "ready" | "needs-setup" | "needs-restart"
+export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; createdAt: number; updatedAt: number }
+export type NoteSearchCandidate = { note: Note; 
+/**
+ * Segment transcripts in index order, separated by blank lines.
+ */
+transcript: string }
+export type NoteSegment = { id: string; noteId: string; segmentIndex: number; kind: string; status: string; durationMs: number; audioPath: string | null; transcribedMs: number; transcriptText: string | null; 
+/**
+ * JSON array of utterances.
+ */
+transcriptUtterances: string | null; createdAt: number }
 export type PairedRemoteDevice = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
 export type PairedRemoteDeviceDeleteArgs = { id: string }
 export type PairedRemoteDeviceUpsertArgs = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
@@ -1002,6 +1137,11 @@ export type Tone = { id: string; name: string; promptTemplate: string; createdAt
 export type Transcription = { id: string; transcript: string; timestamp: number; audio?: TranscriptionAudioSnapshot | null; modelSize?: string | null; inferenceDevice?: string | null; rawTranscript?: string | null; sanitizedTranscript?: string | null; transcriptionPrompt?: string | null; postProcessPrompt?: string | null; transcriptionApiKeyId?: string | null; postProcessApiKeyId?: string | null; transcriptionMode?: string | null; postProcessMode?: string | null; postProcessDevice?: string | null; transcriptionDurationMs?: number | null; postprocessDurationMs?: number | null; warnings?: string[] | null; remoteStatus?: string | null; remoteDeviceId?: string | null }
 export type TranscriptionAudioData = { samples: number[]; sampleRate: number }
 export type TranscriptionAudioSnapshot = { filePath: string; durationMs: number }
+/**
+ * Labels for the meeting section; an item is shown only when its label is
+ * set. The status line is always disabled.
+ */
+export type TrayMeetingMenu = { startLabel: string | null; statusLabel: string | null; stopLabel: string | null }
 export type User = { id: string; name: string; bio: string; company?: string | null; title?: string | null; onboarded: boolean; preferredMicrophone?: string | null; preferredLanguage?: string | null; wordsThisMonth?: number; wordsThisMonthMonth?: string | null; wordsTotal?: number; playInteractionChime?: boolean; hasFinishedTutorial?: boolean; hasMigratedPreferredMicrophone?: boolean; cohort?: string | null; stylingMode?: string | null; selectedToneId?: string | null; activeToneIds?: string | null; streak?: number | null; streakRecordedAt?: string | null; referralSource?: string | null }
 export type UserPreferences = { userId: string; transcriptionMode?: string | null; transcriptionApiKeyId?: string | null; transcriptionDevice?: string | null; transcriptionModelSize?: string | null; postProcessingMode?: string | null; postProcessingApiKeyId?: string | null; postProcessingOllamaUrl?: string | null; postProcessingOllamaModel?: string | null; agentMode?: string | null; agentModeApiKeyId?: string | null; openclawGatewayUrl?: string | null; openclawToken?: string | null; activeToneId?: string | null; gotStartedAt?: number | null; gpuEnumerationEnabled?: boolean; pasteKeybind?: string | null; lastSeenFeature?: string | null; isEnterprise?: boolean; languageSwitchEnabled?: boolean; secondaryDictationLanguage?: string | null; activeDictationLanguage?: string | null; additionalDictationLanguages?: string[] | null; preferredMicrophone?: string | null; ignoreUpdateDialog?: boolean; incognitoModeEnabled?: boolean; incognitoModeIncludeInStats?: boolean; dictationLimitMinutes?: number; dictationPillVisibility?: string; useNewBackend?: boolean; realtimeOutputEnabled?: boolean; remoteOutputEnabled?: boolean; remoteTargetDeviceId?: string | null; remoteReceiverPort?: number | null; remoteReceiverAutoStart?: boolean; dictationAudioDim?: number; menuBarIconHidden?: boolean; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type UserPreferencesGetArgs = { userId: string }

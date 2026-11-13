@@ -2382,3 +2382,202 @@ pub async fn floating_window_list(app: AppHandle) -> Result<Vec<FloatingWindowIn
     }
     Ok(out)
 }
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_upsert(
+    note: crate::domain::Note,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<crate::domain::Note, String> {
+    crate::db::note_queries::upsert_note(database.pool(), &note)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_list(
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<crate::domain::Note>, String> {
+    crate::db::note_queries::fetch_notes(database.pool())
+        .await
+        .map_err(|err| err.to_string())
+}
+
+/// Deletes the note's rows and every audio file recorded for it.
+#[tauri::command]
+#[specta::specta]
+pub async fn note_delete(
+    app: AppHandle,
+    id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<(), String> {
+    let note_id = id.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::system::meeting_audio::delete_note_audio(&app, &note_id)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())?;
+
+    crate::db::note_queries::delete_note(database.pool(), &id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_segment_upsert(
+    segment: crate::domain::NoteSegment,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<crate::domain::NoteSegment, String> {
+    crate::db::note_queries::upsert_segment(database.pool(), &segment)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_segment_list(
+    note_id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<crate::domain::NoteSegment>, String> {
+    crate::db::note_queries::fetch_segments(database.pool(), &note_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_search(
+    terms: Vec<String>,
+    match_all: bool,
+    limit: u32,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<crate::domain::NoteSearchCandidate>, String> {
+    crate::db::note_queries::search_notes(database.pool(), &terms, match_all, limit)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[derive(serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingCaptureStartArgs {
+    pub note_id: String,
+    pub segment_id: String,
+    pub preferred_microphone: Option<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_capture_start(
+    app: AppHandle,
+    capture: State<'_, Arc<crate::system::meeting_capture::MeetingCapture>>,
+    args: MeetingCaptureStartArgs,
+) -> Result<crate::system::meeting_capture::MeetingCaptureStatus, String> {
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || {
+        let audio_path =
+            crate::system::meeting_audio::segment_path(&app, &args.note_id, &args.segment_id)
+                .map_err(|err| err.to_string())?;
+        capture.start(
+            &app,
+            args.note_id,
+            args.segment_id,
+            audio_path,
+            args.preferred_microphone,
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_capture_stop(
+    capture: State<'_, Arc<crate::system::meeting_capture::MeetingCapture>>,
+) -> Result<Option<crate::system::meeting_capture::MeetingCaptureStopped>, String> {
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || capture.stop())
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn meeting_capture_status(
+    capture: State<'_, Arc<crate::system::meeting_capture::MeetingCapture>>,
+) -> Option<crate::system::meeting_capture::MeetingCaptureStatus> {
+    capture.status()
+}
+
+/// Makes an interrupted segment file valid again and returns its duration.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_repair(app: AppHandle, path: String) -> Result<u64, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = crate::system::meeting_audio::managed_segment_path(&app, &path)?;
+        crate::system::meeting_audio::repair_segment(&path)
+            .map(crate::system::meeting_audio::samples_to_ms)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_envelope(
+    app: AppHandle,
+    path: String,
+    window_ms: u64,
+) -> Result<Vec<f32>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = crate::system::meeting_audio::managed_segment_path(&app, &path)?;
+        crate::system::meeting_audio::segment_envelope(&path, window_ms)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
+}
+
+/// Base64 of 16 kHz mono little-endian i16 PCM for `[startMs, endMs)`.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_read(
+    app: AppHandle,
+    path: String,
+    start_ms: u64,
+    end_ms: u64,
+) -> Result<String, String> {
+    use base64::{engine::general_purpose, Engine as _};
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = crate::system::meeting_audio::managed_segment_path(&app, &path)?;
+        crate::system::meeting_audio::read_segment_pcm(&path, start_ms, end_ms)
+            .map(|bytes| general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_delete(app: AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = crate::system::meeting_audio::managed_segment_path(&app, &path)?;
+        crate::system::meeting_audio::delete_segment(&path)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn set_tray_meeting_menu(
+    app: AppHandle,
+    menu: crate::system::tray::TrayMeetingMenu,
+) -> Result<(), String> {
+    crate::system::tray::set_tray_meeting_menu(&app, menu)
+}
