@@ -490,7 +490,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
     });
   }
 
-  /** Creates the note on the server, or sends edits it has not confirmed. */
+  /**
+   * Creates the note on the server, or sends edits it has not confirmed.
+   * Bodies are built when the request is sent, so a wait for the connection
+   * never sends stale text.
+   */
   private async pushNote(noteId: string): Promise<void> {
     const note = this.assertOwned(noteId);
     const cloud = note.cloud!;
@@ -501,17 +505,21 @@ export class CloudNotePipeline extends BaseNotePipeline {
       return;
     }
     const { api } = this.deps;
+    let sent: Partial<Pick<Note, "title" | "personalNotes">> = {};
     if (cloud.onServer) {
-      const body: { title?: string; personalNotes?: string } = {};
-      if (cloud.unsyncedFields.includes("title")) body.title = note.title;
-      if (cloud.unsyncedFields.includes("personalNotes")) {
-        body.personalNotes = note.personalNotes;
-      }
       try {
-        const server = await this.request(noteId, () =>
-          api.patchNote(noteId, body),
-        );
-        await this.confirmServerNote(noteId, server, body);
+        const server = await this.request(noteId, () => {
+          const latest = this.assertOwned(noteId);
+          const unsynced = latest.cloud!.unsyncedFields;
+          sent = {
+            ...(unsynced.includes("title") ? { title: latest.title } : {}),
+            ...(unsynced.includes("personalNotes")
+              ? { personalNotes: latest.personalNotes }
+              : {}),
+          };
+          return api.patchNote(noteId, sent);
+        });
+        await this.confirmServerNote(noteId, server, sent);
         return;
       } catch (error) {
         if (
@@ -521,18 +529,17 @@ export class CloudNotePipeline extends BaseNotePipeline {
         }
       }
     }
-    const body = {
-      title: note.title,
-      titleSource:
-        note.titleSource === "user" ? ("user" as const) : ("default" as const),
-      personalNotes: note.personalNotes,
-      createdAt: note.createdAt,
-    };
-    const server = await this.request(noteId, () => api.putNote(noteId, body));
-    await this.confirmServerNote(noteId, server, {
-      title: body.title,
-      personalNotes: body.personalNotes,
+    const server = await this.request(noteId, () => {
+      const latest = this.assertOwned(noteId);
+      sent = { title: latest.title, personalNotes: latest.personalNotes };
+      return api.putNote(noteId, {
+        title: latest.title,
+        titleSource: latest.titleSource === "user" ? "user" : "default",
+        personalNotes: latest.personalNotes,
+        createdAt: latest.createdAt,
+      });
     });
+    await this.confirmServerNote(noteId, server, sent);
   }
 
   private async sendImport(noteId: string): Promise<void> {
