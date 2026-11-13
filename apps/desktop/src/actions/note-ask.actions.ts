@@ -62,6 +62,24 @@ const updateAnswer = (
   });
 };
 
+let askLimitTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Ask stays unavailable until the daily limit resets, then comes back by itself. */
+const recordAskLimit = (resetsAt: Date | null) => {
+  if (askLimitTimer) {
+    clearTimeout(askLimitTimer);
+  }
+  produceAppState((draft) => {
+    draft.notes.askLimitResetsAt = resetsAt?.toISOString() ?? null;
+  });
+  if (resetsAt) {
+    askLimitTimer = setTimeout(
+      () => recordAskLimit(null),
+      Math.max(0, resetsAt.getTime() - Date.now()),
+    );
+  }
+};
+
 export const setNotesAskExpanded = (
   noteId: Nullable<string>,
   expanded: boolean,
@@ -137,10 +155,7 @@ export const askNotes = async (
         }
       });
       if (event.type === "error" && event.message === "ask_limit_exceeded") {
-        const resetsAt = getNoteErrorAvailableAt(event.details);
-        produceAppState((draft) => {
-          draft.notes.askLimitResetsAt = resetsAt?.toISOString() ?? null;
-        });
+        recordAskLimit(getNoteErrorAvailableAt(event.details));
       }
     }
   } catch (error) {

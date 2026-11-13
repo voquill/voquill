@@ -2,6 +2,7 @@ import { Box, Stack, Typography } from "@mui/material";
 import { FormattedMessage } from "react-intl";
 import { Virtuoso } from "react-virtuoso";
 import { useNoteTranscriptEntries } from "../../hooks/note.hooks";
+import { useAppStore } from "../../store";
 import { formatNoteDuration } from "../../utils/note.utils";
 import type { NoteTranscriptEntry } from "../../utils/note-transcript.utils";
 
@@ -43,7 +44,11 @@ export const NoteTranscript = ({
   scrollParent: HTMLElement | null;
 }) => {
   const entries = useNoteTranscriptEntries(noteId);
+  const loaded = useAppStore((state) => noteId in state.noteSegmentsByNoteId);
 
+  if (!loaded) {
+    return null;
+  }
   if (entries.length === 0) {
     return (
       <Typography variant="body2" color="text.secondary">

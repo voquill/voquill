@@ -64,7 +64,7 @@ import { EditTypography } from "../common/EditTypography";
 import { SegmentedControl } from "../common/SegmentedControl";
 import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { RecordingDot } from "./MeetingIndicatorChip";
-import { NoteAskDock } from "./NoteAskDock";
+import { NOTE_CONTENT_MIN_HEIGHT, NoteAskDock } from "./NoteAskDock";
 import { NoteMarkdown } from "./NoteMarkdown";
 import { NoteTranscript } from "./NoteTranscript";
 import { PersonalNotesEditor } from "./PersonalNotesEditor";
@@ -642,10 +642,16 @@ const AiNotesView = ({ note }: { note: Note }) => {
   const generationAvailable = useAppStore((state) =>
     getNoteGenerationAvailableFor(state, note.id),
   );
+  const segmentsLoaded = useAppStore(
+    (state) => note.id in state.noteSegmentsByNoteId,
+  );
   const showTranscript = () => setNoteView("transcript");
 
   if (note.generatedNotes) {
     return <NoteMarkdown>{note.generatedNotes}</NoteMarkdown>;
+  }
+  if (!segmentsLoaded) {
+    return null;
   }
   return (
     <Typography variant="body2" color="text.secondary">
@@ -847,6 +853,7 @@ export default function NotePage() {
         ref={setScroller}
         sx={{
           flex: 1,
+          minHeight: NOTE_CONTENT_MIN_HEIGHT,
           overflowY: "auto",
           pr: 2,
           overscrollBehavior: "contain",

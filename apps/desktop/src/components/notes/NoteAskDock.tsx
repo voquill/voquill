@@ -40,6 +40,17 @@ import { NoteMarkdown } from "./NoteMarkdown";
 /** The thread can't grow past this share of the window, so the note stays readable. */
 const THREAD_MAX_HEIGHT = "45vh";
 
+/** Content above the dock keeps this height when an open thread needs room. */
+export const NOTE_CONTENT_MIN_HEIGHT = 160;
+
+/** Lets the thread give up height when the window is short. */
+const shrinkColumn = {
+  display: "flex",
+  flexDirection: "column",
+  minHeight: 0,
+  flexShrink: 1,
+} as const;
+
 const openPostProcessingSettings = () => {
   produceAppState((draft) => {
     draft.settings.aiPostProcessingDialogOpen = true;
@@ -288,7 +299,7 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
 
   return (
     <Box
-      sx={{ flexShrink: 0, pr: 2, pb: 2, pt: 1 }}
+      sx={{ ...shrinkColumn, pr: 2, pb: 2, pt: 1 }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && expanded) {
           event.stopPropagation();
@@ -296,9 +307,10 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
         }
       }}
     >
-      <Container maxWidth="sm" disableGutters={false}>
+      <Container maxWidth="sm" sx={shrinkColumn}>
         <Box
           sx={{
+            ...shrinkColumn,
             border: 1,
             borderColor: "divider",
             borderRadius: 1,
@@ -314,7 +326,7 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                 direction="row"
                 alignItems="center"
                 spacing={0.5}
-                sx={{ pl: 2, pr: 1, pt: 0.75 }}
+                sx={{ pl: 2, pr: 1, pt: 0.75, flexShrink: 0 }}
               >
                 <AutoAwesomeOutlined
                   sx={{ fontSize: 16, color: "text.secondary" }}
@@ -333,7 +345,11 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                     clearNotesAsk(noteId);
                     inputRef.current?.focus();
                   }}
-                  sx={{ color: "text.secondary", minWidth: 0 }}
+                  sx={{
+                    color: "text.secondary",
+                    minWidth: 0,
+                    typography: "body2",
+                  }}
                 >
                   <FormattedMessage defaultMessage="Clear" />
                 </Button>
@@ -355,6 +371,8 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                 aria-live="polite"
                 aria-label={intl.formatMessage({ defaultMessage: "Answers" })}
                 sx={{
+                  flex: "0 1 auto",
+                  minHeight: 0,
                   maxHeight: THREAD_MAX_HEIGHT,
                   overflowY: "auto",
                   overscrollBehavior: "contain",
@@ -410,6 +428,7 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
               })}
               sx={{
                 width: "100%",
+                flexShrink: 0,
                 justifyContent: "flex-start",
                 gap: 1,
                 px: 2,
@@ -440,19 +459,14 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
             direction="row"
             alignItems="flex-end"
             spacing={1}
-            sx={{ pl: 2, pr: 1, py: 1 }}
+            sx={{ pl: 2, pr: 1, py: 1, flexShrink: 0 }}
           >
             {disabled ? (
               <Typography
                 variant="body2"
                 color="text.secondary"
-                noWrap
+                role="status"
                 sx={{ flex: 1, minWidth: 0, py: 0.75 }}
-                title={
-                  typeof unavailableReason === "string"
-                    ? unavailableReason
-                    : undefined
-                }
               >
                 {unavailableReason}
               </Typography>

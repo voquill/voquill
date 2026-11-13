@@ -43,7 +43,7 @@ import {
 } from "../../utils/note-search.utils";
 import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { ImportTranscriptDialog } from "./ImportTranscriptDialog";
-import { NoteAskDock } from "./NoteAskDock";
+import { NOTE_CONTENT_MIN_HEIGHT, NoteAskDock } from "./NoteAskDock";
 import { NoteRow } from "./NoteRow";
 
 const SEARCH_DEBOUNCE_MS = 350;
@@ -381,7 +381,12 @@ export default function NotesPage() {
       </Box>
 
       <Box
-        sx={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
+        sx={{
+          flex: 1,
+          minHeight: NOTE_CONTENT_MIN_HEIGHT,
+          display: "flex",
+          flexDirection: "column",
+        }}
       >
         {body}
       </Box>

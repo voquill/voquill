@@ -162,6 +162,22 @@ describe("Ask threads", () => {
     expect(getAppState().notes.askLimitResetsAt).toBe(resetsAt);
   });
 
+  it("makes Ask available again when the limit resets", async () => {
+    vi.useFakeTimers();
+    try {
+      const resetsAt = new Date(Date.now() + 60_000).toISOString();
+      fakes.script = scripted([
+        { type: "error", message: "ask_limit_exceeded", details: { resetsAt } },
+      ]);
+      await askNotes(null, "Anything?");
+      expect(getAppState().notes.askLimitResetsAt).toBe(resetsAt);
+      vi.advanceTimersByTime(60_000);
+      expect(getAppState().notes.askLimitResetsAt).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("collapses only when there is a thread, and clearing removes it", async () => {
     setNotesAskExpanded("n1", true);
     expect(thread("n1")!.expanded).toBe(false);

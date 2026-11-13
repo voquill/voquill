@@ -47,6 +47,24 @@ describe("groupNotesByDay", () => {
     expect(groups[2].day).toBe("2026-04-28");
   });
 
+  it("moves notes to Yesterday right after midnight", () => {
+    const now = new Date(2026, 4, 2, 0, 0, 30);
+    const groups = groupNotesByDay(
+      [
+        note("just-now", new Date(2026, 4, 2, 0, 0, 5)),
+        note("late", new Date(2026, 4, 1, 23, 59, 59)),
+        note("two-days", new Date(2026, 3, 30, 23, 59, 59)),
+      ],
+      now,
+    );
+    expect(groups.map((g) => g.kind)).toEqual(["today", "yesterday", "date"]);
+  });
+
+  it("runs in a zone with daylight saving time", () => {
+    expect(new Date(2026, 2, 7, 12).getTimezoneOffset()).toBe(420);
+    expect(new Date(2026, 2, 9, 12).getTimezoneOffset()).toBe(360);
+  });
+
   it("counts calendar days across a daylight saving change", () => {
     // US daylight saving started on 2026-03-08 (a 23-hour day).
     const now = new Date(2026, 2, 9, 0, 30);
