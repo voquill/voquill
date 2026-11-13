@@ -65,9 +65,21 @@ const getElevenLabsToken = async (
   return data.token;
 };
 
-// Sent instead of a transcript when there was nothing left to commit.
-const NOTHING_TO_COMMIT_MESSAGES = new Set([
-  "insufficient_audio_activity",
+// Error message types from the realtime protocol; each one ends the stream.
+// commit_throttled is included because a rejected final commit leaves the
+// last audio uncommitted.
+const FATAL_MESSAGE_TYPES = new Set([
+  "error",
+  "auth_error",
+  "quota_exceeded",
+  "rate_limited",
+  "queue_overflow",
+  "resource_exhausted",
+  "session_time_limit_exceeded",
+  "input_error",
+  "chunk_size_exceeded",
+  "transcriber_error",
+  "unaccepted_terms",
   "commit_throttled",
 ]);
 
@@ -132,11 +144,13 @@ export class ElevenLabsTranscriptionSession extends WebSocketTranscriptionSessio
       this.complete();
     } else if (messageType === "partial_transcript") {
       this.partialTranscript = message.text || "";
-    } else if (NOTHING_TO_COMMIT_MESSAGES.has(messageType)) {
-      if (!this.partialTranscript) {
+    } else if (messageType === "insufficient_audio_activity") {
+      // The final commit had no speech left to transcribe: a positive
+      // acknowledgement that the committed text is complete.
+      if (this.isFinalizing && !this.partialTranscript) {
         this.complete();
       }
-    } else if (messageType.includes("error")) {
+    } else if (FATAL_MESSAGE_TYPES.has(messageType)) {
       this.fail(
         `ElevenLabs ${messageType}: ${message.error ?? message.message ?? "unknown"}`,
       );
@@ -151,14 +165,6 @@ export class ElevenLabsTranscriptionSession extends WebSocketTranscriptionSessio
 
   protected getFinalizeTimeoutMs(): number {
     return 6_000;
-  }
-
-  protected onFinalizeTimeout(timeoutMs: number): void {
-    if (this.partialTranscript) {
-      super.onFinalizeTimeout(timeoutMs);
-      return;
-    }
-    this.complete();
   }
 
   protected buildResult() {

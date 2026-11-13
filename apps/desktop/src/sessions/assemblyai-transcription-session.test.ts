@@ -146,10 +146,11 @@ describe("AssemblyAITranscriptionSession", () => {
     const { session } = await startOpenSession();
 
     const result = session.finalize(AUDIO);
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     await expect(result).resolves.toMatchObject({
-      failureReason: "AssemblyAI did not finish within 2s",
+      rawTranscript: null,
+      failureReason: "AssemblyAI did not finish within 5s",
     });
   });
 });

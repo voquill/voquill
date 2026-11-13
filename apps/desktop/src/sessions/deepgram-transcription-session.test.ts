@@ -108,6 +108,7 @@ describe("DeepgramTranscriptionSession", () => {
     await flushMicrotasks();
     expect(socket.sentMessages.at(-1)).toEqual({ type: "CloseStream" });
     socket.receive(results("short", { speech_final: true }));
+    socket.receive({ type: "Metadata", request_id: "r" });
 
     await expect(result).resolves.toMatchObject({ rawTranscript: "short" });
   });
@@ -132,16 +133,30 @@ describe("DeepgramTranscriptionSession", () => {
     });
   });
 
-  it("reports a failure when Deepgram does not finish after CloseStream", async () => {
+  it("waits past speech_final for the closing Metadata so later results are not cut off", async () => {
+    const { session, socket } = await startOpenSession();
+
+    const result = session.finalize(AUDIO);
+    await flushMicrotasks();
+    socket.receive(results("first part", { speech_final: true }));
+    socket.receive(results("second part", { speech_final: true }));
+    socket.receive({ type: "Metadata", request_id: "r" });
+
+    await expect(result).resolves.toMatchObject({
+      rawTranscript: "first part second part",
+    });
+  });
+
+  it("recovers instead of truncating when Deepgram does not finish after CloseStream", async () => {
     const { session, socket } = await startOpenSession();
     socket.receive(results("hello"));
 
     const result = session.finalize(AUDIO);
-    await vi.advanceTimersByTimeAsync(3_000);
+    await vi.advanceTimersByTimeAsync(5_000);
 
     await expect(result).resolves.toMatchObject({
       rawTranscript: null,
-      failureReason: "Deepgram did not finish within 3s",
+      failureReason: "Deepgram did not finish within 5s",
     });
   });
 

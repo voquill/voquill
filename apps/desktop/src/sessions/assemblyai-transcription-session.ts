@@ -53,8 +53,10 @@ export class AssemblyAITranscriptionSession extends WebSocketTranscriptionSessio
     this.send(JSON.stringify({ type: "Terminate" }));
   }
 
+  // Terminate finalizes the open turn before Termination is sent; AssemblyAI
+  // documents no bound. Past this the dictation is recovered, not cut short.
   protected getFinalizeTimeoutMs(): number {
-    return 2_000;
+    return 5_000;
   }
 
   protected buildResult() {
