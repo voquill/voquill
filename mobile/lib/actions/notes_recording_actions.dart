@@ -496,13 +496,14 @@ Future<void> stopRecording(String id) async {
         .toSet();
     final closed = await _closeOpenSegments(services.store, note);
     if (_localOf(services, id) == null) return;
-    final hasNewAudio = closed.segments.any(
-      (s) => runSegmentIds.contains(s.id),
+    // Audio from this run, or recovered after a crash, that the server lacks.
+    final hasAudioToSend = closed.segments.any(
+      (s) => runSegmentIds.contains(s.id) || !s.isUploaded,
     );
 
-    if (!hasNewAudio) {
-      // Nothing was captured in this run. Resuming a finished note is
-      // undone instead of reprocessed; a new note waits for audio.
+    if (!hasAudioToSend) {
+      // Nothing to send. Resuming a finished note is undone instead of
+      // reprocessed; a new note waits for audio.
       final isResume = closed.priorDurationMs > 0;
       if (isResume && closed.segments.isEmpty) {
         _produce(services, (notes) => notes.localNoteById.remove(id));

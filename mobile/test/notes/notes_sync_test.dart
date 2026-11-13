@@ -194,14 +194,27 @@ void main() {
 
   test('quota errors fail the note with the code and keep the audio', () async {
     await seedStoppedNote();
-    server.errors['process'] = const FakeServerError(
+    final availableAt = DateTime.now().add(const Duration(days: 3));
+    server.errors['process'] = FakeServerError(
       403,
-      'word_quota_exceeded',
+      'audio_quota_exceeded',
+      details: {
+        'usedMs': 6900000,
+        'allowanceMs': 7200000,
+        'requestedMs': 1800000,
+        'windowDays': 30,
+        'nextReleaseAt': null,
+        'availableAt': availableAt.toUtc().toIso8601String(),
+      },
     );
     await boot();
 
     expect(local()!.phase, LocalNotePhase.failed);
     expect(isQuotaError(local()!.error), isTrue);
+    expect(
+      describeNoteError(local()!.error),
+      allOf(contains('2 h of meeting audio'), contains('This fits again on ')),
+    );
     expect(audioExists(), isTrue);
   });
 
@@ -442,8 +455,8 @@ void main() {
     expect(note.segments.map((s) => s.id), [_segmentB]);
     expect(
       note.segments.single.isUploaded,
-      isTrue,
-      reason: 'the server still has unreadable audio; Retry sends process',
+      isFalse,
+      reason: 'unsupported_audio needs the segment uploaded again',
     );
     expect(audioExists(), isFalse);
     expect(store.segmentFile(_noteId, '$_segmentB.aac').existsSync(), isTrue);
@@ -455,7 +468,7 @@ void main() {
     server.failSegmentIds.clear();
     await retryNote(_noteId);
     expect(local(), isNull);
-    expect(server.callCount('UPLOAD'), 2);
+    expect(server.callCount('UPLOAD'), 3);
   });
 
   test('all segments failing fails the note and keeps everything', () async {

@@ -64,6 +64,14 @@ class LocalNoteStore {
     if (await dir.exists()) await dir.delete(recursive: true);
   }
 
+  /// Moves a note's files to another note id (a recovered recording).
+  Future<void> moveNoteFiles(String fromId, String toId) async {
+    final from = noteDirectory(fromId);
+    if (!await from.exists()) return;
+    await noteDirectory(toId).parent.create(recursive: true);
+    await from.rename(noteDirectory(toId).path);
+  }
+
   Future<void> deleteSegmentFile(String noteId, String fileName) async {
     final file = segmentFile(noteId, fileName);
     if (await file.exists()) await file.delete();

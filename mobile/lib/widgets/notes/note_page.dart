@@ -455,7 +455,7 @@ class _StatusCard extends StatelessWidget {
                 Wrap(
                   spacing: 8,
                   children: [
-                    if (isQuotaError(error))
+                    if (canUpgradeFor(error))
                       FilledButton(
                         onPressed: presentPaywall,
                         child: const Text('Upgrade'),
@@ -516,7 +516,7 @@ class _FailedSegmentBanner extends StatelessWidget {
           onPressed: () => _confirmRemove(context),
           child: const Text('Remove'),
         ),
-        if (isQuotaError(error))
+        if (canUpgradeFor(error))
           TextButton(onPressed: presentPaywall, child: const Text('Upgrade')),
         TextButton(
           onPressed: () => retryNote(view.id),

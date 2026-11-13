@@ -17,6 +17,7 @@ import 'package:app/state/snackbar_state.dart';
 import 'package:app/store/store.dart';
 import 'package:app/utils/adts_utils.dart';
 import 'package:app/utils/log_utils.dart';
+import 'package:app/utils/member_utils.dart';
 import 'package:app/utils/note_lifecycle_utils.dart';
 import 'package:app/utils/note_utils.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -214,6 +215,15 @@ class _NoteGone implements Exception {
 
 LocalNote _requireLocal(NotesServices services, String id) =>
     _localOf(services, id) ?? (throw const _NoteGone());
+
+/// A plan upgrade only helps free members (pro limits are the ceiling).
+bool canUpgradeFor(NoteError? error) =>
+    isQuotaError(error) &&
+    getEffectivePlan(getAppState()) == EffectivePlan.free;
+
+void offerUpgradeFor(NoteError? error) {
+  if (canUpgradeFor(error)) presentPaywall();
+}
 
 // ---------------------------------------------------------------------------
 // Lifecycle

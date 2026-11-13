@@ -53,14 +53,17 @@ class NoteError with EquatableMixin {
   final String code;
   final String message;
 
-  const NoteError({required this.code, required this.message});
+  /// Limit details (when capacity frees up); only on errors from a request.
+  final Map<String, dynamic>? details;
+
+  const NoteError({required this.code, required this.message, this.details});
 
   factory NoteError.fromJson(Map<String, dynamic> json) =>
       _$NoteErrorFromJson(json);
   Map<String, dynamic> toJson() => _$NoteErrorToJson(this);
 
   @override
-  List<Object?> get props => [code, message];
+  List<Object?> get props => [code, message, details];
 }
 
 @JsonSerializable()

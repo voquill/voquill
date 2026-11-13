@@ -40,7 +40,7 @@ Future<void> _runSyncGuarded(
     return;
   } on NotesApiException catch (e) {
     if (!_isCurrent(services)) return;
-    _handleSyncFailure(services, id, e, isUserInitiated: isUserInitiated);
+    await _handleSyncFailure(services, id, e, isUserInitiated: isUserInitiated);
   } catch (e, stack) {
     if (!_isCurrent(services)) return;
     _logger.e('Note sync failed', e, stack);
@@ -61,13 +61,17 @@ Future<void> _runSyncGuarded(
   }
 }
 
-void _handleSyncFailure(
+Future<void> _handleSyncFailure(
   NotesServices services,
   String id,
   NotesApiException e, {
   required bool isUserInitiated,
-}) {
+}) async {
   _logger.w('Note sync stopped: ${e.code} (${e.statusCode})');
+  if (e.isNoteDeleted) {
+    await _recoverDeletedNote(services, id);
+    return;
+  }
   if (e.isTransient) {
     if (_localOf(services, id)?.phase == LocalNotePhase.uploading) {
       _transition(services, id, LocalNoteEvent.uploadInterrupted);
@@ -77,7 +81,7 @@ void _handleSyncFailure(
       id,
       NoteSyncStatus(isWaitingForConnection: e.isNetwork, isQueued: e.isQueued),
     );
-    _scheduleRetry(services);
+    _scheduleRetry(services, after: e.retryAfterSeconds);
     return;
   }
   if (e.isNoteNotFound) {
@@ -97,7 +101,54 @@ void _handleSyncFailure(
     LocalNoteEvent.fail,
     (note) => note.error = e.toNoteError(),
   );
-  if (e.isQuota && isUserInitiated) presentPaywall();
+  if (isUserInitiated) offerUpgradeFor(e.toNoteError());
+}
+
+/// The id was deleted (on another device) and the server reserves it, so the
+/// note cannot be recreated. Audio the server never got is kept as a new
+/// "Recovered recording" under a fresh id; anything else goes.
+Future<void> _recoverDeletedNote(NotesServices services, String id) async {
+  final note = _localOf(services, id);
+  if (note == null) return;
+  if (note.source == NoteSource.imported || note.segments.isEmpty) {
+    _produce(services, (notes) {
+      notes.localNoteById.remove(id);
+      notes.syncById.remove(id);
+      notes.pendingEditById.remove(id);
+    });
+    await _persist(services);
+    await services.store.deleteNoteFiles(id);
+    showSnackbar('This note was deleted on another device.');
+    return;
+  }
+  final newId = const Uuid().v4();
+  await services.store.moveNoteFiles(id, newId);
+  final recovered = LocalNote(
+    id: newId,
+    title: 'Recovered recording',
+    personalNotes: note.personalNotes,
+    createdAt: note.createdAt,
+    phase: LocalNotePhase.paused,
+    segments: [
+      for (final (index, segment) in note.segments.indexed)
+        LocalNoteSegment(
+          id: segment.id,
+          fileName: segment.fileName,
+          index: index,
+          durationMs: segment.durationMs,
+        ),
+    ],
+  );
+  _produce(services, (notes) {
+    notes.localNoteById.remove(id);
+    notes.syncById.remove(id);
+    notes.pendingEditById.remove(id);
+    notes.localNoteById[newId] = recovered.draft();
+  });
+  await _persist(services);
+  showSnackbar(
+    'This note was deleted on another device. Its recording that had not been sent yet is kept as "Recovered recording".',
+  );
 }
 
 Future<void> _runSync(NotesServices services, String id) async {
@@ -457,11 +508,16 @@ void _onNoteSettled(NotesServices services) {
   }
 }
 
-/// Only a segment whose audio the server no longer has is uploaded again;
-/// any other failure is retried with `process` on the audio it holds.
-const _reuploadErrorCodes = {'audio_missing'};
+/// Stored segment codes after which `process` skips the segment until it
+/// is uploaded again (docs/notes.md, Job error codes); every other code is
+/// retried by `process` alone.
+const _reuploadErrorCodes = {
+  'unsupported_audio',
+  'audio_missing',
+  'segment_too_large',
+};
 
-/// Segments whose audio the server lost get uploaded again on Retry.
+/// Segments the server cannot use as stored get uploaded again on Retry.
 void _markSegmentsNeedingUpload(
   NotesServices services,
   String id,
@@ -544,10 +600,13 @@ Future<void> _finalizeReadyNote(NotesServices services, String id) async {
   }
 }
 
-void _scheduleRetry(NotesServices services) {
+/// Retries with backoff, or later if the server said when ([after], seconds).
+void _scheduleRetry(NotesServices services, {int? after}) {
   final delays = services.retryDelays;
   if (delays.isEmpty || services._retryTimer?.isActive == true) return;
-  final delay = delays[min(services._retryAttempt, delays.length - 1)];
+  final backoff = delays[min(services._retryAttempt, delays.length - 1)];
+  final serverDelay = Duration(seconds: after ?? 0);
+  final delay = serverDelay > backoff ? serverDelay : backoff;
   services._retryAttempt++;
   services._retryTimer = Timer(delay, () {
     if (_isCurrent(services)) unawaited(syncAllNotes());
@@ -641,7 +700,7 @@ Future<void> _runServerAction(
     unawaited(watchServerNote(note.id));
   } on NotesApiException catch (e) {
     if (!_isCurrent(services)) return;
-    if (e.isQuota) presentPaywall();
+    offerUpgradeFor(e.toNoteError());
     showSnackbar(describeApiError(e), type: SnackbarType.error);
   }
 }

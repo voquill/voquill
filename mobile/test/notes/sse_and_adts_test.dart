@@ -63,10 +63,12 @@ void main() {
           return http.StreamedResponse(
             Stream.value(
               utf8.encode(
-                '{"error":{"code":"word_quota_exceeded","message":"No words"}}',
+                '{"error":{"code":"ask_limit_exceeded","message":"x",'
+                '"details":{"used":25,"limit":25,"resetsAt":null}}}',
               ),
             ),
-            403,
+            429,
+            headers: {'retry-after': '600'},
           );
         }
         return http.StreamedResponse(
@@ -97,7 +99,9 @@ void main() {
       await expectLater(
         quota.ask(question: 'q').toList(),
         throwsA(
-          isA<NotesApiException>().having((e) => e.isQuota, 'isQuota', true),
+          isA<NotesApiException>()
+              .having((e) => e.code, 'code', 'ask_limit_exceeded')
+              .having((e) => e.retryAfterSeconds, 'Retry-After', 600),
         ),
       );
     });

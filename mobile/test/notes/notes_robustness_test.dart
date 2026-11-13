@@ -9,6 +9,7 @@ import 'package:app/actions/notes_actions.dart';
 import 'package:app/api/local_note_store.dart';
 import 'package:app/api/note_recorder_api.dart';
 import 'package:app/model/local_note_model.dart';
+import 'package:app/model/note_model.dart';
 import 'package:app/state/app_state.dart';
 import 'package:app/store/store.dart';
 import 'package:app/utils/note_utils.dart';
@@ -642,6 +643,134 @@ void main() {
         await loadMoreNotes();
         expect(getAppState().notes.serverNoteIds, hasLength(120));
         expect(getAppState().notes.nextCursor, isNull);
+      },
+    );
+  });
+
+  group('contract revision 3', () {
+    test(
+      'a note deleted elsewhere keeps its unsent audio as a recovered recording',
+      () async {
+        final file = await writeSegment('$_segmentA.aac', adtsFrames(10));
+        await seed([
+          LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            durationMs: 640,
+            index: 3,
+          ),
+        ]);
+        server.tombstones.add(_noteId);
+        await boot();
+        await eventually(() => snackbar().isNotEmpty);
+
+        expect(local(), isNull);
+        final recovered = getAppState().notes.localNoteById.values.single;
+        expect(recovered.id, isNot(_noteId));
+        expect(recovered.title, 'Recovered recording');
+        expect(recovered.phase, LocalNotePhase.paused);
+        expect(recovered.existsOnServer, isFalse);
+        expect(recovered.segments.single.index, 0);
+        expect(file.existsSync(), isFalse);
+        expect(
+          store.segmentFile(recovered.id, '$_segmentA.aac').existsSync(),
+          isTrue,
+        );
+        expect(snackbar(), contains('deleted on another device'));
+
+        await stopRecording(recovered.id);
+        await retryNote(recovered.id);
+        expect(getAppState().notes.localNoteById, isEmpty);
+        expect(server.notes[recovered.id]!['status'], 'ready');
+      },
+    );
+
+    test('an import whose id was deleted is dropped', () async {
+      await boot();
+      final id = _orphanNote;
+      server.tombstones.add(id);
+      await store.writeImportTranscript(id, 'hello');
+      await store.saveSnapshot(
+        LocalNotesSnapshot(
+          localNotes: [
+            LocalNote(
+              id: id,
+              source: NoteSource.imported,
+              title: 'Imported transcript',
+              createdAt: '2026-01-01T10:00:00.000Z',
+              phase: LocalNotePhase.pendingUpload,
+            ),
+          ],
+        ),
+      );
+      await boot();
+      await eventually(() => snackbar().isNotEmpty);
+      expect(getAppState().notes.localNoteById, isEmpty);
+      expect(store.noteDirectory(id).existsSync(), isFalse);
+    });
+
+    test(
+      'a generation-only retry inside the cooldown waits, then succeeds',
+      () async {
+        await writeSegment('$_segmentA.aac', adtsFrames(10));
+        await seed([
+          LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            durationMs: 640,
+          ),
+        ]);
+        await boot();
+        // Transcribed, but generation failed: process alone retries it.
+        server.notes[_noteId]!['status'] = 'failed';
+        server.notes[_noteId]!['error'] = {
+          'code': 'generation_failed',
+          'message': 'x',
+        };
+        var clock = DateTime.now();
+        server.now = () => clock;
+        await retryNote(_noteId);
+        expect(snackbar(), isNot(contains('just regenerated')));
+        server.notes[_noteId]!['status'] = 'failed';
+        await retryNote(_noteId);
+        expect(
+          snackbar(),
+          contains('The notes were just regenerated. Try again at '),
+        );
+        clock = clock.add(const Duration(minutes: 3));
+        server.notes[_noteId]!['status'] = 'failed';
+        await retryNote(_noteId);
+        expect(server.notes[_noteId]!['status'], isNot('failed'));
+      },
+    );
+
+    test(
+      'only unsupported, missing or oversized audio is uploaded again',
+      () async {
+        await writeSegment('$_segmentA.aac', adtsFrames(10));
+        await writeSegment('$_segmentB.aac', adtsFrames(10));
+        await seed([
+          LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            durationMs: 640,
+          ),
+          LocalNoteSegment(
+            id: _segmentB,
+            fileName: '$_segmentB.aac',
+            durationMs: 640,
+          ),
+        ]);
+        server.failSegmentIds.addAll([_segmentA, _segmentB]);
+        await boot();
+        expect(local()!.phase, LocalNotePhase.failed);
+        // The fake stores unsupported_audio for both; both need a re-upload.
+        expect(local()!.segments.every((s) => !s.isUploaded), isTrue);
+
+        server.failSegmentIds.clear();
+        await retryNote(_noteId);
+        expect(local(), isNull);
+        expect(server.callCount('UPLOAD'), 4);
       },
     );
   });

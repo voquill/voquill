@@ -158,57 +158,101 @@ String formatNoteDuration(int ms) {
 
 const _genericNoteError = 'Something went wrong while processing this note.';
 
-/// User-facing text per server error code (server messages are for logs).
-const _noteErrorMessages = {
-  'word_quota_exceeded':
-      "You've used all of your free words for now. Upgrade to Pro to process this meeting.",
-  'audio_quota_exceeded':
-      "You've used all your meeting audio for the last 30 days. Upgrade, or wait until older recordings stop counting.",
-  'member_not_found':
-      'Your account is still being set up. Try again in a moment.',
-  'transcription_failed': 'The recording could not be transcribed right now.',
-  'unsupported_audio': 'Part of the recording could not be read.',
-  'audio_missing':
-      'The server no longer has this audio. Retry to upload it again.',
-  'generation_failed': 'The notes could not be written right now.',
-  'no_audio': 'No audio was recorded for this note.',
-  'note_not_found': 'This note was deleted on another device.',
-  'note_exists': 'This transcript could not be imported.',
-  'segment_too_large': 'This recording is too large for your plan.',
-  'segment_too_long': 'A single recording can be at most 4 hours long.',
-  'note_too_long': 'A note can contain at most 8 hours of audio.',
-  'too_many_segments': 'This note has too many recordings. Start a new note.',
-  'client_error': 'Something went wrong on this device.',
-  'too_many_processing':
+/// "at 4:40 PM" today, "on Nov 24 at 4:40 PM" later; from an ISO time or a
+/// number of seconds in [details].
+String _when(Map<String, dynamic>? details, List<String> timeKeys) {
+  for (final key in timeKeys) {
+    final at = DateTime.tryParse(details?[key] as String? ?? '')?.toLocal();
+    if (at == null) continue;
+    final now = DateTime.now();
+    final time = DateFormat.jm().format(at);
+    final isToday =
+        at.year == now.year && at.month == now.month && at.day == now.day;
+    return isToday ? 'at $time' : 'on ${DateFormat.MMMd().format(at)} at $time';
+  }
+  final seconds = (details?['retryAfterSeconds'] as num?)?.toInt();
+  if (seconds != null) {
+    return seconds < 90 ? 'in $seconds s' : 'in ${(seconds / 60).ceil()} min';
+  }
+  return 'later';
+}
+
+String _hours(Object? ms) {
+  final hours = ((ms as num?) ?? 0) / Duration.millisecondsPerHour;
+  return hours == hours.roundToDouble()
+      ? '${hours.round()} h'
+      : '${hours.toStringAsFixed(1)} h';
+}
+
+String _describeAudioQuota(Map<String, dynamic>? d) {
+  final allowance = _hours(d?['allowanceMs']);
+  final requested = (d?['requestedMs'] as num?) ?? 0;
+  if (d != null && requested > 0 && d['availableAt'] == null) {
+    return 'This is longer than your $allowance of meeting audio per 30 days. '
+        'Split it into shorter notes.';
+  }
+  final base = "You've used your $allowance of meeting audio for the last 30 days.";
+  if (d?['availableAt'] != null) {
+    return '$base This fits again ${_when(d, const ['availableAt'])}.';
+  }
+  if (d?['nextReleaseAt'] != null) {
+    return '$base Some frees up ${_when(d, const ['nextReleaseAt'])}.';
+  }
+  return base;
+}
+
+/// User-facing text per server error code; server messages are for logs.
+/// Limit codes say when capacity comes back, from the error's `details`.
+final Map<String, String Function(Map<String, dynamic>? details)>
+_noteErrorMessages = {
+  'audio_quota_exceeded': _describeAudioQuota,
+  'too_many_processing': (_) =>
       'Another note is being processed. This one starts as soon as it is done.',
-  'too_many_pending_uploads':
+  'regenerate_cooldown': (d) =>
+      'The notes were just regenerated. Try again ${_when(d, const ['availableAt'])}.',
+  'ask_limit_exceeded': (d) =>
+      "You've reached today's limit for Ask. It resets ${_when(d, const ['resetsAt'])}.",
+  'too_many_upload_sessions': (d) =>
+      'Uploads are paused for today. They continue ${_when(d, const ['resetsAt'])}.',
+  'too_many_pending_uploads': (_) =>
       'Too many recordings are waiting to upload. They continue shortly.',
-  'segment_processing':
+  'segment_processing': (_) =>
       'This recording is being processed. Try again when it is done.',
-  'regenerate_cooldown': 'The notes were just regenerated.',
-  'ask_limit_exceeded': "You've reached today's limit for Ask.",
-  'transcript_unavailable':
+  'note_deleted': (_) => 'This note was deleted on another device.',
+  'note_not_found': (_) => 'This note was deleted on another device.',
+  'member_not_found': (_) =>
+      'Your account is still being set up. Try again in a moment.',
+  'transcription_failed': (_) =>
+      'The recording could not be transcribed right now.',
+  'unsupported_audio': (_) => 'Part of the recording could not be read.',
+  'audio_missing': (_) =>
+      'The server no longer has this audio. Retry to upload it again.',
+  'generation_failed': (_) => 'The notes could not be written right now.',
+  'no_audio': (_) => 'No audio was recorded for this note.',
+  'note_exists': (_) => 'This transcript could not be imported.',
+  'segment_too_large': (_) => 'This recording is too large for your plan.',
+  'segment_too_long': (_) => 'A single recording can be at most 4 hours long.',
+  'note_too_long': (_) => 'A note can contain at most 8 hours of audio.',
+  'too_many_segments': (_) =>
+      'This note has too many recordings. Start a new note.',
+  'transcript_unavailable': (_) =>
       'Ask becomes available once the meeting is processed.',
-  'notes_unavailable': 'Notes is temporarily unavailable. Try again later.',
+  'notes_unavailable': (_) =>
+      'Notes is temporarily unavailable. Try again later.',
+  'client_error': (_) => 'Something went wrong on this device.',
 };
 
-/// Codes that a plan upgrade can resolve.
-const _upgradeErrorCodes = {'word_quota_exceeded', 'audio_quota_exceeded'};
+/// Codes a plan upgrade resolves (offered to free members only).
+const _upgradeErrorCodes = {'audio_quota_exceeded', 'ask_limit_exceeded'};
 
-/// Plain-language explanation for a failed note or segment.
+/// Plain-language explanation for a failed note, segment or request.
 String describeNoteError(NoteError? error) =>
-    _noteErrorMessages[error?.code] ?? _genericNoteError;
+    _noteErrorMessages[error?.code]?.call(error?.details) ?? _genericNoteError;
 
-/// Plain-language text for a failed request the user just made, with when
-/// to try again if the server said so.
-String describeApiError(NotesApiException e) {
-  if (e.isNetwork) return "You're offline. Try again when you're connected.";
-  final message = describeNoteError(e.toNoteError());
-  final seconds = e.retryAfterSeconds;
-  if (seconds == null) return message;
-  final wait = seconds < 90 ? '$seconds s' : '${(seconds / 60).ceil()} min';
-  return '$message Try again in $wait.';
-}
+/// Plain-language text for a failed request the user just made.
+String describeApiError(NotesApiException e) => e.isNetwork
+    ? "You're offline. Try again when you're connected."
+    : describeNoteError(e.toNoteError());
 
 bool isQuotaError(NoteError? error) => _upgradeErrorCodes.contains(error?.code);
 

@@ -4,13 +4,18 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:app/model/note_model.dart';
-import 'package:app/utils/note_utils.dart';
 import 'package:app/utils/sse_utils.dart';
 import 'package:http/http.dart' as http;
 
 const noteAudioContentType = 'audio/aac';
 
-const _queuedErrorCodes = {'too_many_processing', 'too_many_pending_uploads'};
+/// Limits that clear by themselves; the same request succeeds later.
+const _queuedErrorCodes = {
+  'too_many_processing',
+  'too_many_pending_uploads',
+  'too_many_upload_sessions',
+  'regenerate_cooldown',
+};
 const _uploadSessionExpiredCode = 'upload_session_expired';
 const _uploadRejectedCode = 'upload_rejected';
 
@@ -38,7 +43,6 @@ class NotesApiException implements Exception {
       details = null;
 
   bool get isNetwork => statusCode == null;
-  bool get isQuota => isQuotaError(toNoteError());
   bool get isNoteNotFound => code == 'note_not_found';
 
   /// The session is gone (404/410) or refused the bytes (400: the size did
@@ -46,9 +50,12 @@ class NotesApiException implements Exception {
   bool get needsNewUploadSession =>
       code == _uploadSessionExpiredCode || code == _uploadRejectedCode;
 
-  /// The plan's limit of notes processing / uploads pending is reached;
-  /// retrying later succeeds once another note finishes.
+  /// A limit that clears by itself (processing slots, pending uploads,
+  /// daily upload sessions, the generation cooldown): retry later.
   bool get isQueued => _queuedErrorCodes.contains(code);
+
+  /// The note id was deleted (possibly on another device) and is reserved.
+  bool get isNoteDeleted => code == 'note_deleted';
 
   /// The server already accepted this segment's audio and is processing it.
   bool get isSegmentProcessing => code == 'segment_processing';
@@ -66,7 +73,8 @@ class NotesApiException implements Exception {
         status >= 500;
   }
 
-  NoteError toNoteError() => NoteError(code: code, message: message);
+  NoteError toNoteError() =>
+      NoteError(code: code, message: message, details: details);
 
   @override
   String toString() => message;
@@ -424,11 +432,15 @@ class NotesApi {
     try {
       final json = jsonDecode(response.body) as Map<String, dynamic>;
       final error = json['error'] as Map<String, dynamic>;
+      final details = error['details'] as Map<String, dynamic>?;
+      final retryAfter = int.tryParse(response.headers['retry-after'] ?? '');
       return NotesApiException(
         statusCode: response.statusCode,
         code: error['code'] as String? ?? 'unknown',
         message: error['message'] as String? ?? 'Something went wrong.',
-        details: error['details'] as Map<String, dynamic>?,
+        details: retryAfter == null || details?['retryAfterSeconds'] != null
+            ? details
+            : {...?details, 'retryAfterSeconds': retryAfter},
       );
     } catch (_) {
       return NotesApiException(

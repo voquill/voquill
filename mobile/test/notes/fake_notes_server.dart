@@ -73,6 +73,17 @@ class FakeNotesServer {
   /// Completes a request only when the test says so.
   Completer<void>? holdPut;
 
+  /// Ids deleted in the last 7 days; creating them again is `note_deleted`.
+  final tombstones = <String>{};
+
+  /// Last generation-only request per note, for the 2-minute cooldown.
+  final _lastGenerationOnly = <String, DateTime>{};
+  static const _reuploadCodes = {
+    'unsupported_audio',
+    'audio_missing',
+    'segment_too_large',
+  };
+
   late final http.Client client = MockClient.streaming((request, body) async {
     try {
       return await _handle(request, body);
@@ -115,6 +126,7 @@ class FakeNotesServer {
       _fail('import');
       final id = json['id'] as String;
       if (!notes.containsKey(id)) {
+        _assertNotDeleted(id);
         _assertProcessingSlot(id);
         notes[id] = _newNote(
           id,
@@ -138,6 +150,7 @@ class FakeNotesServer {
       return _json(202, {'note': _publicNote(notes[id]!)});
     }
     if (parts.length == 1 && parts[0] == 'ask') {
+      _fail('ask');
       return http.StreamedResponse(
         Stream.value(
           utf8.encode(
@@ -159,6 +172,7 @@ class FakeNotesServer {
         case 'PUT':
           await holdPut?.future;
           _fail('put');
+          if (!notes.containsKey(id)) _assertNotDeleted(id);
           final note = notes.putIfAbsent(id, () => _newNote(id));
           if (json['title'] != null &&
               (json['titleSource'] != 'default' ||
@@ -189,7 +203,7 @@ class FakeNotesServer {
           return _json(200, {'note': _publicNote(note)});
         case 'DELETE':
           _fail('delete');
-          notes.remove(id);
+          if (notes.remove(id) != null) tombstones.add(id);
           segments.remove(id);
           return http.StreamedResponse(const Stream.empty(), 204);
       }
@@ -199,10 +213,14 @@ class FakeNotesServer {
       final note = _requireNote(id);
       final noteSegments = segments[id] ?? {};
       if (noteSegments.isEmpty) return _error(409, 'no_audio');
+      bool isSkipped(Map<String, dynamic> segment) =>
+          segment['status'] == 'failed' &&
+          _reuploadCodes.contains((segment['error'] as Map?)?['code']);
       final missing = noteSegments.values
           .where(
             (s) =>
                 s['status'] != 'transcribed' &&
+                !isSkipped(s) &&
                 !_isComplete(s['uploadUrl'] as String?),
           )
           .map((s) => s['id'])
@@ -214,8 +232,23 @@ class FakeNotesServer {
         note['personalNotes'] = json['personalNotes'];
       }
       final hasNewAudio = noteSegments.values.any(
-        (s) => s['status'] != 'transcribed',
+        (s) => s['status'] != 'transcribed' && !isSkipped(s),
       );
+      if (note['status'] == 'failed' && !hasNewAudio) {
+        final last = _lastGenerationOnly[id];
+        if (last != null && now().difference(last) < cooldown) {
+          final wait = cooldown - now().difference(last);
+          return _error(
+            429,
+            'regenerate_cooldown',
+            details: {
+              'retryAfterSeconds': wait.inSeconds,
+              'availableAt': last.add(cooldown).toUtc().toIso8601String(),
+            },
+          );
+        }
+        _lastGenerationOnly[id] = now();
+      }
       if (note['status'] != 'processing' &&
           (note['status'] != 'ready' || hasNewAudio)) {
         _assertProcessingSlot(id);
@@ -249,6 +282,7 @@ class FakeNotesServer {
           notes[id]?['status'] == 'processing') {
         return _error(409, 'segment_processing');
       }
+      if (!notes.containsKey(id)) _assertNotDeleted(id);
       notes.putIfAbsent(id, () => _newNote(id));
       final url = 'https://upload.test/$id/$segmentId/${_sessionCounter++}';
       final noteSegments = segments.putIfAbsent(id, () => {});
@@ -272,6 +306,16 @@ class FakeNotesServer {
       return _json(200, {'uploadUrl': url});
     }
     return _error(404, 'not_found');
+  }
+
+  /// The fake's clock, for cooldowns.
+  DateTime Function() now = DateTime.now;
+  static const cooldown = Duration(minutes: 2);
+
+  void _assertNotDeleted(String id) {
+    if (tombstones.contains(id)) {
+      throw const _ErrorResponse(FakeServerError(409, 'note_deleted'));
+    }
   }
 
   Map<String, dynamic> _requireNote(String id) =>
@@ -310,6 +354,10 @@ class FakeNotesServer {
     final noteSegments = (segments[id] ?? {}).values;
     for (final segment in noteSegments) {
       if (segment['status'] == 'transcribed') continue;
+      if (segment['status'] == 'failed' &&
+          _reuploadCodes.contains((segment['error'] as Map?)?['code'])) {
+        continue;
+      }
       final fails = failSegmentIds.contains(segment['id']);
       segment['status'] = fails ? 'failed' : 'transcribed';
       segment['error'] = fails

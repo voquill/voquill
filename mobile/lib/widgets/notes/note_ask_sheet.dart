@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:app/actions/notes_actions.dart';
-import 'package:app/actions/revenue_cat_actions.dart';
 import 'package:app/api/notes_api.dart';
 import 'package:app/model/note_model.dart';
 import 'package:app/store/store.dart';
@@ -114,7 +113,7 @@ class _NoteAskSheetState extends State<NoteAskSheet> {
                 _turns.remove(turn);
                 return;
               }
-              if (e is NotesApiException && e.isQuota) presentPaywall();
+              if (e is NotesApiException) offerUpgradeFor(e.toNoteError());
               turn.error = e is NotesApiException && e.code != 'ask_failed'
               ? describeApiError(e)
               : 'The answer could not be finished.';
