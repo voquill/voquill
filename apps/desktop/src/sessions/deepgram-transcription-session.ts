@@ -8,9 +8,19 @@ import {
 } from "../types/transcription-session.types";
 import { buildDeepgramWebSocketUrl } from "../utils/deepgram.utils";
 import { loadMyEffectiveDictationLanguage } from "../utils/user.utils";
+import {
+  closeSocket,
+  getAbnormalCloseFailure,
+  getStalledUploadFailure,
+  STREAM_CONNECT_TIMEOUT_MS,
+  StreamingFinalizeOutcome,
+  toErrorMessage,
+} from "./streaming-session.utils";
+
+const PCM16_BYTES = 2;
 
 type DeepgramStreamingSession = {
-  finalize: () => Promise<string>;
+  finalize: () => Promise<StreamingFinalizeOutcome>;
   cleanup: () => void;
 };
 
@@ -37,6 +47,7 @@ const startDeepgramStreaming = async (
   let finalTranscript = "";
   let partialTranscript = "";
   let isFinalized = false;
+  let failureReason: string | null = null;
   let receivedChunkCount = 0;
   let sentChunkCount = 0;
   let pendingSampleCount = 0;
@@ -134,17 +145,36 @@ const startDeepgramStreaming = async (
       unlisten();
       unlisten = null;
     }
-    if (ws && ws.readyState !== WebSocket.CLOSED) {
-      ws.close();
-      ws = null;
-    }
+    closeSocket(ws);
+    ws = null;
     resetBuffers();
   };
 
-  let finalizeResolver: ((text: string) => void) | null = null;
+  let finalizeResolver: ((outcome: StreamingFinalizeOutcome) => void) | null =
+    null;
   let finalizeTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const finalize = (): Promise<string> => {
+  const settleFinalize = (outcome: StreamingFinalizeOutcome) => {
+    if (finalizeTimeout) {
+      clearTimeout(finalizeTimeout);
+      finalizeTimeout = null;
+    }
+    cleanup();
+    const resolver = finalizeResolver;
+    finalizeResolver = null;
+    resolver?.(outcome);
+  };
+
+  const fail = (reason: string) => {
+    if (failureReason) {
+      return;
+    }
+    failureReason = reason;
+    console.warn(`[Deepgram WebSocket] ${reason}`);
+    settleFinalize({ failureReason: reason });
+  };
+
+  const finalize = (): Promise<StreamingFinalizeOutcome> => {
     return new Promise((resolveFinalize) => {
       console.log(
         "[Deepgram WebSocket] Finalize called, isFinalized:",
@@ -152,11 +182,12 @@ const startDeepgramStreaming = async (
         "ws state:",
         ws?.readyState,
       );
+      if (failureReason) {
+        resolveFinalize({ failureReason });
+        return;
+      }
       if (isFinalized) {
-        console.log(
-          "[Deepgram WebSocket] Already finalized, returning transcript",
-        );
-        resolveFinalize(getText());
+        resolveFinalize({ failureReason: "Stream was already finalized" });
         return;
       }
 
@@ -165,41 +196,33 @@ const startDeepgramStreaming = async (
       flushPendingSamples(true);
       console.log("[Deepgram WebSocket] Total chunks sent:", sentChunkCount);
 
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        console.log("[Deepgram WebSocket] Sending CloseStream message...");
-        ws.send(JSON.stringify({ type: "CloseStream" }));
-
-        finalizeTimeout = setTimeout(() => {
-          console.log(
-            "[Deepgram WebSocket] Timeout reached, finalizing with transcript length:",
-            getText().length,
-          );
-          cleanup();
-          if (finalizeResolver) {
-            finalizeResolver(getText());
-            finalizeResolver = null;
-          }
-        }, 3000);
-      } else {
-        cleanup();
-        resolveFinalize(getText());
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        fail("Connection closed before finalize");
+        return;
       }
+
+      const stalled = getStalledUploadFailure(ws, sampleRate * PCM16_BYTES);
+      if (stalled) {
+        fail(stalled);
+        return;
+      }
+
+      console.log("[Deepgram WebSocket] Sending CloseStream message...");
+      ws.send(JSON.stringify({ type: "CloseStream" }));
+
+      finalizeTimeout = setTimeout(() => {
+        fail("Deepgram did not close the stream within 3s of CloseStream");
+      }, 3000);
     });
   };
 
   const completeFinalize = () => {
-    if (finalizeTimeout) {
-      clearTimeout(finalizeTimeout);
-      finalizeTimeout = null;
-    }
-    if (finalizeResolver) {
+    if (finalizeResolver && !failureReason) {
       console.log(
         "[Deepgram WebSocket] Completing finalize with transcript length:",
         getText().length,
       );
-      cleanup();
-      finalizeResolver(getText());
-      finalizeResolver = null;
+      settleFinalize({ text: getText() });
     }
   };
 
@@ -237,8 +260,19 @@ const startDeepgramStreaming = async (
     });
     console.log("[Deepgram WebSocket] Connecting to:", wsUrl);
     ws = new WebSocket(wsUrl, ["token", apiKey]);
+    let isOpen = false;
+    const connectTimeout = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          `Deepgram connection not open within ${STREAM_CONNECT_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, STREAM_CONNECT_TIMEOUT_MS);
 
     ws.onopen = () => {
+      isOpen = true;
+      clearTimeout(connectTimeout);
       console.log("[Deepgram WebSocket] Connected, flushing buffered audio...");
       flushPendingSamples(false);
       console.log("[Deepgram WebSocket] Session ready");
@@ -280,6 +314,9 @@ const startDeepgramStreaming = async (
           console.log("[Deepgram WebSocket] Metadata received:", data);
         } else if (messageType === "Error" || data.error) {
           console.error("[Deepgram WebSocket] Error from server:", data);
+          fail(
+            `Deepgram error: ${data.description ?? data.message ?? data.error ?? "unknown"}`,
+          );
         }
       } catch (error) {
         console.error("[Deepgram WebSocket] Error parsing message:", error);
@@ -288,8 +325,13 @@ const startDeepgramStreaming = async (
 
     ws.onerror = (error) => {
       console.error("[Deepgram WebSocket] WebSocket error:", error);
-      cleanup();
-      reject(new Error("WebSocket connection failed"));
+      if (!isOpen) {
+        clearTimeout(connectTimeout);
+        cleanup();
+        reject(new Error("WebSocket connection failed"));
+        return;
+      }
+      fail("WebSocket error");
     };
 
     ws.onclose = (event) => {
@@ -297,17 +339,29 @@ const startDeepgramStreaming = async (
         code: event.code,
         reason: event.reason,
       });
-      if (isFinalized && finalizeResolver) {
+      const abnormalClose = getAbnormalCloseFailure(event);
+      if (isFinalized && finalizeResolver && !abnormalClose) {
         completeFinalize();
+      } else {
+        fail(
+          abnormalClose ??
+            `Connection closed during recording (code=${event.code})`,
+        );
       }
       cleanup();
     };
   });
 };
 
+const DEEPGRAM_METADATA = {
+  inferenceDevice: "API • Deepgram (Streaming)",
+  transcriptionMode: "api",
+} as const;
+
 export class DeepgramTranscriptionSession implements TranscriptionSession {
   private session: DeepgramStreamingSession | null = null;
   private startupPromise: Promise<void> | null = null;
+  private startFailureReason: string | null = null;
   private apiKey: string;
   private interimCallback: ((segment: string) => void) | null = null;
 
@@ -339,6 +393,7 @@ export class DeepgramTranscriptionSession implements TranscriptionSession {
         console.log("[Deepgram] Streaming session started successfully");
       } catch (error) {
         console.error("[Deepgram] Failed to start streaming:", error);
+        this.startFailureReason = toErrorMessage(error);
       }
     })();
     await this.startupPromise;
@@ -354,48 +409,34 @@ export class DeepgramTranscriptionSession implements TranscriptionSession {
     if (!this.session) {
       return {
         rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • Deepgram (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: ["Deepgram streaming session was not established"],
+        metadata: DEEPGRAM_METADATA,
+        warnings: [],
+        failureReason: `Deepgram streaming session was not established${this.startFailureReason ? `: ${this.startFailureReason}` : ""}`,
       };
     }
 
-    try {
-      console.log("[Deepgram] Finalizing streaming session...");
-      const finalizeStart = performance.now();
-      const transcript = await this.session.finalize();
-      const durationMs = Math.round(performance.now() - finalizeStart);
-
-      console.log("[Deepgram] Transcript timing:", { durationMs });
-      console.log(
-        "[Deepgram] Received transcript, length:",
-        transcript?.length ?? 0,
-      );
-
-      return {
-        rawTranscript: transcript || null,
-        metadata: {
-          inferenceDevice: "API • Deepgram (Streaming)",
-          transcriptionMode: "api",
-          transcriptionDurationMs: durationMs,
-        },
-        warnings: [],
-      };
-    } catch (error) {
-      console.error("[Deepgram] Failed to finalize session:", error);
+    console.log("[Deepgram] Finalizing streaming session...");
+    const finalizeStart = performance.now();
+    const outcome = await this.session.finalize();
+    const durationMs = Math.round(performance.now() - finalizeStart);
+    if ("failureReason" in outcome) {
       return {
         rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • Deepgram (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: [
-          `Deepgram finalization failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ],
+        metadata: DEEPGRAM_METADATA,
+        warnings: [],
+        failureReason: outcome.failureReason,
       };
     }
+
+    console.log("[Deepgram] Transcript received:", {
+      durationMs,
+      length: outcome.text.length,
+    });
+    return {
+      rawTranscript: outcome.text || null,
+      metadata: { ...DEEPGRAM_METADATA, transcriptionDurationMs: durationMs },
+      warnings: [],
+    };
   }
 
   cleanup(): void {

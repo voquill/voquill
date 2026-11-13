@@ -2,6 +2,7 @@ import { getRec } from "@voquill/utilities";
 import { getAppState } from "../store";
 import { TranscriptionSession } from "../types/transcription-session.types";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
+import { getTranscriptionTimeoutMs } from "../utils/transcribe.utils";
 import { TranscriptionPrefs } from "../utils/user.utils";
 import { AssemblyAITranscriptionSession } from "./assemblyai-transcription-session";
 import { AzureTranscriptionSession } from "./azure-transcription-session";
@@ -10,6 +11,7 @@ import { DeepgramTranscriptionSession } from "./deepgram-transcription-session";
 import { ElevenLabsTranscriptionSession } from "./elevenlabs-transcription-session";
 import { LocalTranscriptionSession } from "./local-transcription-session";
 import { NewServerTranscriptionSession } from "./new-server-transcription-session";
+import { RecoverableTranscriptionSession } from "./recoverable-transcription-session";
 
 export { AssemblyAITranscriptionSession } from "./assemblyai-transcription-session";
 export { AzureTranscriptionSession } from "./azure-transcription-session";
@@ -18,8 +20,9 @@ export { DeepgramTranscriptionSession } from "./deepgram-transcription-session";
 export { ElevenLabsTranscriptionSession } from "./elevenlabs-transcription-session";
 export { LocalTranscriptionSession } from "./local-transcription-session";
 export { NewServerTranscriptionSession } from "./new-server-transcription-session";
+export { RecoverableTranscriptionSession } from "./recoverable-transcription-session";
 
-export const createTranscriptionSession = (
+const createProviderTranscriptionSession = (
   prefs: TranscriptionPrefs,
 ): TranscriptionSession => {
   if (prefs.mode === "api") {
@@ -53,3 +56,14 @@ export const createTranscriptionSession = (
 
   return new BatchTranscriptionSession();
 };
+
+export const createTranscriptionSession = (
+  prefs: TranscriptionPrefs,
+): RecoverableTranscriptionSession =>
+  new RecoverableTranscriptionSession(
+    createProviderTranscriptionSession(prefs),
+    {
+      getAttemptTimeoutMs:
+        prefs.mode === "local" ? null : getTranscriptionTimeoutMs,
+    },
+  );

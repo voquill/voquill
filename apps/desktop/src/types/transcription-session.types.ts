@@ -14,6 +14,14 @@ export type TranscriptionSessionResult = {
   metadata: TranscribeAudioMetadata;
   postProcessMetadata?: PostProcessMetadata;
   warnings: string[];
+  /**
+   * Set when the transcript does not cover the whole recording (stream failed
+   * to open, dropped, errored or timed out). Sessions set it to request
+   * recovery; after recovery it means the audio could not be transcribed.
+   */
+  failureReason?: string | null;
+  /** True when the transcript came from re-transcribing the recorded audio. */
+  recovered?: boolean;
 };
 
 export type TranscriptionSessionFinalizeOptions = {

@@ -1,13 +1,23 @@
 import { convertFloat32ToPCM16 } from "@voquill/voice-ai";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import {
   StopRecordingResponse,
   TranscriptionSession,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
+import {
+  AudioChunkRelay,
+  closeSocket,
+  getAbnormalCloseFailure,
+  getStalledUploadFailure,
+  STREAM_CONNECT_TIMEOUT_MS,
+  StreamingFinalizeOutcome,
+  toErrorMessage,
+} from "./streaming-session.utils";
+
+const PCM16_BYTES = 2;
 
 type AssemblyAIStreamingSession = {
-  finalize: () => Promise<string>;
+  finalize: () => Promise<StreamingFinalizeOutcome>;
   cleanup: () => void;
 };
 
@@ -27,12 +37,13 @@ const startAssemblyAIStreaming = async (
     minSamplesPerChunk,
     Math.ceil((sampleRate * MAX_CHUNK_DURATION_MS) / 1000),
   );
+  const relay = await AudioChunkRelay.start();
+
   return new Promise((resolve, reject) => {
     let ws: WebSocket | null = null;
-    let unlisten: UnlistenFn | null = null;
     let finalTranscript = "";
     let isFinalized = false;
-    let receivedChunkCount = 0;
+    let failureReason: string | null = null;
     let sentChunkCount = 0;
     let pendingSampleCount = 0;
     let pendingChunks: Float32Array[] = [];
@@ -125,160 +136,127 @@ const startAssemblyAIStreaming = async (
     };
 
     const cleanup = () => {
-      if (unlisten) {
-        unlisten();
-        unlisten = null;
-      }
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close();
-        ws = null;
-      }
+      relay.stop();
+      closeSocket(ws);
+      ws = null;
       resetBuffers();
     };
 
-    const finalize = (): Promise<string> => {
+    let finalizeResolver: ((outcome: StreamingFinalizeOutcome) => void) | null =
+      null;
+    let finalizeTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const settleFinalize = (outcome: StreamingFinalizeOutcome) => {
+      if (finalizeTimeout) {
+        clearTimeout(finalizeTimeout);
+        finalizeTimeout = null;
+      }
+      cleanup();
+      const resolver = finalizeResolver;
+      finalizeResolver = null;
+      resolver?.(outcome);
+    };
+
+    const fail = (reason: string) => {
+      if (failureReason) {
+        return;
+      }
+      failureReason = reason;
+      console.warn(`[AssemblyAI WebSocket] ${reason}`);
+      settleFinalize({ failureReason: reason });
+    };
+
+    const finalize = (): Promise<StreamingFinalizeOutcome> => {
       return new Promise((resolveFinalize) => {
-        // resolveFinalize(finalTranscript);
         console.log(
           "[AssemblyAI WebSocket] Finalize called, isFinalized:",
           isFinalized,
           "ws state:",
           ws?.readyState,
         );
+        if (failureReason) {
+          resolveFinalize({ failureReason });
+          return;
+        }
         if (isFinalized) {
-          console.log(
-            "[AssemblyAI WebSocket] Already finalized, returning transcript",
-          );
-          resolveFinalize(getText());
+          resolveFinalize({ failureReason: "Stream was already finalized" });
           return;
         }
 
         isFinalized = true;
+        finalizeResolver = resolveFinalize;
         flushPendingSamples(true);
         console.log(
           "[AssemblyAI WebSocket] Total chunks sent:",
           sentChunkCount,
         );
 
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          console.log("[AssemblyAI WebSocket] Sending Terminate message...");
-          // Send termination message
-          ws.send(JSON.stringify({ type: "Terminate" }));
-
-          // Wait a bit for final transcript
-          const timeout = setTimeout(() => {
-            console.log(
-              "[AssemblyAI WebSocket] Timeout reached, finalizing with transcript length:",
-              getText().length,
-            );
-            cleanup();
-            resolveFinalize(getText());
-          }, 2000);
-
-          // Override onclose to resolve when WebSocket closes
-          const originalOnClose = ws.onclose;
-          const currentWs = ws;
-          ws.onclose = () => {
-            clearTimeout(timeout);
-            if (originalOnClose && currentWs)
-              originalOnClose.call(currentWs, {} as CloseEvent);
-            cleanup();
-            console.log(
-              "[AssemblyAI WebSocket] WebSocket closed, finalizing with transcript length:",
-              getText().length,
-            );
-            resolveFinalize(getText());
-          };
-        } else {
-          cleanup();
-          resolveFinalize(finalTranscript);
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          fail("Connection closed before finalize");
+          return;
         }
+
+        const stalled = getStalledUploadFailure(ws, sampleRate * PCM16_BYTES);
+        if (stalled) {
+          fail(stalled);
+          return;
+        }
+
+        console.log("[AssemblyAI WebSocket] Sending Terminate message...");
+        ws.send(JSON.stringify({ type: "Terminate" }));
+
+        finalizeTimeout = setTimeout(() => {
+          fail("AssemblyAI did not terminate the stream within 2s");
+        }, 2000);
       });
     };
 
-    // Open WebSocket
-    const wsUrl = `wss://streaming.assemblyai.com/v3/ws?sample_rate=${sampleRate}&token=${apiKey}`;
-    console.log("[AssemblyAI WebSocket] Connecting to:", wsUrl, apiKey);
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = async () => {
-      console.log("[AssemblyAI WebSocket] Connected, sending auth...");
-      console.log(
-        "[AssemblyAI WebSocket] API Key present:",
-        !!apiKey,
-        "length:",
-        apiKey?.length ?? 0,
-      );
-      console.log(
-        "[AssemblyAI WebSocket] API Key preview:",
-        apiKey?.substring(0, 10) + "...",
-      );
-      // Send auth via first message
-
-      // Listen for audio chunks from Rust
-      try {
+    const completeFinalize = () => {
+      if (finalizeResolver && !failureReason) {
         console.log(
-          "[AssemblyAI WebSocket] Setting up audio_chunk listener...",
+          "[AssemblyAI WebSocket] Completing finalize with transcript length:",
+          getText().length,
         );
-        unlisten = await listen<{ samples: number[] }>(
-          "audio_chunk",
-          (event) => {
-            receivedChunkCount++;
-            if (receivedChunkCount <= 3 || receivedChunkCount % 10 === 0) {
-              console.log(
-                `[AssemblyAI WebSocket] Received chunk #${receivedChunkCount}, samples:`,
-                event.payload.samples.length,
-              );
-            }
-            if (ws && ws.readyState === WebSocket.OPEN && !isFinalized) {
-              try {
-                const typedChunk =
-                  event.payload.samples instanceof Float32Array
-                    ? event.payload.samples
-                    : Float32Array.from(event.payload.samples);
-                pendingChunks.push(typedChunk);
-                pendingSampleCount += typedChunk.length;
-                flushPendingSamples(false);
-              } catch (error) {
-                console.error(
-                  "[AssemblyAI WebSocket] Error sending audio chunk:",
-                  error,
-                );
-              }
-            }
-          },
-        );
-
-        console.log("[AssemblyAI WebSocket] Session ready, listener attached");
-        // Session is ready
-        resolve({ finalize, cleanup });
-      } catch (error) {
-        console.error(
-          "[AssemblyAI WebSocket] Error setting up listener:",
-          error,
-        );
-        cleanup();
-        reject(error);
+        settleFinalize({ text: getText() });
       }
+    };
+
+    const wsUrl = `wss://streaming.assemblyai.com/v3/ws?sample_rate=${sampleRate}&token=${apiKey}`;
+    console.log("[AssemblyAI WebSocket] Connecting...");
+    ws = new WebSocket(wsUrl);
+    let isOpen = false;
+    const connectTimeout = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          `AssemblyAI connection not open within ${STREAM_CONNECT_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, STREAM_CONNECT_TIMEOUT_MS);
+
+    ws.onopen = () => {
+      isOpen = true;
+      clearTimeout(connectTimeout);
+      console.log("[AssemblyAI WebSocket] Connected, flushing buffered audio");
+      relay.pipeTo((typedChunk) => {
+        if (isFinalized) {
+          return;
+        }
+        pendingChunks.push(typedChunk);
+        pendingSampleCount += typedChunk.length;
+        flushPendingSamples(false);
+      });
+      resolve({ finalize, cleanup });
     };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log(
-          "[AssemblyAI WebSocket] Received message:",
-          data.type,
-          data,
-        );
+        console.log("[AssemblyAI WebSocket] Received message:", data.type);
 
         if (data.type === "Turn" && data.end_of_turn) {
-          // Final formatted transcript
           const turnTranscript = data.transcript || "";
           finalTranscript += (finalTranscript ? " " : "") + turnTranscript;
-          console.log(
-            "[AssemblyAI WebSocket] Final formatted transcript received, length:",
-            finalTranscript.length,
-          );
           if (onInterimResult && turnTranscript) {
             onInterimResult(turnTranscript);
           }
@@ -291,6 +269,10 @@ const startAssemblyAIStreaming = async (
 
             extra = data.transcript;
           }
+        } else if (data.type === "Termination") {
+          completeFinalize();
+        } else if (data.error) {
+          fail(`AssemblyAI error: ${data.error}`);
         }
       } catch (error) {
         console.error("[AssemblyAI WebSocket] Error parsing message:", error);
@@ -299,8 +281,13 @@ const startAssemblyAIStreaming = async (
 
     ws.onerror = (error) => {
       console.error("[AssemblyAI WebSocket] WebSocket error:", error);
-      cleanup();
-      reject(new Error("WebSocket connection failed"));
+      if (!isOpen) {
+        clearTimeout(connectTimeout);
+        cleanup();
+        reject(new Error("WebSocket connection failed"));
+        return;
+      }
+      fail("WebSocket error");
     };
 
     ws.onclose = (event) => {
@@ -308,13 +295,28 @@ const startAssemblyAIStreaming = async (
         code: event.code,
         reason: event.reason,
       });
+      const abnormalClose = getAbnormalCloseFailure(event);
+      if (isFinalized && finalizeResolver && !abnormalClose) {
+        completeFinalize();
+      } else {
+        fail(
+          abnormalClose ??
+            `Connection closed during recording (code=${event.code}${event.reason ? `, reason=${event.reason}` : ""})`,
+        );
+      }
       cleanup();
     };
   });
 };
 
+const ASSEMBLYAI_METADATA = {
+  inferenceDevice: "API • AssemblyAI (Streaming)",
+  transcriptionMode: "api",
+} as const;
+
 export class AssemblyAITranscriptionSession implements TranscriptionSession {
   private session: AssemblyAIStreamingSession | null = null;
+  private startFailureReason: string | null = null;
   private apiKey: string;
   private interimCallback: ((segment: string) => void) | null = null;
 
@@ -341,7 +343,7 @@ export class AssemblyAITranscriptionSession implements TranscriptionSession {
       console.log("[AssemblyAI] Streaming session started successfully");
     } catch (error) {
       console.error("[AssemblyAI] Failed to start streaming:", error);
-      // Continue recording anyway - finalize will handle missing session
+      this.startFailureReason = toErrorMessage(error);
     }
   }
 
@@ -351,48 +353,34 @@ export class AssemblyAITranscriptionSession implements TranscriptionSession {
     if (!this.session) {
       return {
         rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • AssemblyAI (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: ["AssemblyAI streaming session was not established"],
+        metadata: ASSEMBLYAI_METADATA,
+        warnings: [],
+        failureReason: `AssemblyAI streaming session was not established${this.startFailureReason ? `: ${this.startFailureReason}` : ""}`,
       };
     }
 
-    try {
-      console.log("[AssemblyAI] Finalizing streaming session...");
-      const finalizeStart = performance.now();
-      const transcript = await this.session.finalize();
-      const durationMs = Math.round(performance.now() - finalizeStart);
-
-      console.log("[AssemblyAI] Transcript timing:", { durationMs });
-      console.log(
-        "[AssemblyAI] Received transcript, length:",
-        transcript?.length ?? 0,
-      );
-
-      return {
-        rawTranscript: transcript || null,
-        metadata: {
-          inferenceDevice: "API • AssemblyAI (Streaming)",
-          transcriptionMode: "api",
-          transcriptionDurationMs: durationMs,
-        },
-        warnings: [],
-      };
-    } catch (error) {
-      console.error("[AssemblyAI] Failed to finalize session:", error);
+    console.log("[AssemblyAI] Finalizing streaming session...");
+    const finalizeStart = performance.now();
+    const outcome = await this.session.finalize();
+    const durationMs = Math.round(performance.now() - finalizeStart);
+    if ("failureReason" in outcome) {
       return {
         rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • AssemblyAI (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: [
-          `AssemblyAI finalization failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ],
+        metadata: ASSEMBLYAI_METADATA,
+        warnings: [],
+        failureReason: outcome.failureReason,
       };
     }
+
+    console.log("[AssemblyAI] Transcript received:", {
+      durationMs,
+      length: outcome.text.length,
+    });
+    return {
+      rawTranscript: outcome.text || null,
+      metadata: { ...ASSEMBLYAI_METADATA, transcriptionDurationMs: durationMs },
+      warnings: [],
+    };
   }
 
   cleanup(): void {

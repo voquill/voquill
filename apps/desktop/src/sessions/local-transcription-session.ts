@@ -1,5 +1,3 @@
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
-import { transcribeAudio } from "../actions/transcribe.actions";
 import { getAppState } from "../store";
 import {
   StopRecordingResponse,
@@ -22,26 +20,21 @@ import {
 } from "../utils/prompt.utils";
 import { mapDictationLanguageToWhisperLanguage } from "../utils/language.utils";
 import { loadMyEffectiveDictationLanguage } from "../utils/user.utils";
-
-type AudioChunkPayload = {
-  samples: number[];
-};
-
-type LocalSessionContext = {
-  prompt: string;
-};
+import { AudioChunkRelay, toErrorMessage } from "./streaming-session.utils";
 
 export class LocalTranscriptionSession implements TranscriptionSession {
-  private unlisten: UnlistenFn | null = null;
+  private relay: AudioChunkRelay | null = null;
   private session: LocalSidecarStreamingSession | null = null;
-  private context: LocalSessionContext | null = null;
-  private startupWarnings: string[] = [];
+  private prompt: string | null = null;
+  private startFailureReason: string | null = null;
 
   async onRecordingStart(sampleRate: number): Promise<void> {
     this.cleanup();
-    this.startupWarnings = [];
+    this.startFailureReason = null;
 
     try {
+      this.relay = await AudioChunkRelay.start();
+
       const state = getAppState();
       const dictationLanguage = await loadMyEffectiveDictationLanguage(state);
       const whisperLanguage =
@@ -62,45 +55,36 @@ export class LocalTranscriptionSession implements TranscriptionSession {
           initialPrompt: prompt || undefined,
           deviceId: getTranscriptionSidecarDeviceId(settings.device),
         });
+      if (!this.relay) {
+        sidecarSession.cleanup();
+        return;
+      }
 
       this.session = sidecarSession;
-      this.context = { prompt };
-      this.unlisten = await listen<AudioChunkPayload>(
-        "audio_chunk",
-        (event) => {
-          if (!this.session || !event.payload.samples.length) {
-            return;
-          }
-          this.session.writeAudioChunk(event.payload.samples);
-        },
-      );
+      this.prompt = prompt;
+      this.relay.pipeTo((samples) => sidecarSession.writeAudioChunk(samples));
     } catch (error) {
-      const message = this.toErrorMessage(error);
-      this.startupWarnings.push(
-        `Local streaming session unavailable, falling back to batch mode (${message})`,
-      );
-      getLogger().warning(
-        `[local-stream-session] start failed, falling back (${message})`,
-      );
+      const message = toErrorMessage(error);
+      this.startFailureReason = `Local streaming session unavailable (${message})`;
+      getLogger().warning(`[local-stream-session] start failed (${message})`);
       this.cleanup();
     }
   }
 
   async finalize(
-    audio: StopRecordingResponse,
+    _audio: StopRecordingResponse,
   ): Promise<TranscriptionSessionResult> {
-    const warnings = [...this.startupWarnings];
-
-    if (!this.session) {
-      getLogger().info(
-        `[local-stream-session] no streaming session, using batch fallback`,
+    const session = this.session;
+    if (!session) {
+      return this.failure(
+        this.startFailureReason ?? "Local streaming session not established",
       );
-      return await this.finalizeWithBatchFallback(audio, warnings);
     }
 
+    this.relay?.stop();
     try {
       getLogger().info(`[local-stream-session] finalizing streaming session`);
-      const output = await this.session.finalize();
+      const output = await session.finalize();
       getLogger().info(
         `[local-stream-session] streaming finalize succeeded (${output.text.length} chars)`,
       );
@@ -110,35 +94,27 @@ export class LocalTranscriptionSession implements TranscriptionSession {
           modelSize: output.model,
           inferenceDevice: output.inferenceDevice,
           transcriptionMode: "local",
-          transcriptionPrompt: this.context?.prompt ?? null,
+          transcriptionPrompt: this.prompt,
           transcriptionDurationMs: Math.round(output.durationMs),
         },
-        warnings,
+        warnings: [],
       };
     } catch (error) {
-      const message = this.toErrorMessage(error);
-      const errorName = error instanceof Error ? error.name : typeof error;
-      warnings.push(
-        `Local streaming transcription failed, falling back to batch mode (${message})`,
-      );
+      const message = toErrorMessage(error);
       getLogger().warning(
-        `[local-stream-session] finalize failed [${errorName}], falling back to batch (${message})`,
+        `[local-stream-session] finalize failed (${message})`,
       );
-      return await this.finalizeWithBatchFallback(audio, warnings);
+      return this.failure(`Local streaming transcription failed (${message})`);
     } finally {
       this.cleanup();
     }
   }
 
   cleanup(): void {
-    getLogger().info(
-      `[local-stream-session] cleanup (hasSession=${!!this.session}, hasUnlisten=${!!this.unlisten})`,
-    );
-    this.unlisten?.();
-    this.unlisten = null;
+    this.relay?.stop();
+    this.relay = null;
     this.session?.cleanup();
     this.session = null;
-    this.context = null;
   }
 
   supportsStreaming(): boolean {
@@ -147,51 +123,15 @@ export class LocalTranscriptionSession implements TranscriptionSession {
 
   setInterimResultCallback(): void {}
 
-  private async finalizeWithBatchFallback(
-    audio: StopRecordingResponse,
-    warnings: string[],
-  ): Promise<TranscriptionSessionResult> {
-    const payloadSamples = Array.isArray(audio.samples)
-      ? audio.samples
-      : Array.from(audio.samples ?? []);
-    const rate = audio.sampleRate;
-
-    if (rate == null || rate <= 0 || payloadSamples.length === 0) {
-      getLogger().warning(
-        `[local-stream-session] batch fallback: skipping transcription (rate=${rate}, samples=${payloadSamples.length})`,
-      );
-      return {
-        rawTranscript: null,
-        metadata: {
-          transcriptionMode: "local",
-          transcriptionPrompt: this.context?.prompt ?? null,
-        },
-        warnings,
-      };
-    }
-
-    getLogger().info(
-      `[local-stream-session] batch fallback: transcribing ${payloadSamples.length} samples at ${rate}Hz`,
-    );
-    const result = await transcribeAudio({
-      samples: payloadSamples,
-      sampleRate: rate,
-    });
-    getLogger().info(
-      `[local-stream-session] batch fallback: transcription complete (${result.rawTranscript.length} chars)`,
-    );
-
+  private failure(failureReason: string): TranscriptionSessionResult {
     return {
-      rawTranscript: result.rawTranscript,
-      metadata: result.metadata,
-      warnings: [...warnings, ...result.warnings],
+      rawTranscript: null,
+      metadata: {
+        transcriptionMode: "local",
+        transcriptionPrompt: this.prompt,
+      },
+      warnings: [],
+      failureReason,
     };
-  }
-
-  private toErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    return String(error);
   }
 }

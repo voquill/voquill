@@ -1,4 +1,3 @@
-import { showToast } from "../actions/toast.actions";
 import { transcribeAudio } from "../actions/transcribe.actions";
 import {
   StopRecordingResponse,
@@ -6,6 +5,8 @@ import {
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
 import { getLogger } from "../utils/log.utils";
+import { getTranscriptionTimeoutMs } from "../utils/transcribe.utils";
+import { toErrorMessage, withTimeout } from "./streaming-session.utils";
 
 /**
  * Batch transcription session - records audio first, then transcribes all at once.
@@ -19,14 +20,12 @@ export class BatchTranscriptionSession implements TranscriptionSession {
   async finalize(
     audio: StopRecordingResponse,
   ): Promise<TranscriptionSessionResult> {
-    const payloadSamples = Array.isArray(audio.samples)
-      ? audio.samples
-      : Array.from(audio.samples ?? []);
+    const sampleCount = audio.samples?.length ?? 0;
     const rate = audio.sampleRate;
 
-    if (rate == null || rate <= 0 || payloadSamples.length === 0) {
+    if (rate == null || rate <= 0 || sampleCount === 0) {
       getLogger().warning(
-        `Batch session: skipping transcription (rate=${rate}, samples=${payloadSamples.length})`,
+        `Batch session: skipping transcription (rate=${rate}, samples=${sampleCount})`,
       );
       return {
         rawTranscript: null,
@@ -35,16 +34,15 @@ export class BatchTranscriptionSession implements TranscriptionSession {
       };
     }
 
-    const warnings: string[] = [];
-
     try {
       getLogger().info(
-        `Batch transcription: ${payloadSamples.length} samples at ${rate}Hz`,
+        `Batch transcription: ${sampleCount} samples at ${rate}Hz`,
       );
-      const result = await transcribeAudio({
-        samples: payloadSamples,
-        sampleRate: rate,
-      });
+      const timeoutMs = getTranscriptionTimeoutMs((sampleCount / rate) * 1000);
+      const result = await withTimeout(
+        transcribeAudio({ samples: audio.samples, sampleRate: rate }),
+        timeoutMs,
+      );
 
       getLogger().info(
         `Batch transcription result: ${result.rawTranscript.length} chars`,
@@ -52,23 +50,15 @@ export class BatchTranscriptionSession implements TranscriptionSession {
       return {
         rawTranscript: result.rawTranscript,
         metadata: result.metadata,
-        warnings: [...warnings, ...result.warnings],
+        warnings: result.warnings,
       };
     } catch (error) {
       getLogger().error(`Failed to transcribe audio: ${error}`);
-      const message = String(error);
-      if (message) {
-        warnings.push(`Transcription failed: ${message}`);
-        showToast({
-          message: "Transcription failed",
-          toastType: "error",
-        });
-      }
-
       return {
         rawTranscript: null,
         metadata: {},
-        warnings,
+        warnings: [],
+        failureReason: `Transcription failed: ${toErrorMessage(error)}`,
       };
     }
   }
