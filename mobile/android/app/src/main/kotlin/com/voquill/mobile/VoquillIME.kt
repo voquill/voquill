@@ -18,6 +18,7 @@ import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.inputmethodservice.InputMethodService
 import android.media.MediaRecorder
+import com.voquill.mobile.notes.NoteRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -381,7 +382,11 @@ class VoquillIME : InputMethodService() {
                     return
                 }
                 if (!startAudioCapture()) {
-                    showPillError("Microphone error — try again")
+                    // Android 9 and older cannot share the mic with a recording meeting.
+                    showPillError(
+                        if (NoteRecorder.isCapturing) "Pause your meeting to dictate"
+                        else "Microphone error — try again",
+                    )
                     return
                 }
                 applyPhase(Phase.RECORDING)
