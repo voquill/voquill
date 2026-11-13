@@ -700,7 +700,7 @@
   "this_shortcut_overlaps_with_another_one_may_trigger_both_act": "此快捷键与另一个冲突，可能会同时触发两个操作。",
   "this_style_is_managed_by_your_organization": "此风格由您的组织管理。",
   "this_term_is_managed_by_your_organization": "此条款由您的组织管理。",
-  "this_will_delete_all_preferences_dictionary_entries_and_save": "这将删除此设备上的所有偏好设置、字典项目和已保存的转录。此操作无法撤销。",
+  "this_will_delete_all_preferences_dictionary_entries_saved_tr": "This will delete all preferences, dictionary entries, saved transcriptions and notes, including meeting recordings, from this device. Notes stored in Voquill cloud stay in your account. The action cannot be undone.",
   "tip_choose_a_stronger_model_for_better_results_smaller_or_we": "提示：选择更强大的模型可获得更好的结果。较小或较弱的模型可能会产生较低质量的输出。",
   "tip_run_agent_mode_multiple_times_to_keep_refining_it_rememb": "提示：多次运行代理模式可以不断润色！它会记住文本框中的内容。",
   "title": "标题",

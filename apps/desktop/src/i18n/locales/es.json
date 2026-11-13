@@ -700,7 +700,7 @@
   "this_shortcut_overlaps_with_another_one_may_trigger_both_act": "Este atajo se superpone con otro. Puede activar ambas acciones.",
   "this_style_is_managed_by_your_organization": "Este estilo está gestionado por su organización.",
   "this_term_is_managed_by_your_organization": "Este término está gestionado por su organización.",
-  "this_will_delete_all_preferences_dictionary_entries_and_save": "Esto eliminará todas las preferencias, entradas del diccionario y transcripciones guardadas de este dispositivo. La acción no se puede deshacer.",
+  "this_will_delete_all_preferences_dictionary_entries_saved_tr": "This will delete all preferences, dictionary entries, saved transcriptions and notes, including meeting recordings, from this device. Notes stored in Voquill cloud stay in your account. The action cannot be undone.",
   "tip_choose_a_stronger_model_for_better_results_smaller_or_we": "Consejo: Elige un modelo más potente para mejores resultados. Los modelos más pequeños o débiles pueden producir resultados de menor calidad.",
   "tip_run_agent_mode_multiple_times_to_keep_refining_it_rememb": "Consejo: ¡Ejecuta el Modo Agente varias veces para seguir refinando! Recuerda lo que hay en el cuadro de texto.",
   "title": "Título",

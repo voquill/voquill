@@ -700,7 +700,7 @@
   "this_shortcut_overlaps_with_another_one_may_trigger_both_act": "Diese Tastenkombination überschneidet sich mit einer anderen. Eine könnte beide Aktionen auslösen.",
   "this_style_is_managed_by_your_organization": "Dieser Stil wird von Ihrer Organisation verwaltet.",
   "this_term_is_managed_by_your_organization": "Dieser Begriff wird von Ihrer Organisation verwaltet.",
-  "this_will_delete_all_preferences_dictionary_entries_and_save": "Dies löscht alle Einstellungen, Wörterbucheinträge und gespeicherten Transkriptionen von diesem Gerät. Die Aktion kann nicht rückgängig gemacht werden.",
+  "this_will_delete_all_preferences_dictionary_entries_saved_tr": "This will delete all preferences, dictionary entries, saved transcriptions and notes, including meeting recordings, from this device. Notes stored in Voquill cloud stay in your account. The action cannot be undone.",
   "tip_choose_a_stronger_model_for_better_results_smaller_or_we": "Tipp: Wähle ein stärkeres Modell für bessere Ergebnisse. Kleinere oder schwächere Modelle können eine geringere Ausgabequalität erzeugen.",
   "tip_run_agent_mode_multiple_times_to_keep_refining_it_rememb": "Tipp: Führen Sie den Agenten-Modus mehrmals aus, um weiter zu verfeinern! Er merkt sich, was im Textfeld steht.",
   "title": "Titel",

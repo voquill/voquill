@@ -68,7 +68,7 @@ export const ClearLocalDataDialog = () => {
               <FormattedMessage defaultMessage="This action permanently removes local data" />
             </AlertTitle>
             <Typography variant="body2">
-              <FormattedMessage defaultMessage="This will delete all preferences, dictionary entries, and saved transcriptions from this device. The action cannot be undone." />
+              <FormattedMessage defaultMessage="This will delete all preferences, dictionary entries, saved transcriptions and notes, including meeting recordings, from this device. Notes stored in Voquill cloud stay in your account. The action cannot be undone." />
             </Typography>
           </Alert>
           <Typography variant="body2">
