@@ -21,7 +21,6 @@ export type AgentRunState = {
   maxIterations: number;
   toolCalls: AgentToolCallState[];
   currentToolIndex: number;
-  aborted: boolean;
   error?: string;
 };
 
@@ -35,5 +34,4 @@ export const createAgentRunState = (
   maxIterations,
   toolCalls: [],
   currentToolIndex: 0,
-  aborted: false,
 });

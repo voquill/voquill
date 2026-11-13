@@ -8,11 +8,7 @@ import {
   saveManualStyleForApp,
   tryRegisterCurrentAppTarget,
 } from "../../actions/app-target.actions";
-import {
-  createConversation,
-  loadChatMessages,
-  sendChatMessage,
-} from "../../actions/chat.actions";
+import { sendChatMessage } from "../../actions/chat.actions";
 import { refreshMember } from "../../actions/member.actions";
 import { dismissToast, showToast } from "../../actions/toast.actions";
 import {
@@ -32,7 +28,6 @@ import {
 } from "../../hooks/hotkey.hooks";
 import { useTauriListen } from "../../hooks/tauri.hooks";
 import { useToastAction } from "../../hooks/toast.hooks";
-import { browserRouter } from "../../router";
 import { createTranscriptionSession } from "../../sessions";
 import { RecordingMode } from "../../state/app.state";
 import { getAppState, produceAppState, useAppStore } from "../../store";
@@ -69,7 +64,6 @@ import {
   CANCEL_TRANSCRIPTION_HOTKEY,
   DICTATE_HOTKEY,
   getAdditionalLanguageEntries,
-  OPEN_CHAT_HOTKEY,
   SWITCH_WRITING_STYLE_BACKWARD_HOTKEY,
   SWITCH_WRITING_STYLE_FORWARD_HOTKEY,
   syncHotkeyCombosToNative,
@@ -737,19 +731,6 @@ export const DictationSideEffects = () => {
     syncHotkeyCombosToNative();
   }, [isActiveSession, isManualStyling]);
 
-  const openPillConversation = useCallback(
-    async (conversationId?: string) => {
-      const id = conversationId ?? getAppState().pillConversationId;
-      if (id) {
-        void loadChatMessages(id);
-        browserRouter.navigate(`/dashboard/chats?id=${encodeURIComponent(id)}`);
-      }
-      await surfaceMainWindow();
-      await abortRecording();
-    },
-    [abortRecording],
-  );
-
   useTauriListen<void>("assistant-mode-close", async () => {
     await abortRecording();
   });
@@ -780,22 +761,10 @@ export const DictationSideEffects = () => {
       const { text } = payload;
       if (!text.trim()) return;
 
-      let conversationId = getAppState().pillConversationId;
-      if (!conversationId) {
-        const now = new Date().toISOString();
-        const conversation = await createConversation({
-          id: createId(),
-          title: intl.formatMessage({
-            defaultMessage: "New conversation",
-          }),
-          createdAt: now,
-          updatedAt: now,
-        });
-        conversationId = conversation.id;
-        produceAppState((draft) => {
-          draft.pillConversationId = conversation.id;
-        });
-      }
+      const conversationId = getAppState().pillConversationId ?? createId();
+      produceAppState((draft) => {
+        draft.pillConversationId = conversationId;
+      });
 
       getLogger().info(`Sending typed message (${text.length} chars)`);
       sendChatMessage(conversationId, text).catch((error) => {
@@ -804,15 +773,9 @@ export const DictationSideEffects = () => {
     },
   );
 
-  useTauriListen<{ conversationId: string }>(
-    "open-pill-conversation",
-    (payload) => openPillConversation(payload.conversationId),
-  );
-
-  useHotkeyFire({
-    actionName: OPEN_CHAT_HOTKEY,
-    isDisabled: !isActiveSession,
-    onFire: openPillConversation,
+  useTauriListen<void>("open-pill-conversation", async () => {
+    await surfaceMainWindow();
+    await abortRecording();
   });
 
   useTauriListen<void>("cancel-dictation", () => {

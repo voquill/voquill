@@ -16,16 +16,11 @@ import {
 import { BaseApiKeyRepo, LocalApiKeyRepo } from "./api-key.repo";
 import { BaseAppTargetRepo, LocalAppTargetRepo } from "./app-target.repo";
 import { BaseAuthRepo, CloudAuthRepo, EnterpriseAuthRepo } from "./auth.repo";
-import { BaseChatMessageRepo, LocalChatMessageRepo } from "./chat-message.repo";
 import {
   BaseConfigRepo,
   CloudConfigRepo,
   EnterpriseConfigRepo,
 } from "./config.repo";
-import {
-  BaseConversationRepo,
-  LocalConversationRepo,
-} from "./conversation.repo";
 import { EnterpriseRepo } from "./enterprise.repo";
 import {
   AzureOpenAIGenerateTextRepo,
@@ -204,14 +199,6 @@ export const getToneRepo = (): BaseToneRepo => {
 
 export const getStorageRepo = (): BaseStorageRepo => {
   return new LocalStorageRepo();
-};
-
-export const getConversationRepo = (): BaseConversationRepo => {
-  return new LocalConversationRepo();
-};
-
-export const getChatMessageRepo = (): BaseChatMessageRepo => {
-  return new LocalChatMessageRepo();
 };
 
 export const getToolRepo = (): ToolRepo => {

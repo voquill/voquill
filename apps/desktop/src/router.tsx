@@ -1,6 +1,5 @@
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import AppsPage from "./components/apps/AppsPage.tsx";
-import ChatsPage from "./components/chats/ChatsPage.tsx";
 import { PageLayout } from "./components/common/PageLayout.tsx";
 import DashboardPage from "./components/dashboard/DashboardPage.tsx";
 import DictionaryPage from "./components/dictionary/DictionaryPage.tsx";
@@ -119,10 +118,6 @@ export const browserRouter = createBrowserRouter([
               {
                 path: "styling",
                 element: <StylingPage />,
-              },
-              {
-                path: "chats",
-                element: <ChatsPage />,
               },
               {
                 path: "apps",

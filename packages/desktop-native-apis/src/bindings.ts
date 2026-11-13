@@ -694,70 +694,6 @@ async getKeyboardLanguage() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async conversationCreate(conversation: Conversation) : Promise<Result<Conversation, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_create", { conversation }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationList() : Promise<Result<Conversation[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_list") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationUpdate(conversation: Conversation) : Promise<Result<Conversation, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_update", { conversation }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationDelete(id: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_delete", { id }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageCreate(message: ChatMessage) : Promise<Result<ChatMessage, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_create", { message }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageList(conversationId: string) : Promise<Result<ChatMessage[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_list", { conversationId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageUpdate(message: ChatMessage) : Promise<Result<ChatMessage, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_update", { message }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageDeleteMany(ids: string[]) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_delete_many", { ids }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 /**
  * Returns `true` when the running app bundle can be updated in-place.
  * On macOS this checks whether the process can write to the directory that
@@ -948,9 +884,7 @@ export type AppProcessMatch = { pid: number; exePath: string | null; appName: st
 export type AppTarget = { id: string; name: string; createdAt: string; toneId: string | null; iconPath: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AppTargetUpsertArgs = { id: string; name: string; toneId?: string | null; iconPath?: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AudioClip = "start_recording_clip" | "stop_recording_clip" | "alert_linux_clip" | "alert_macos_clip" | "alert_windows_10_clip" | "alert_windows_11_clip"
-export type ChatMessage = { id: string; conversationId: string; role: string; content: string; createdAt: number; metadata: string | null }
 export type CompositorBinding = { actionName: string; keys: string[] }
-export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number }
 export type CreateFloatingWindowArgs = { url: string; title: string | null; width: number | null; height: number | null; minWidth: number | null; minHeight: number | null; x: number | null; y: number | null; decorations: boolean | null; transparent: boolean | null; resizable: boolean | null; focused: boolean | null }
 export type CurrentAppInfoResponse = { appName: string; iconBase64: string }
 export type ElementFingerprint = { automationId: string | null; className: string | null; controlType: number; name: string | null; frameworkId: string | null; childIndex: number; 

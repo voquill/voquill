@@ -3,7 +3,6 @@ import {
   ApiKey,
   AppTarget,
   ChatMessage,
-  Conversation,
   EnterpriseConfig,
   EnterpriseLicense,
   FullConfig,
@@ -29,7 +28,6 @@ import { OverlayPhase } from "../types/overlay.types";
 import { PermissionMap } from "../types/permission.types";
 
 import { AgentRunState } from "./agent.state";
-import { ChatState, INITIAL_CHAT_STATE } from "./chat.state";
 import { DictionaryState, INITIAL_DICTIONARY_STATE } from "./dictionary.state";
 import { INITIAL_LOCAL_STATE, LocalState } from "./local.state";
 import { INITIAL_LOGIN_STATE, LoginState } from "./login.state";
@@ -106,7 +104,6 @@ export type AppState = {
   hotkeyById: Record<string, Hotkey>;
   apiKeyById: Record<string, ApiKey>;
   toneById: Record<string, Tone>;
-  conversationById: Record<string, Conversation>;
   chatMessageById: Record<string, ChatMessage>;
   chatMessageIdsByConversationId: Record<string, string[]>;
   toolInfoById: Record<string, ToolInfo>;
@@ -133,7 +130,6 @@ export type AppState = {
   login: LoginState;
   pillConversationId: Nullable<string>;
   assistantInputMode: AssistantInputMode;
-  chat: ChatState;
 
   snackbarMessage?: string;
   snackbarCounter: number;
@@ -169,7 +165,6 @@ export const INITIAL_APP_STATE: AppState = {
   priceValueByKey: {},
   apiKeyById: {},
   toneById: {},
-  conversationById: {},
   chatMessageById: {},
   chatMessageIdsByConversationId: {},
   toolInfoById: {},
@@ -200,7 +195,6 @@ export const INITIAL_APP_STATE: AppState = {
   pillConversationId: null,
   assistantInputMode: "voice",
   local: INITIAL_LOCAL_STATE,
-  chat: INITIAL_CHAT_STATE,
   onboarding: INITIAL_ONBOARDING_STATE,
   transcriptions: INITIAL_TRANSCRIPTIONS_STATE,
   dictionary: INITIAL_DICTIONARY_STATE,
