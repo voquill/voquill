@@ -199,7 +199,7 @@ const useProcessorName = () => {
   return (processor: NoteProcessor): string => {
     switch (processor.kind) {
       case "voquill":
-        return intl.formatMessage({ defaultMessage: "Voquill cloud" });
+        return intl.formatMessage({ defaultMessage: "Voquill Cloud" });
       case "device":
         return intl.formatMessage({ defaultMessage: "Whisper on this device" });
       case "api": {
@@ -258,7 +258,7 @@ const NoteStorageChip = ({ note }: { note: Note }) => {
       }
       tooltip={
         <Stack component="span">
-          <FormattedMessage defaultMessage="Stored on this device." />
+          <FormattedMessage defaultMessage="The note is stored on this device." />
           {transcription &&
             (pending ? (
               <FormattedMessage
