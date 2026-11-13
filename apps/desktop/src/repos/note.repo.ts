@@ -28,6 +28,8 @@ export type LocalNote = {
   durationMs: number;
   errorCode: string | null;
   errorMessage: string | null;
+  /** JSON object. */
+  errorDetails: string | null;
   createdAt: number;
   updatedAt: number;
   cloudOwnerUserId: string | null;
@@ -53,6 +55,8 @@ export type LocalNoteSegment = {
   createdAt: number;
   errorCode: string | null;
   errorMessage: string | null;
+  /** JSON object. */
+  errorDetails: string | null;
   uploadUrl: string | null;
   uploadSizeBytes: number | null;
   uploadComplete: boolean;
@@ -80,10 +84,32 @@ const toTimestamp = (value: string | null): number | null =>
 const fromTimestamp = (value: number | null): string | null =>
   value === null ? null : dayjs(value).toISOString();
 
+const parseDetails = (value: string | null): Record<string, unknown> | null => {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const toError = (
   code: string | null,
   message: string | null,
-): NoteError | null => (code ? { code, message: message ?? "" } : null);
+  details: string | null,
+): NoteError | null => {
+  if (!code) return null;
+  const parsed = parseDetails(details);
+  return parsed
+    ? { code, message: message ?? "", details: parsed }
+    : { code, message: message ?? "" };
+};
+
+const toDetails = (error: NoteError | null | undefined) =>
+  error?.details ? JSON.stringify(error.details) : null;
 
 export const toLocalNote = (note: Note): LocalNote => ({
   id: note.id,
@@ -97,6 +123,7 @@ export const toLocalNote = (note: Note): LocalNote => ({
   durationMs: Math.round(note.durationMs),
   errorCode: note.error?.code ?? null,
   errorMessage: note.error?.message ?? null,
+  errorDetails: toDetails(note.error),
   createdAt: dayjs(note.createdAt).valueOf(),
   updatedAt: dayjs(note.updatedAt).valueOf(),
   cloudOwnerUserId: note.cloud?.ownerUserId ?? null,
@@ -122,7 +149,7 @@ const fromLocalCloudSync = (note: LocalNote): NoteCloudSync | null =>
     : null;
 
 export const fromLocalNote = (note: LocalNote): Note => {
-  const error = toError(note.errorCode, note.errorMessage);
+  const error = toError(note.errorCode, note.errorMessage, note.errorDetails);
   return {
     id: note.id,
     storage: note.storage as NoteStorage,
@@ -156,6 +183,7 @@ export const toLocalNoteSegment = (segment: NoteSegment): LocalNoteSegment => ({
   createdAt: dayjs(segment.createdAt).valueOf(),
   errorCode: segment.error?.code ?? null,
   errorMessage: segment.error?.message ?? null,
+  errorDetails: toDetails(segment.error),
   uploadUrl: segment.upload?.url ?? null,
   uploadSizeBytes: segment.upload?.sizeBytes ?? null,
   uploadComplete: segment.upload?.complete ?? false,
@@ -181,7 +209,7 @@ export const fromLocalNoteSegment = (
   index: segment.segmentIndex,
   kind: segment.kind as NoteSegmentKind,
   status: segment.status as NoteSegmentStatus,
-  error: toError(segment.errorCode, segment.errorMessage),
+  error: toError(segment.errorCode, segment.errorMessage, segment.errorDetails),
   durationMs: segment.durationMs,
   audioPath: segment.audioPath,
   transcribedMs: segment.transcribedMs,

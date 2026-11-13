@@ -6,11 +6,11 @@ use crate::domain::{Note, NoteDeletion, NoteSearchCandidate, NoteSegment};
 const NOTE_COLUMNS: &str = "id, storage, status, title, title_source, source, personal_notes,
      generated_notes, duration_ms, error_code, error_message, created_at, updated_at,
      cloud_owner_user_id, cloud_on_server, cloud_unsynced_fields, cloud_process_requested_at,
-     cloud_server_updated_at, cloud_fetched_updated_at";
+     cloud_server_updated_at, cloud_fetched_updated_at, error_details";
 
 const SEGMENT_COLUMNS: &str = "id, note_id, segment_index, kind, status, duration_ms, audio_path,
      transcribed_ms, transcript_text, transcript_utterances, created_at, error_code,
-     error_message, upload_url, upload_size_bytes, upload_complete";
+     error_message, upload_url, upload_size_bytes, upload_complete, error_details";
 
 fn row_to_note(row: &SqliteRow) -> Note {
     Note {
@@ -33,6 +33,7 @@ fn row_to_note(row: &SqliteRow) -> Note {
         cloud_process_requested_at: row.get("cloud_process_requested_at"),
         cloud_server_updated_at: row.get("cloud_server_updated_at"),
         cloud_fetched_updated_at: row.get("cloud_fetched_updated_at"),
+        error_details: row.get("error_details"),
     }
 }
 
@@ -54,13 +55,14 @@ fn row_to_segment(row: &SqliteRow) -> NoteSegment {
         upload_url: row.get("upload_url"),
         upload_size_bytes: row.get("upload_size_bytes"),
         upload_complete: row.get("upload_complete"),
+        error_details: row.get("error_details"),
     }
 }
 
 pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Error> {
     sqlx::query(&format!(
         "INSERT INTO notes ({NOTE_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(id) DO UPDATE SET
              storage = excluded.storage,
              status = excluded.status,
@@ -79,7 +81,8 @@ pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Er
              cloud_unsynced_fields = excluded.cloud_unsynced_fields,
              cloud_process_requested_at = excluded.cloud_process_requested_at,
              cloud_server_updated_at = excluded.cloud_server_updated_at,
-             cloud_fetched_updated_at = excluded.cloud_fetched_updated_at"
+             cloud_fetched_updated_at = excluded.cloud_fetched_updated_at,
+             error_details = excluded.error_details"
     ))
     .bind(&note.id)
     .bind(&note.storage)
@@ -100,6 +103,7 @@ pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Er
     .bind(note.cloud_process_requested_at)
     .bind(note.cloud_server_updated_at)
     .bind(note.cloud_fetched_updated_at)
+    .bind(&note.error_details)
     .execute(&pool)
     .await?;
 
@@ -142,7 +146,7 @@ pub async fn upsert_segment(
 ) -> Result<NoteSegment, sqlx::Error> {
     sqlx::query(&format!(
         "INSERT INTO note_segments ({SEGMENT_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
          ON CONFLICT(id) DO UPDATE SET
              segment_index = excluded.segment_index,
              kind = excluded.kind,
@@ -156,7 +160,8 @@ pub async fn upsert_segment(
              error_message = excluded.error_message,
              upload_url = excluded.upload_url,
              upload_size_bytes = excluded.upload_size_bytes,
-             upload_complete = excluded.upload_complete"
+             upload_complete = excluded.upload_complete,
+             error_details = excluded.error_details"
     ))
     .bind(&segment.id)
     .bind(&segment.note_id)
@@ -174,6 +179,7 @@ pub async fn upsert_segment(
     .bind(&segment.upload_url)
     .bind(segment.upload_size_bytes)
     .bind(segment.upload_complete)
+    .bind(&segment.error_details)
     .execute(&pool)
     .await?;
 
@@ -368,6 +374,7 @@ mod tests {
             cloud_process_requested_at: None,
             cloud_server_updated_at: None,
             cloud_fetched_updated_at: None,
+            error_details: None,
         }
     }
 
@@ -389,6 +396,7 @@ mod tests {
             upload_url: None,
             upload_size_bytes: None,
             upload_complete: false,
+            error_details: None,
         }
     }
 

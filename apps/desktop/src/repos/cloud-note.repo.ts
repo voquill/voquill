@@ -100,21 +100,32 @@ const SEARCH_LIMIT = 20;
 export class NotesApiError extends Error {
   readonly status: number;
   readonly code: string;
-  readonly segmentIds: string[];
+  /** `error.details` as sent (limits, usage, when capacity frees up). */
+  readonly details: Record<string, unknown>;
   readonly retryAfterSeconds: number | null;
 
   constructor(
     status: number,
     code: string,
     message: string,
-    segmentIds: string[] = [],
+    details: Record<string, unknown> = {},
     retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.status = status;
     this.code = code;
-    this.segmentIds = segmentIds;
-    this.retryAfterSeconds = retryAfterSeconds;
+    this.details = details;
+    this.retryAfterSeconds =
+      retryAfterSeconds ??
+      (typeof details.retryAfterSeconds === "number"
+        ? details.retryAfterSeconds
+        : null);
+  }
+
+  /** `details.segmentIds` (on `audio_missing` / `segment_too_large`). */
+  get segmentIds(): string[] {
+    const ids = this.details.segmentIds;
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === "string") : [];
   }
 }
 
@@ -147,6 +158,7 @@ const BLOCKING_CODES = new Set([
   "note_is_import",
   "note_exists",
   "transcript_unavailable",
+  "ask_limit_exceeded",
   "payload_too_large",
   "invalid_request",
 ]);
@@ -249,7 +261,7 @@ const readApiError = async (response: Response): Promise<NotesApiError> => {
       error?: {
         code?: string;
         message?: string;
-        details?: { segmentIds?: string[]; retryAfterSeconds?: number };
+        details?: Record<string, unknown>;
       };
     };
     const retryAfterHeader = Number(response.headers.get("Retry-After"));
@@ -257,11 +269,10 @@ const readApiError = async (response: Response): Promise<NotesApiError> => {
       response.status,
       body.error?.code ?? "unknown",
       body.error?.message ?? response.statusText,
-      body.error?.details?.segmentIds ?? [],
-      body.error?.details?.retryAfterSeconds ??
-        (Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
-          ? retryAfterHeader
-          : null),
+      body.error?.details ?? {},
+      Number.isFinite(retryAfterHeader) && retryAfterHeader > 0
+        ? retryAfterHeader
+        : null,
     );
   } catch {
     return new NotesApiError(response.status, "unknown", response.statusText);

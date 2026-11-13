@@ -23,6 +23,7 @@ import { getNotePath } from "../../hooks/note.hooks";
 import type { NoteAskMessage } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
 import { getNoteAskAvailability } from "../../utils/note.utils";
+import { describeNoteError } from "../../utils/note-error.utils";
 import { NoteMarkdown } from "./NoteMarkdown";
 
 const openPostProcessingSettings = () => {
@@ -31,7 +32,16 @@ const openPostProcessingSettings = () => {
   });
 };
 
-const AskError = ({ code, partial }: { code: string; partial: boolean }) => {
+const AskError = ({
+  code,
+  details,
+  partial,
+}: {
+  code: string;
+  details: Record<string, unknown> | null;
+  partial: boolean;
+}) => {
+  const intl = useIntl();
   const text = (() => {
     switch (code) {
       case "post_processing_disabled":
@@ -41,15 +51,6 @@ const AskError = ({ code, partial }: { code: string; partial: boolean }) => {
       case "transcript_unavailable":
         return (
           <FormattedMessage defaultMessage="Ask becomes available once the meeting is processed." />
-        );
-      case "word_quota_exceeded":
-        return (
-          <>
-            <FormattedMessage defaultMessage="You're out of free words. Upgrade to Pro to keep asking." />{" "}
-            <Link component="button" onClick={openUpgradePlanDialog}>
-              <FormattedMessage defaultMessage="Upgrade" />
-            </Link>
-          </>
         );
       case "network_unavailable":
         return (
@@ -61,15 +62,37 @@ const AskError = ({ code, partial }: { code: string; partial: boolean }) => {
         );
       case "ask_incomplete":
       case "ask_failed":
+      case "ask_unavailable":
+      case "unknown":
         return partial ? (
           <FormattedMessage defaultMessage="The answer was cut off. Ask again to retry." />
         ) : (
           <FormattedMessage defaultMessage="The answer couldn't be generated. Ask again to retry." />
         );
-      default:
+      default: {
+        const problem = describeNoteError(intl, { code, details });
         return (
-          <FormattedMessage defaultMessage="The answer couldn't be generated. Ask again to retry." />
+          <>
+            {problem.title}. {problem.body}{" "}
+            {problem.availableAt && (
+              <FormattedMessage
+                defaultMessage="Available again {when}."
+                values={{
+                  when: intl.formatDate(problem.availableAt, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  }),
+                }}
+              />
+            )}{" "}
+            {problem.upgrade && (
+              <Link component="button" onClick={openUpgradePlanDialog}>
+                <FormattedMessage defaultMessage="Upgrade" />
+              </Link>
+            )}
+          </>
         );
+      }
     }
   })();
   return (
@@ -97,7 +120,11 @@ const AskAnswer = ({ message }: { message: NoteAskMessage }) => {
         )
       )}
       {message.error && (
-        <AskError code={message.error} partial={!!message.content} />
+        <AskError
+          code={message.error}
+          details={message.errorDetails}
+          partial={!!message.content}
+        />
       )}
       {message.sources.length > 0 && (
         <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">

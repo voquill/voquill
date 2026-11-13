@@ -648,16 +648,18 @@ export const retryNote = async (noteId: string) => {
   processNote(noteId);
 };
 
-/** Returns the error code when the request was refused (the note stays as it was). */
+/** Returns why the request was refused (the note then stays as it was). */
 export const regenerateNote = async (
   noteId: string,
-): Promise<string | null> => {
+): Promise<NoteError | null> => {
   try {
     await getPipelineFor(noteId)?.regenerate(noteId);
     return null;
   } catch (error) {
     getLogger().warning(`Regenerating notes was refused: ${error}`);
-    return error instanceof NotesApiError ? error.code : "unknown";
+    return error instanceof NotesApiError
+      ? { code: error.code, message: error.message, details: error.details }
+      : { code: "unknown", message: String(error) };
   }
 };
 
@@ -784,6 +786,7 @@ export const askNotes = async (question: string): Promise<void> => {
         content: trimmed,
         sources: [],
         error: null,
+        errorDetails: null,
         streaming: false,
       },
       {
@@ -792,6 +795,7 @@ export const askNotes = async (question: string): Promise<void> => {
         content: "",
         sources: [],
         error: null,
+        errorDetails: null,
         streaming: true,
       },
     );
@@ -817,6 +821,7 @@ export const askNotes = async (question: string): Promise<void> => {
           message.content += event.text;
         } else {
           message.error = event.message;
+          message.errorDetails = event.details ?? null;
         }
       });
     }

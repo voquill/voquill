@@ -26,7 +26,7 @@ export type NoteAskEvent =
   | { type: "sources"; sources: NoteAskSource[] }
   | { type: "delta"; text: string }
   | { type: "done"; answer: string; sources: NoteAskSource[] }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string; details?: Record<string, unknown> };
 
 /**
  * Where a note's network-bound work happens. Capture is always local; the

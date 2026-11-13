@@ -14,6 +14,8 @@ pub struct Note {
     pub duration_ms: i64,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// JSON object.
+    pub error_details: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub cloud_owner_user_id: Option<String>,
@@ -41,6 +43,8 @@ pub struct NoteSegment {
     pub created_at: i64,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
+    /// JSON object.
+    pub error_details: Option<String>,
     pub upload_url: Option<String>,
     pub upload_size_bytes: Option<i64>,
     pub upload_complete: bool,

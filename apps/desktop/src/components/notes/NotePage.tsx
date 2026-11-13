@@ -21,7 +21,7 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { Note } from "@voquill/types";
+import type { Note, NoteError } from "@voquill/types";
 import { useState, type ReactNode } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
@@ -148,7 +148,7 @@ const RecordingPanel = ({ note }: { note: Note }) => {
   return (
     <Stack spacing={3}>
       {note.error && !isCapturing && (
-        <NoteProblem severity="warning" code={note.error.code} />
+        <NoteProblem severity="warning" error={note.error} />
       )}
       <Stack alignItems="center" spacing={2} sx={{ py: 2 }}>
         <Stack direction="row" alignItems="center" spacing={1.5}>
@@ -334,16 +334,17 @@ const ProcessingPanel = ({ note }: { note: Note }) => {
 };
 
 const NoteProblem = ({
-  code,
+  error,
   action,
   severity = "error",
 }: {
-  code: string | undefined;
+  error: NoteError | string | null | undefined;
   action?: ReactNode;
   severity?: "error" | "warning";
 }) => {
   const intl = useIntl();
-  const description = describeNoteError(intl, code);
+  const description = describeNoteError(intl, error);
+  const code = typeof error === "string" ? error : error?.code;
   return (
     <Alert
       severity={severity}
@@ -364,6 +365,19 @@ const NoteProblem = ({
     >
       <AlertTitle>{description.title}</AlertTitle>
       {description.body}{" "}
+      {description.availableAt && (
+        <>
+          <FormattedMessage
+            defaultMessage="Available again {when}."
+            values={{
+              when: intl.formatDate(description.availableAt, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }),
+            }}
+          />{" "}
+        </>
+      )}
       {code !== "audio_missing" && (
         <FormattedMessage defaultMessage="Your audio is safe on this device." />
       )}
@@ -374,7 +388,7 @@ const NoteProblem = ({
 const FailedPanel = ({ note }: { note: Note }) => (
   <Stack spacing={3}>
     <NoteProblem
-      code={note.error?.code}
+      error={note.error}
       action={
         <Button
           color="inherit"
@@ -408,7 +422,7 @@ const FailedSegments = ({ note }: { note: Note }) => {
         <NoteProblem
           key={segment.id}
           severity="warning"
-          code={segment.audioPath ? segment.error?.code : "audio_missing"}
+          error={segment.audioPath ? segment.error : "audio_missing"}
           action={
             <>
               {segment.audioPath && (
@@ -631,9 +645,9 @@ export default function NotePage() {
                       })
                 }
                 onClick={async () => {
-                  const code = await regenerateNote(note.id);
-                  if (code) {
-                    const problem = describeNoteError(intl, code);
+                  const refusal = await regenerateNote(note.id);
+                  if (refusal) {
+                    const problem = describeNoteError(intl, refusal);
                     showSnackbar(`${problem.title}. ${problem.body}`);
                   }
                 }}

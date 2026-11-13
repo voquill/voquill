@@ -220,7 +220,9 @@ class FakeNotesServer implements CloudNoteApi {
       .filter((s) => s.status !== "transcribed" && !this.audio.has(s.id))
       .map((s) => s.id);
     if (missing.length > 0) {
-      throw new NotesApiError(409, "audio_missing", "missing", missing);
+      throw new NotesApiError(409, "audio_missing", "missing", {
+        segmentIds: missing,
+      });
     }
     if (body.personalNotes !== undefined)
       note.personalNotes = body.personalNotes;
@@ -630,7 +632,9 @@ describe("CloudNotePipeline.process", () => {
     });
     harness.server.failNext(
       "processNote",
-      new NotesApiError(409, "audio_missing", "missing", ["seg-1"]),
+      new NotesApiError(409, "audio_missing", "missing", {
+        segmentIds: ["seg-1"],
+      }),
     );
     await harness.pipeline.process("note");
 

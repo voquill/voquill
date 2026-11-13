@@ -7,7 +7,9 @@ export type NoteAskMessage = {
   role: "user" | "assistant";
   content: string;
   sources: NoteAskSource[];
+  /** Error code. */
   error: Nullable<string>;
+  errorDetails: Nullable<Record<string, unknown>>;
   streaming: boolean;
 };
 

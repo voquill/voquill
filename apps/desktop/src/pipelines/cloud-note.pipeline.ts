@@ -98,7 +98,10 @@ const backoffMs = (attempt: number) =>
   Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.min(attempt, 6));
 
 const toNoteError = (error: unknown): NoteError => {
-  if (error instanceof NotesApiError || error instanceof NoteBlockedError) {
+  if (error instanceof NotesApiError) {
+    return { code: error.code, message: error.message, details: error.details };
+  }
+  if (error instanceof NoteBlockedError) {
     return { code: error.code, message: error.message };
   }
   if (error instanceof NotesNetworkError) {
@@ -381,7 +384,12 @@ export class CloudNotePipeline extends BaseNotePipeline {
     try {
       yield* this.deps.api.ask(input);
     } catch (error) {
-      yield { type: "error", message: toNoteError(error).code };
+      const noteError = toNoteError(error);
+      yield {
+        type: "error",
+        message: noteError.code,
+        details: noteError.details ?? undefined,
+      };
     }
   }
 

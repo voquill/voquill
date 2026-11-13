@@ -11,8 +11,12 @@ ALTER TABLE notes ADD COLUMN cloud_fetched_updated_at INTEGER;
 
 CREATE INDEX IF NOT EXISTS idx_notes_cloud_owner ON notes (cloud_owner_user_id);
 
+-- JSON details of the note's error (limits, usage, when capacity frees up).
+ALTER TABLE notes ADD COLUMN error_details TEXT;
+
 ALTER TABLE note_segments ADD COLUMN error_code TEXT;
 ALTER TABLE note_segments ADD COLUMN error_message TEXT;
+ALTER TABLE note_segments ADD COLUMN error_details TEXT;
 ALTER TABLE note_segments ADD COLUMN upload_url TEXT;
 ALTER TABLE note_segments ADD COLUMN upload_size_bytes INTEGER;
 ALTER TABLE note_segments ADD COLUMN upload_complete INTEGER NOT NULL DEFAULT 0;

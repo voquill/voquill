@@ -1193,7 +1193,11 @@ export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
 export type NativeSetupResult = "success" | "require-restart" | "failed"
 export type NativeSetupStatus = "ready" | "needs-setup" | "needs-restart"
-export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null }
+export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; 
+/**
+ * JSON object.
+ */
+errorDetails: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null }
 export type NoteDeletion = { noteId: string; ownerUserId: string; createdAt: number }
 export type NoteSearchCandidate = { note: Note; 
 /**
@@ -1204,7 +1208,11 @@ export type NoteSegment = { id: string; noteId: string; segmentIndex: number; ki
 /**
  * JSON array of utterances.
  */
-transcriptUtterances: string | null; createdAt: number; errorCode: string | null; errorMessage: string | null; uploadUrl: string | null; uploadSizeBytes: number | null; uploadComplete: boolean }
+transcriptUtterances: string | null; createdAt: number; errorCode: string | null; errorMessage: string | null; 
+/**
+ * JSON object.
+ */
+errorDetails: string | null; uploadUrl: string | null; uploadSizeBytes: number | null; uploadComplete: boolean }
 export type PairedRemoteDevice = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
 export type PairedRemoteDeviceDeleteArgs = { id: string }
 export type PairedRemoteDeviceUpsertArgs = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }

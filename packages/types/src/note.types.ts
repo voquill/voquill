@@ -27,6 +27,8 @@ export type NoteSource = "recording" | "import";
 export type NoteError = {
   code: string;
   message: string;
+  /** Server details, e.g. usage, allowance and when capacity frees up. */
+  details?: Record<string, unknown> | null;
 };
 
 export type NoteEditableField = "title" | "personalNotes";
