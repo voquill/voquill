@@ -262,8 +262,12 @@ void main() {
       setNotes(_listState(recording: true));
       await shot(
         'list-recording',
+        const NotesPage(),
+      );
+      await shot(
+        'banner-on-other-tabs',
         const Scaffold(
-          body: NotesPage(),
+          body: SizedBox.expand(),
           bottomNavigationBar: ActiveNoteBanner(),
         ),
       );

@@ -283,14 +283,17 @@ class _NotePageState extends State<NotePage> {
                 minimumSize: const Size(0, 44),
               ),
               segments: const [
-                ButtonSegment(value: NoteSection.notes, label: Text('Notes')),
+                ButtonSegment(
+                  value: NoteSection.notes,
+                  label: _SegmentLabel('Notes'),
+                ),
                 ButtonSegment(
                   value: NoteSection.myNotes,
-                  label: Text('My notes'),
+                  label: _SegmentLabel('My notes'),
                 ),
                 ButtonSegment(
                   value: NoteSection.transcript,
-                  label: Text('Transcript'),
+                  label: _SegmentLabel('Transcript'),
                 ),
               ],
               selected: {section},
@@ -494,6 +497,20 @@ class _MetaChip extends StatelessWidget {
   }
 }
 
+/// One line at any text size: large text shrinks to fit rather than
+/// breaking a word across lines.
+class _SegmentLabel extends StatelessWidget {
+  const _SegmentLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) => FittedBox(
+    fit: BoxFit.scaleDown,
+    child: Text(text, maxLines: 1, softWrap: false),
+  );
+}
+
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({required this.label, this.action});
 
@@ -634,18 +651,30 @@ class _RecordingCard extends StatelessWidget {
               Expanded(
                 child: Semantics(
                   label: isPaused ? 'Paused' : 'Recording',
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: NoteElapsedText(
-                      view: view,
-                      style: theme.textTheme.headlineLarge?.copyWith(
-                        fontWeight: FontWeight.w500,
-                        color: isPaused
-                            ? colors.onLevel1.withValues(alpha: 0.6)
-                            : null,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: NoteElapsedText(
+                          view: view,
+                          style: theme.textTheme.headlineLarge?.copyWith(
+                            fontWeight: FontWeight.w500,
+                            color: isPaused
+                                ? colors.onLevel1.withValues(alpha: 0.6)
+                                : null,
+                          ),
+                        ),
                       ),
-                    ),
+                      if (isPaused)
+                        Text(
+                          'Resume to keep recording, or stop to write the notes.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.onLevel1.withValues(alpha: 0.6),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
@@ -713,7 +742,9 @@ class _StatusCard extends StatelessWidget {
       NoteDisplayState.queued =>
         'Your plan processes a limited number of notes at once. This one starts by itself shortly.',
       NoteDisplayState.uploading =>
-        'You can leave this screen. The upload continues.',
+        view.local?.source == NoteSource.imported
+            ? 'Sending your transcript. You can leave this screen.'
+            : 'You can leave this screen. The upload continues.',
       NoteDisplayState.processing =>
         'Transcribing and writing your notes. About a minute per hour of audio.',
       NoteDisplayState.failed => describeNoteError(error),
@@ -737,7 +768,8 @@ class _StatusCard extends StatelessWidget {
                   'Your recording is safe on this phone.',
                   style: theme.textTheme.bodyMedium,
                 ),
-              if (view.state.isBusy) ...[
+              if (view.state == NoteDisplayState.uploading ||
+                  view.state == NoteDisplayState.processing) ...[
                 const SizedBox(height: 12),
                 LinearProgressIndicator(
                   value: view.state == NoteDisplayState.uploading

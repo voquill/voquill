@@ -33,6 +33,10 @@ class NoteTile extends StatelessWidget {
     final muted = theme.textTheme.bodyMedium?.copyWith(
       color: colors.onLevel1.withValues(alpha: 0.6),
     );
+    // At large text sizes the time moves into the second line so titles
+    // keep their width.
+    final isLargeText = MediaQuery.textScalerOf(context).scale(16) > 22;
+    final time = formatNoteTime(view.createdAt);
     final needsAttention =
         view.state == NoteDisplayState.failed ||
         view.failedSegmentError != null;
@@ -62,9 +66,12 @@ class NoteTile extends StatelessWidget {
         ],
       );
     } else {
+      final status = noteStatusLine(view);
       secondLine = Text(
-        noteStatusLine(view),
-        maxLines: 1,
+        isLargeText
+            ? [time, if (status.isNotEmpty) status].join(' · ')
+            : status,
+        maxLines: isLargeText ? 2 : 1,
         overflow: TextOverflow.ellipsis,
         style: needsAttention ? muted?.copyWith(color: colors.error) : muted,
       );
@@ -93,7 +100,7 @@ class NoteTile extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
               subtitle: secondLine,
-              trailing: Text(formatNoteTime(view.createdAt), style: muted),
+              trailing: isLargeText ? null : Text(time, style: muted),
             ),
           ),
         ),

@@ -183,7 +183,7 @@ class _NotesPageState extends State<NotesPage> {
                                 icon: Icons.sticky_note_2_outlined,
                                 title: 'Your meetings, written up',
                                 body:
-                                    'Tap New when a meeting starts. Voquill records it, then writes clean notes and a transcript you can search and ask about.',
+                                    'Tap the microphone when a meeting starts. Voquill records it, then writes clean notes and a transcript you can search and ask about.',
                               ),
                       )
                     else
