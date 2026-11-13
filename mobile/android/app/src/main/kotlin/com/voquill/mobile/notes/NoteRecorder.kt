@@ -259,8 +259,9 @@ object NoteRecorder {
                         get(frame)
                     }
                     try {
-                        session.output.write(adtsHeader(frame.size))
-                        session.output.write(frame)
+                        // One write per frame, so a failure never leaves a
+                        // header without its payload ahead of later frames.
+                        session.output.write(adtsHeader(frame.size) + frame)
                     } catch (e: IOException) {
                         Log.w(TAG, "Meeting audio write failed", e)
                         codec.releaseOutputBuffer(index, false)
@@ -314,15 +315,24 @@ object NoteRecorder {
                     break
                 }
                 if (read == 0) continue
-                val input = codec.dequeueInputBuffer(10_000)
-                if (input >= 0) {
-                    codec.getInputBuffer(input)!!.apply {
-                        clear()
-                        put(pcm, 0, read)
-                    }
-                    codec.queueInputBuffer(input, 0, read, presentationUs, 0)
-                    presentationUs += read / 2 * 1_000_000L / SAMPLE_RATE
+                // Never drop captured PCM: wait for an input buffer, draining
+                // output (which is what frees input buffers) meanwhile.
+                var input = codec.dequeueInputBuffer(10_000)
+                while (input < 0) {
+                    if (!drain() || synchronized(lock) { session.isStopping }) break
+                    input = codec.dequeueInputBuffer(10_000)
                 }
+                if (input < 0 && synchronized(lock) { session.isStopping }) break
+                if (input < 0) {
+                    endReason = "write_failed"
+                    break
+                }
+                codec.getInputBuffer(input)!!.apply {
+                    clear()
+                    put(pcm, 0, read)
+                }
+                codec.queueInputBuffer(input, 0, read, presentationUs, 0)
+                presentationUs += read / 2 * 1_000_000L / SAMPLE_RATE
                 if (!drain()) {
                     endReason = "write_failed"
                     break
