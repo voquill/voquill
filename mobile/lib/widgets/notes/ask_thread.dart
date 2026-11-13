@@ -45,14 +45,31 @@ class AskThread extends ChangeNotifier {
   bool get isBusy => turns.isNotEmpty && turns.last.isStreaming;
   bool get hasTurns => turns.isNotEmpty;
 
-  List<NoteAskMessage> _history() => [
-    for (final turn in turns.where(
-      (t) => !t.isStreaming && t.error == null,
-    )) ...[
-      NoteAskMessage(role: 'user', content: turn.question),
-      NoteAskMessage(role: 'assistant', content: turn.answer),
-    ],
-  ];
+  /// The contract accepts the last 20 messages, each up to 8,000 chars.
+  static const maxHistoryMessages = 20;
+  static const maxHistoryMessageChars = 8000;
+
+  List<NoteAskMessage> _history() {
+    final messages = [
+      for (final turn in turns.where((t) => !t.isStreaming && t.error == null))
+        ...[
+          NoteAskMessage(role: 'user', content: turn.question),
+          NoteAskMessage(role: 'assistant', content: turn.answer),
+        ],
+    ];
+    final recent = messages.length > maxHistoryMessages
+        ? messages.sublist(messages.length - maxHistoryMessages)
+        : messages;
+    return [
+      for (final message in recent)
+        message.content.length <= maxHistoryMessageChars
+            ? message
+            : NoteAskMessage(
+                role: message.role,
+                content: message.content.substring(0, maxHistoryMessageChars),
+              ),
+    ];
+  }
 
   /// Returns false when [question] is blank or an answer is still streaming.
   bool send(String question) {

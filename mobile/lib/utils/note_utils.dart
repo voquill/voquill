@@ -123,7 +123,7 @@ NoteView? buildNoteView(NotesState state, String id) {
   );
 }
 
-/// Local and server notes as one list: the capturing note pinned on top,
+/// Local and server notes as one list: the live recording pinned on top,
 /// then newest first. [query] filters titles locally.
 List<NoteView> buildNoteList(NotesState state, {String query = ''}) {
   final ids = <String>{...state.localNoteById.keys, ...state.serverNoteIds};
@@ -134,9 +134,9 @@ List<NoteView> buildNoteList(NotesState state, {String query = ''}) {
       .where((v) => needle.isEmpty || v.title.toLowerCase().contains(needle))
       .toList();
 
+  final liveId = state.liveNote?.id;
   views.sort((a, b) {
-    final pinned =
-        (b.state.isCapturing ? 1 : 0) - (a.state.isCapturing ? 1 : 0);
+    final pinned = (b.id == liveId ? 1 : 0) - (a.id == liveId ? 1 : 0);
     if (pinned != 0) return pinned;
     return b.createdAt.compareTo(a.createdAt);
   });
@@ -344,6 +344,11 @@ class NoteRow extends NoteListEntry {
 
 DateTime _day(DateTime local) => DateTime(local.year, local.month, local.day);
 
+int _dayKey(DateTime date) {
+  final local = date.toLocal();
+  return local.year * 10000 + local.month * 100 + local.day;
+}
+
 /// "Today", "Yesterday", "Tue, Nov 10", or "Nov 10, 2025" in another year.
 /// Days are local calendar days, so a note made at 23:59 and one made at
 /// 00:01 land under different headers.
@@ -357,24 +362,31 @@ String noteDayLabel(DateTime createdAt, DateTime now) {
   ).difference(DateTime.utc(day.year, day.month, day.day)).inDays;
   if (days == 0) return 'Today';
   if (days == 1) return 'Yesterday';
-  if (day.year == today.year) return DateFormat('EEE, MMM d').format(day);
-  return DateFormat('MMM d, y').format(day);
+  if (day.year == today.year) return _weekdayDate.format(day);
+  return _fullDate.format(day);
 }
+
+final _weekdayDate = DateFormat('EEE, MMM d');
+final _fullDate = DateFormat('MMM d, y');
+final _time = DateFormat.jm();
 
 /// Groups [views] (already newest first) under day headers. Notes being
 /// recorded are expected to be shown separately, pinned on top.
 List<NoteListEntry> groupNotesByDay(List<NoteView> views, DateTime now) {
+  final byDay = <int, String>{};
+  final labels = [
+    for (final view in views)
+      byDay.putIfAbsent(
+        _dayKey(view.createdAt),
+        () => noteDayLabel(view.createdAt, now),
+      ),
+  ];
   final entries = <NoteListEntry>[];
   for (var i = 0; i < views.length; i++) {
-    final view = views[i];
-    final label = noteDayLabel(view.createdAt, now);
-    final isFirst =
-        i == 0 || noteDayLabel(views[i - 1].createdAt, now) != label;
-    final isLast =
-        i == views.length - 1 ||
-        noteDayLabel(views[i + 1].createdAt, now) != label;
-    if (isFirst) entries.add(NoteDayHeader(label));
-    entries.add(NoteRow(view, isFirstInDay: isFirst, isLastInDay: isLast));
+    final isFirst = i == 0 || labels[i - 1] != labels[i];
+    final isLast = i == views.length - 1 || labels[i + 1] != labels[i];
+    if (isFirst) entries.add(NoteDayHeader(labels[i]));
+    entries.add(NoteRow(views[i], isFirstInDay: isFirst, isLastInDay: isLast));
   }
   return entries;
 }
@@ -389,8 +401,7 @@ String formatNoteLength(int ms) {
   return rest == 0 ? '$hours h' : '$hours h $rest min';
 }
 
-String formatNoteTime(DateTime createdAt) =>
-    DateFormat.jm().format(createdAt.toLocal());
+String formatNoteTime(DateTime createdAt) => _time.format(createdAt.toLocal());
 
 /// Why the Ask box is disabled right now, or null when it works. [noteId]
 /// scopes it to one note; null asks across all notes.

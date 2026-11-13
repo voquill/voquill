@@ -9,6 +9,7 @@ import 'package:app/theme/app_colors.dart';
 import 'package:app/utils/note_utils.dart';
 import 'package:app/utils/theme_utils.dart';
 import 'package:app/widgets/notes/ask_dock.dart';
+import 'package:app/widgets/notes/ask_thread.dart';
 import 'package:app/widgets/notes/delete_note_dialog.dart';
 import 'package:app/widgets/notes/note_elapsed_text.dart';
 import 'package:app/widgets/notes/note_markdown.dart';
@@ -51,6 +52,14 @@ class _NotePageState extends State<NotePage> {
   List<NoteSegment>? _linesSource;
   List<TranscriptLine> _lines = const [];
 
+  /// Owned here so the conversation survives the Ask box stepping aside
+  /// while the title or My notes is being typed.
+  late final _askThread = AskThread(
+    ask: askNotes,
+    noteId: widget.noteId,
+    onError: noteAskFailed,
+  );
+
   String get _id => widget.noteId;
 
   @override
@@ -59,17 +68,20 @@ class _NotePageState extends State<NotePage> {
     _section = widget.initialSection;
     _titleFocus.addListener(_onFocusChanged);
     _notesFocus.addListener(_onFocusChanged);
+    noteScreenOpened(_id);
     final local = getAppState().notes.localNoteById[_id];
     if (local == null || local.existsOnServer) loadNote(_id);
   }
 
   @override
   void dispose() {
+    noteScreenClosed(_id);
     _flushEdits();
     _title.dispose();
     _personalNotes.dispose();
     _titleFocus.dispose();
     _notesFocus.dispose();
+    _askThread.dispose();
     super.dispose();
   }
 
@@ -265,7 +277,8 @@ class _NotePageState extends State<NotePage> {
         ),
       ),
       _content(_MetaChips(view: view)),
-      if (view.state.isCapturing) _content(_RecordingCard(view: view)),
+      if (view.state.isCapturing)
+        _content(_RecordingCard(view: view, onBeforeStop: _flushEdits)),
       if (view.state.isBusy ||
           view.state == NoteDisplayState.failed ||
           view.state == NoteDisplayState.draft)
@@ -349,7 +362,11 @@ class _NotePageState extends State<NotePage> {
               ),
             ),
           ),
-          if (!_isEditingText) AskDock(noteId: _id),
+          Visibility(
+            visible: !_isEditingText,
+            maintainState: true,
+            child: AskDock(noteId: _id, thread: _askThread),
+          ),
         ],
       ),
     );
@@ -626,9 +643,13 @@ class _PersonalNotesField extends StatelessWidget {
 /// The big timer and Pause/Stop while a meeting records. It sits in the
 /// document, under the title, so the Ask box keeps the bottom of the screen.
 class _RecordingCard extends StatelessWidget {
-  const _RecordingCard({required this.view});
+  const _RecordingCard({required this.view, required this.onBeforeStop});
 
   final NoteView view;
+
+  /// Saves typing still waiting for autosave, so Stop sends the latest
+  /// My notes and title.
+  final VoidCallback onBeforeStop;
 
   @override
   Widget build(BuildContext context) {
@@ -706,6 +727,7 @@ class _RecordingCard extends StatelessWidget {
                     ? null
                     : () {
                         HapticFeedback.mediumImpact();
+                        onBeforeStop();
                         stopRecording(view.id);
                       },
               ),

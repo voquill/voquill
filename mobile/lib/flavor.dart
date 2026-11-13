@@ -7,7 +7,8 @@ enum Flavor {
   dev,
   emulators;
 
-  static late Flavor current;
+  /// Set by each `main_*.dart`; prod (no dev overrides) until then.
+  static Flavor current = Flavor.prod;
 
   bool get isProd => this == Flavor.prod;
   bool get isDev => this == Flavor.dev;
@@ -45,6 +46,10 @@ enum Flavor {
         return 'emu';
     }
   }
+
+  /// Dev and emulator builds read `--dart-define`s that shorten Notes
+  /// segment and note limits for device testing; prod ignores them.
+  bool get allowsDevOverrides => this != Flavor.prod;
 
   String get emulatorHost => Platform.isAndroid ? '10.0.2.2' : 'localhost';
 

@@ -11,6 +11,16 @@ int _listGeneration = 0;
 Future<void> refreshNotes() async {
   final services = _services;
   if (services == null) return;
+  try {
+    await _refreshList(services);
+  } on NotesApiException catch (e) {
+    _logger.w('Failed to load notes: ${e.code}');
+  }
+}
+
+/// Loads the first page into the list; rethrows so a caller polling a
+/// processing note can tell "offline" from "still processing".
+Future<void> _refreshList(NotesServices services) async {
   final generation = ++_listGeneration;
   _produce(services, (notes) => notes.listStatus = ActionStatus.loading);
   try {
@@ -26,9 +36,9 @@ Future<void> refreshNotes() async {
       notes.loadMoreStatus = ActionStatus.idle;
     });
     await _saveCache(services);
-  } on NotesApiException catch (e) {
-    _logger.w('Failed to load notes: ${e.code}');
+  } on NotesApiException {
     _produce(services, (notes) => notes.listStatus = ActionStatus.error);
+    rethrow;
   }
 }
 

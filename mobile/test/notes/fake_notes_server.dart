@@ -112,6 +112,12 @@ class FakeNotesServer {
 
     if (parts.isEmpty) {
       _fail('list');
+      // Jobs advance with time; the list sees that as well as GET does.
+      for (final entry in notes.entries.toList()) {
+        if (entry.value['status'] == 'processing') {
+          _advanceProcessing(entry.key, entry.value);
+        }
+      }
       final all = notes.values.toList().reversed.toList();
       final limit = int.parse(uri.queryParameters['limit'] ?? '50');
       final start = int.parse(uri.queryParameters['cursor'] ?? '0');
@@ -635,6 +641,7 @@ NotesServices fakeServices({
     recorder: recorder,
     pollInterval: Duration.zero,
     slowPollInterval: Duration.zero,
+    listPollInterval: Duration.zero,
     retryDelays: const [],
   );
 }

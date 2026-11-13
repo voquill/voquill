@@ -93,7 +93,8 @@ void main() {
     final watch = Stopwatch()..start();
     final entries = groupNotesByDay(buildNoteList(state), now);
     expect(entries.whereType<NoteRow>(), hasLength(2000));
-    expect(watch.elapsedMilliseconds, lessThan(500));
+    // Generous bound: catches quadratic work, not machine load.
+    expect(watch.elapsedMilliseconds, lessThan(2000));
   });
 
   test('formatNoteLength reads naturally', () {

@@ -34,6 +34,15 @@ class NotesState with EquatableMixin {
   /// A start/pause/resume/stop is in flight; recording controls wait.
   final bool isRecorderBusy;
 
+  /// The note the native recorder holds right now (recording or paused by
+  /// the user). A paused note without it was interrupted (app killed) and
+  /// never blocks a new meeting.
+  final String? recorderNoteId;
+
+  /// The live recording has captured only silence for a while (the OS gave
+  /// the microphone to a call or another app).
+  final bool isRecorderSilent;
+
   /// The last request could not reach the server.
   final bool isOffline;
 
@@ -59,6 +68,8 @@ class NotesState with EquatableMixin {
     this.listStatus = ActionStatus.idle,
     this.loadMoreStatus = ActionStatus.idle,
     this.isRecorderBusy = false,
+    this.recorderNoteId,
+    this.isRecorderSilent = false,
     this.isOffline = false,
     this.askAvailableAt,
     this.noteById = const {},
@@ -70,8 +81,11 @@ class NotesState with EquatableMixin {
     this.syncById = const {},
   });
 
-  LocalNote? get capturingNote =>
-      localNoteById.values.where((n) => n.isCapturing).firstOrNull;
+  /// The meeting the native recorder is recording (or holding paused).
+  LocalNote? get liveNote {
+    final note = localNoteById[recorderNoteId];
+    return note != null && note.isCapturing ? note : null;
+  }
 
   @override
   List<Object?> get props => [
@@ -79,6 +93,8 @@ class NotesState with EquatableMixin {
     listStatus,
     loadMoreStatus,
     isRecorderBusy,
+    recorderNoteId,
+    isRecorderSilent,
     isOffline,
     askAvailableAt,
     noteById,

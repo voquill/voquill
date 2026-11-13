@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 /// Signing out stops a recording meeting; ask first. Resolves true when
 /// signing out may continue.
 Future<bool> confirmSignOutDuringMeeting(BuildContext context) async {
-  if (getAppState().notes.capturingNote == null) return true;
+  if (getAppState().notes.liveNote == null) return true;
   final confirmed = await showDialog<bool>(
     context: context,
     builder: (context) => AppDialog(

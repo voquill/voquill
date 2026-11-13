@@ -110,12 +110,13 @@ void main() {
     },
   );
 
-  for (final step in ['put', 'session', 'bytes', 'process', 'get']) {
+  for (final step in ['put', 'session', 'bytes', 'process', 'list']) {
     test(
       'a network failure at "$step" keeps the audio and resumes on retry',
       () async {
         await seedStoppedNote();
-        server.networkFailures[step] = 1;
+        // The launch refresh also lists notes; polling is the second call.
+        server.networkFailures[step] = step == 'list' ? 2 : 1;
         await boot();
 
         expect(audioExists(), isTrue);
@@ -502,7 +503,7 @@ void main() {
 
   test('a processing note re-sends process after a restart', () async {
     await seedStoppedNote();
-    server.networkFailures['get'] = 1;
+    server.networkFailures['list'] = 2;
     await boot();
     expect(local()!.phase, LocalNotePhase.processing);
     await disposeNotes();

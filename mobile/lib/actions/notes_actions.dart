@@ -48,6 +48,7 @@ class NotesServices {
     this.slowPollInterval = const Duration(seconds: 30),
     this.slowPollAfter = const Duration(minutes: 5),
     this.reprocessAfter = const Duration(minutes: 10),
+    this.listPollInterval = const Duration(seconds: 15),
     this.retryDelays = const [
       Duration(seconds: 5),
       Duration(seconds: 15),
@@ -68,6 +69,9 @@ class NotesServices {
   final Duration slowPollAfter;
   final Duration reprocessAfter;
 
+  /// How often the list is refreshed while a note processes off-screen.
+  final Duration listPollInterval;
+
   /// Backoff for automatic retries after transient failures; empty disables
   /// them (tests drive retries explicitly).
   final List<Duration> retryDelays;
@@ -81,6 +85,11 @@ class NotesServices {
 
   /// When this session last sent `process` per note; absent after a launch.
   final _lastProcessAt = <String, DateTime>{};
+
+  /// Notes whose screen is open; only these poll `GET /v1/notes/:id`.
+  final _openNoteIds = <String>{};
+  Future<void>? _listRefresh;
+  DateTime? _lastListRefreshAt;
 
   /// Serializes start/pause/resume/stop and native recorder events.
   Future<void> _recorderCommands = Future.value();
@@ -288,6 +297,33 @@ Future<void> initializeNotes(NotesServices services, {int? generation}) async {
   final current = generation ?? ++_initGeneration;
   bool isStale() => current != _initGeneration;
 
+  // Subscribe before reading the recorder state so no event is missed;
+  // events queue behind initialization and are applied once notes load.
+  final loaded = Completer<void>();
+  services._recorderCommands = loaded.future;
+  services._recorderSubscription = services.recorder.events.listen(
+    (event) => _onRecorderEvent(services, event),
+  );
+  try {
+    await _loadNotes(services, isStale);
+  } finally {
+    loaded.complete();
+  }
+  if (!_isCurrent(services)) return;
+
+  NoteRecorderActionEvent? pending;
+  try {
+    pending = await services.recorder.takePendingAction();
+  } catch (e) {
+    _logger.w('Could not read pending recorder action', e);
+  }
+  if (pending != null) _onRecorderEvent(services, pending);
+
+  unawaited(refreshNotes());
+  unawaited(syncAllNotes());
+}
+
+Future<void> _loadNotes(NotesServices services, bool Function() isStale) async {
   final store = services.store;
   LocalNotesSnapshot snapshot;
   try {
@@ -315,13 +351,32 @@ Future<void> initializeNotes(NotesServices services, {int? generation}) async {
   _services = services;
   final localNotes = <LocalNote>[];
   for (final note in snapshot.localNotes) {
-    localNotes.add(await _reenterAfterRestart(services, note, native));
+    localNotes.add(await _reenterAfterRestart(store, note, native));
   }
-  final recovered = await _adoptOrphanFiles(store, localNotes);
+  final recovered = await _adoptOrphanFiles(store, localNotes, native);
+
+  // The note the recorder is still writing gets its current segment last,
+  // after any files it rolled over to while the app was gone.
+  String? recorderNoteId;
+  if (native != null) {
+    final index = recovered.indexWhere(
+      (n) => n.id == native!.noteId && n.isCapturing,
+    );
+    if (index < 0) {
+      await _stopRecorderQuietly(services);
+    } else {
+      final note = recovered[index];
+      final fields = await _nativeFields(store, note, native);
+      recovered[index] =
+          (note.draft()
+                ..segments = fields.segments
+                ..phase = fields.phase
+                ..recordingStartedAt = fields.recordingStartedAt)
+              .save();
+      recorderNoteId = note.id;
+    }
+  }
   if (!_isCurrent(services)) return;
-  if (native != null && !recovered.any((n) => n.id == native!.noteId)) {
-    await _stopRecorderQuietly(services);
-  }
 
   _produce(services, (notes) {
     notes.localNoteById = {for (final n in recovered) n.id: n};
@@ -329,55 +384,47 @@ Future<void> initializeNotes(NotesServices services, {int? generation}) async {
     notes.pendingDeleteIds = snapshot.pendingDeleteIds;
     notes.noteById = {for (final n in cached) n.id: n};
     notes.serverNoteIds = cached.map((n) => n.id).toList();
+    notes.recorderNoteId = recorderNoteId;
     notes.isInitialized = true;
   });
   await _persist(services);
-
-  services._recorderSubscription = services.recorder.events.listen(
-    (event) => _onRecorderEvent(services, event),
-  );
-  NoteRecorderActionEvent? pending;
-  try {
-    pending = await services.recorder.takePendingAction();
-  } catch (e) {
-    _logger.w('Could not read pending recorder action', e);
-  }
-  if (pending != null) _onRecorderEvent(services, pending);
-
-  unawaited(refreshNotes());
-  unawaited(syncAllNotes());
 }
 
 Future<LocalNote> _reenterAfterRestart(
-  NotesServices services,
+  LocalNoteStore store,
   LocalNote note,
   NoteRecorderState? native,
 ) async {
-  final isRecorderActive = native?.noteId == note.id;
-  if (note.isCapturing && isRecorderActive) {
-    return _withNativeState(services, note, native!);
-  }
+  if (note.isCapturing && native?.noteId == note.id) return note;
   final phase = phaseAfterRestart(note.phase, isRecorderActive: false);
-  final closed = note.isCapturing
-      ? await _closeOpenSegments(services.store, note)
-      : note;
-  return (closed.draft()..phase = phase).save();
+  if (!note.isCapturing) return (note.draft()..phase = phase).save();
+  return (note.draft()
+        ..segments = await _closedSegments(store, note)
+        ..recordingStartedAt = null
+        ..phase = phase)
+      .save();
 }
 
 /// Audio on disk that no local note references (an unreadable snapshot, a
-/// crash between creating a file and saving it) becomes recoverable notes:
-/// added to its note if that still exists, otherwise a new paused note.
+/// crash between creating a file and saving it, rollovers while the app was
+/// gone) joins its note, in recording order, or becomes a new paused note.
+/// The file the recorder is writing is left alone, and nothing is deleted
+/// in its note's directory: a file it just opened is still empty.
 Future<List<LocalNote>> _adoptOrphanFiles(
   LocalNoteStore store,
   List<LocalNote> localNotes,
+  NoteRecorderState? native,
 ) async {
   final byId = {for (final n in localNotes) n.id: n};
   final filesByNote = await store.listNoteFiles();
   for (final MapEntry(key: noteId, value: files) in filesByNote.entries) {
     final note = byId[noteId];
-    final referenced = {...?note?.segments.map((s) => s.fileName)};
-    final orphans = <LocalNoteSegment>[];
-    DateTime? earliest;
+    final isRecorderNote = native?.noteId == noteId;
+    final referenced = {
+      ...?note?.segments.map((s) => s.fileName),
+      if (isRecorderNote) '${native!.segmentId}.aac',
+    };
+    final orphans = <({File file, DateTime modified})>[];
     for (final file in files) {
       final name = p.basename(file.path);
       if (LocalNoteStore.isImportFile(file)) {
@@ -394,33 +441,39 @@ Future<List<LocalNote>> _adoptOrphanFiles(
       }
       if (!name.endsWith('.aac') || referenced.contains(name)) continue;
       if (await file.length() < adtsHeaderLength) {
-        await file.delete();
+        if (!isRecorderNote) await file.delete();
         continue;
       }
-      final modified = await file.lastModified();
-      if (earliest == null || modified.isBefore(earliest)) earliest = modified;
-      orphans.add(
+      orphans.add((file: file, modified: await file.lastModified()));
+    }
+    if (orphans.isEmpty) continue;
+    orphans.sort((a, b) => a.modified.compareTo(b.modified));
+    _logger.w('Recovered ${orphans.length} unreferenced audio files');
+
+    final existing = note?.segments ?? const <LocalNoteSegment>[];
+    var nextIndex = existing.isEmpty ? 0 : _nextLocalIndex(existing);
+    final adopted = <LocalNoteSegment>[];
+    for (final orphan in orphans) {
+      final name = p.basename(orphan.file.path);
+      adopted.add(
         LocalNoteSegment(
           id: p.basenameWithoutExtension(name),
           fileName: name,
-          durationMs: await readAdtsDurationMs(file),
+          index: nextIndex,
+          durationMs: await readAdtsDurationMs(orphan.file),
         ),
       );
+      if (nextIndex != null) nextIndex++;
     }
-    if (orphans.isEmpty) continue;
-    _logger.w('Recovered ${orphans.length} unreferenced audio files');
-    if (note != null) {
-      byId[noteId] = (note.draft()..segments = [...note.segments, ...orphans])
-          .save();
-    } else {
-      byId[noteId] = LocalNote(
-        id: noteId,
-        title: 'Recovered recording',
-        createdAt: earliest!.toUtc().toIso8601String(),
-        phase: LocalNotePhase.paused,
-        segments: orphans,
-      );
-    }
+    byId[noteId] = note != null
+        ? (note.draft()..segments = [...existing, ...adopted]).save()
+        : LocalNote(
+            id: noteId,
+            title: 'Recovered recording',
+            createdAt: orphans.first.modified.toUtc().toIso8601String(),
+            phase: LocalNotePhase.paused,
+            segments: adopted,
+          );
   }
   return byId.values.toList();
 }
@@ -438,7 +491,7 @@ Future<void> disposeNotes({bool keepGeneration = false}) async {
   services._retryTimer?.cancel();
   services._editFlushTimer?.cancel();
   await services._recorderSubscription?.cancel();
-  if (getAppState().notes.capturingNote != null) {
+  if (getAppState().notes.recorderNoteId != null) {
     await _stopRecorderQuietly(services);
   }
   services.api.close();

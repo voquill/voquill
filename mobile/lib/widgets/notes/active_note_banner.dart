@@ -15,7 +15,7 @@ class ActiveNoteBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final view = useAppStore().select(context, (s) {
-      final note = s.notes.capturingNote;
+      final note = s.notes.liveNote;
       return note == null ? null : buildNoteView(s.notes, note.id);
     });
     final theme = Theme.of(context);

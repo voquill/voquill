@@ -33,6 +33,7 @@ LocalNote _local(String id, String createdAt, LocalNotePhase phase) =>
 
 void main() {
   final state = NotesState(
+    recorderNoteId: 'resumed',
     serverNoteIds: const ['old', 'resumed', 'deleted', 'renamed'],
     noteById: {
       'old': _server('old', '2026-01-01T09:00:00Z'),

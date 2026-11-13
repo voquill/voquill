@@ -2,8 +2,9 @@ part of 'notes_actions.dart';
 
 // Recording lifecycle: start, pause, resume, stop and native recorder events.
 // Every command runs through one queue per user session and re-reads the
-// note after each await, so overlapping taps and native events can never
-// act on a stale copy.
+// note after each await. Recorder code writes only the fields it owns
+// (segments, phase, recording start), never a whole copy of the note, so a
+// title or My notes edit saved meanwhile is never overwritten.
 
 /// Segments roll over well below the server's 4-hour segment cap and its
 /// smallest (free plan, 120 MB) byte cap.
@@ -13,6 +14,29 @@ const noteMaxSegmentBytes = 100 * 1000 * 1000;
 /// Recording stops before the server's 8-hour note cap.
 const noteMaxDuration = Duration(hours: 7, minutes: 50);
 const noteMaxSegments = 50;
+
+/// Dev and emulator builds only (see [Flavor.allowsDevOverrides]):
+/// `--dart-define=NOTES_DEV_SEGMENT_SECONDS=120` rolls segments every two
+/// minutes and `--dart-define=NOTES_DEV_NOTE_LIMIT_SECONDS=600` stops a note
+/// after ten, so rollover and the limit can be tested in minutes.
+const _devSegmentSeconds = int.fromEnvironment('NOTES_DEV_SEGMENT_SECONDS');
+const _devNoteLimitSeconds = int.fromEnvironment(
+  'NOTES_DEV_NOTE_LIMIT_SECONDS',
+);
+
+Duration get _segmentDuration =>
+    Flavor.current.allowsDevOverrides && _devSegmentSeconds > 0
+    ? Duration(seconds: _devSegmentSeconds)
+    : noteMaxSegmentDuration;
+
+/// A short dev segment length alone keeps the note within the 50-segment
+/// cap by also shortening the note limit to 20 segments.
+Duration get _noteLimit {
+  if (!Flavor.current.allowsDevOverrides) return noteMaxDuration;
+  if (_devNoteLimitSeconds > 0) return Duration(seconds: _devNoteLimitSeconds);
+  if (_devSegmentSeconds > 0) return _segmentDuration * 20;
+  return noteMaxDuration;
+}
 
 const _lowStorageWarningBytes = 300 * 1024 * 1024;
 const _recordingBytesPerHour = 32000 ~/ 8 * 3600;
@@ -37,7 +61,7 @@ Future<bool> canShareMicrophoneWithMeeting() async {
 }
 
 bool get isMeetingRecording =>
-    getAppState().notes.capturingNote?.phase == LocalNotePhase.recording;
+    getAppState().notes.liveNote?.phase == LocalNotePhase.recording;
 
 /// Runs [command] after every earlier recording command of this session.
 /// Returns null when the session ended before it could run.
@@ -69,10 +93,36 @@ int? _nextLocalIndex(List<LocalNoteSegment> segments) {
   return segments.map((s) => s.index!).reduce(max) + 1;
 }
 
-/// Adopts what the native recorder reports: a rolled-over segment is added,
-/// the previous one closed, and the phase follows pause/resume.
-Future<LocalNote> _withNativeState(
+/// The note fields the recorder owns.
+class _RecorderFields {
+  const _RecorderFields({
+    required this.segments,
+    required this.phase,
+    this.recordingStartedAt,
+  });
+
+  final List<LocalNoteSegment> segments;
+  final LocalNotePhase phase;
+  final String? recordingStartedAt;
+}
+
+void _setRecorderFields(
   NotesServices services,
+  String id,
+  _RecorderFields fields,
+) {
+  _updateLocal(services, id, (note) {
+    note.segments = fields.segments;
+    note.phase = fields.phase;
+    note.recordingStartedAt = fields.recordingStartedAt;
+  });
+}
+
+/// What the native recorder reports, as recorder fields: a rolled-over
+/// segment is added, the previous one closed, the phase follows
+/// pause/resume.
+Future<_RecorderFields> _nativeFields(
+  LocalNoteStore store,
   LocalNote note,
   NoteRecorderState native,
 ) async {
@@ -88,7 +138,7 @@ Future<LocalNote> _withNativeState(
             .save(),
       );
     } else if (segment.isOpen) {
-      final closed = await _closeSegment(services.store, note.id, segment);
+      final closed = await _closeSegment(store, note.id, segment);
       if (closed != null) segments.add(closed);
     } else {
       segments.add(segment);
@@ -105,13 +155,13 @@ Future<LocalNote> _withNativeState(
       ),
     );
   }
-  final draft = note.draft()
-    ..segments = segments
-    ..phase = native.isPaused ? LocalNotePhase.paused : LocalNotePhase.recording
-    ..recordingStartedAt = native.isPaused
+  return _RecorderFields(
+    segments: segments,
+    phase: native.isPaused ? LocalNotePhase.paused : LocalNotePhase.recording,
+    recordingStartedAt: native.isPaused
         ? null
-        : DateTime.now().toUtc().toIso8601String();
-  return draft.save();
+        : DateTime.now().toUtc().toIso8601String(),
+  );
 }
 
 /// Closes a segment the native recorder no longer writes, measuring it.
@@ -134,7 +184,7 @@ Future<LocalNoteSegment?> _closeSegment(
       .save();
 }
 
-Future<LocalNote> _closeOpenSegments(
+Future<List<LocalNoteSegment>> _closedSegments(
   LocalNoteStore store,
   LocalNote note,
 ) async {
@@ -147,10 +197,7 @@ Future<LocalNote> _closeOpenSegments(
     final closed = await _closeSegment(store, note.id, segment);
     if (closed != null) segments.add(closed);
   }
-  return (note.draft()
-        ..segments = segments
-        ..recordingStartedAt = null)
-      .save();
+  return segments;
 }
 
 void _onRecorderEvent(NotesServices services, NoteRecorderEvent event) {
@@ -171,9 +218,25 @@ Future<void> _applyNativeState(
 ) async {
   final note = _localOf(services, state.noteId);
   if (note == null || !note.isCapturing) return;
-  final adopted = await _withNativeState(services, note, state);
+  // An event older than the state already applied (it names a segment the
+  // note has since closed) would reopen that segment and close the one
+  // being written.
+  final segment = note.segments
+      .where((s) => s.id == state.segmentId)
+      .firstOrNull;
+  if (segment != null && !segment.isOpen) return;
+  final fields = await _nativeFields(services.store, note, state);
   if (!(_localOf(services, state.noteId)?.isCapturing ?? false)) return;
-  _putLocal(services, adopted);
+  _setRecorderFields(services, state.noteId, fields);
+  final hasEnded =
+      state.reason == NoteRecorderReason.writeFailed ||
+      state.reason == NoteRecorderReason.error;
+  _produce(services, (notes) {
+    notes.isRecorderSilent = state.isSilent && !state.isPaused;
+    if (hasEnded && notes.recorderNoteId == state.noteId) {
+      notes.recorderNoteId = null;
+    }
+  });
   await _persist(services);
 
   switch (state.reason) {
@@ -195,6 +258,7 @@ Future<void> _applyNativeState(
     case NoteRecorderReason.interruption:
     case NoteRecorderReason.rollover:
     case NoteRecorderReason.user:
+    case NoteRecorderReason.silence:
     case null:
       break;
   }
@@ -203,7 +267,7 @@ Future<void> _applyNativeState(
 /// Why [note] cannot take another recording run, or null when it can.
 String? _recordingLimitMessage(NotesServices services, LocalNote note) {
   final elapsed = note.elapsedMs(DateTime.now());
-  final remainingMs = noteMaxDuration.inMilliseconds - elapsed;
+  final remainingMs = _noteLimit.inMilliseconds - elapsed;
   if (remainingMs <= const Duration(minutes: 1).inMilliseconds) {
     return _noteLimitMessage;
   }
@@ -212,22 +276,20 @@ String? _recordingLimitMessage(NotesServices services, LocalNote note) {
       (_notesOf(services)?.noteById[note.id]?.segments ?? const [])
           .where((s) => !localIds.contains(s.id))
           .length;
-  final rollovers = (remainingMs / noteMaxSegmentDuration.inMilliseconds)
-      .ceil();
+  final rollovers = (remainingMs / _segmentDuration.inMilliseconds).ceil();
   if (note.segments.length + serverOnly + rollovers > noteMaxSegments) {
     return _tooManySegmentsMessage;
   }
   return null;
 }
 
-/// Checks everything a new recording run needs. [note] is the note about
-/// to record (null for a brand-new one).
-Future<bool> _ensureCanRecord(NotesServices services, LocalNote? note) async {
-  final capturing = _notesOf(services)?.capturingNote;
-  if (capturing != null && capturing.id != note?.id) {
-    showSnackbar('Finish your current meeting before starting another one.');
-    return false;
-  }
+/// Checks a recording run of [note] may start or resume: the note's limits
+/// and, on Android 9 and older, the microphone being free of remote
+/// dictation.
+Future<bool> _passesRecordingChecks(
+  NotesServices services,
+  LocalNote? note,
+) async {
   final limit = note == null ? null : _recordingLimitMessage(services, note);
   if (limit != null) {
     showSnackbar(limit);
@@ -239,6 +301,32 @@ Future<bool> _ensureCanRecord(NotesServices services, LocalNote? note) async {
     );
     return false;
   }
+  return true;
+}
+
+/// Checks everything a new recording run needs. [note] is the note about
+/// to record (null for a brand-new one). A meeting the recorder still holds
+/// blocks it; a paused one whose recorder is gone (the app was closed) is
+/// finished and queued for upload instead, never discarded.
+Future<bool> _ensureCanRecord(NotesServices services, LocalNote? note) async {
+  final notes = _notesOf(services);
+  if (notes == null) return false;
+  final live = notes.liveNote;
+  if (live != null && live.id != note?.id) {
+    showSnackbar('Finish your current meeting before starting another one.');
+    return false;
+  }
+  final interrupted = notes.localNoteById.values
+      .where((n) => n.isCapturing && n.id != note?.id && n.id != live?.id)
+      .toList();
+  for (final other in interrupted) {
+    if (await _finishCapture(services, other.id)) {
+      showSnackbar(
+        '"${other.title}" was finished and is being uploaded for notes.',
+      );
+    }
+  }
+  if (!await _passesRecordingChecks(services, note)) return false;
   final mic = await Permission.microphone.request();
   if (!mic.isGranted) {
     showSnackbar(
@@ -288,9 +376,7 @@ Future<String?> startNewNote() async {
       createdAt: now.toUtc().toIso8601String(),
       phase: LocalNotePhase.recording,
     );
-    if (!await _startSegment(services, note, previous: null, index: 0)) {
-      return null;
-    }
+    if (!await _startNewNoteSegment(services, note, index: 0)) return null;
     unawaited(_createOnServer(services, note.id));
     return note.id;
   });
@@ -309,12 +395,7 @@ Future<bool> resumeServerNote(String id) async {
     if (local != null) {
       if (local.phase != LocalNotePhase.ready) return false;
       if (!await _ensureCanRecord(services, local)) return false;
-      return _startSegment(
-        services,
-        local,
-        previous: local,
-        index: _nextSegmentIndex(services, local),
-      );
+      return _startNextSegment(services, id);
     }
     final note = LocalNote(
       id: id,
@@ -328,10 +409,9 @@ Future<bool> resumeServerNote(String id) async {
     );
     if (!await _ensureCanRecord(services, note)) return false;
     final serverIndexes = server.segments?.map((s) => s.index);
-    return _startSegment(
+    return _startNewNoteSegment(
       services,
       note,
-      previous: null,
       index: serverIndexes == null
           ? null
           : serverIndexes.fold<int>(-1, max) + 1,
@@ -350,67 +430,118 @@ int? _nextSegmentIndex(NotesServices services, LocalNote note) {
   return max(local, server.map((s) => s.index).reduce(max) + 1);
 }
 
-/// Persists a new open segment, then starts the native recorder on it. On
-/// failure the note goes back to [previous] (or disappears if it was new);
-/// only the new, empty file is removed.
-Future<bool> _startSegment(
-  NotesServices services,
-  LocalNote note, {
-  required LocalNote? previous,
-  required int? index,
-}) async {
-  final phase = previous == null
-      ? LocalNotePhase.recording
-      : nextLocalNotePhase(previous.phase, LocalNoteEvent.resume);
-  if (phase == null) return false;
-
+LocalNoteSegment _newSegment(int? index) {
   final segmentId = const Uuid().v4();
-  final segment = LocalNoteSegment(
+  return LocalNoteSegment(
     id: segmentId,
     fileName: '$segmentId.aac',
     index: index,
     isOpen: true,
   );
-  final file = services.store.segmentFile(note.id, segment.fileName);
-  await file.parent.create(recursive: true);
+}
 
-  final priorElapsedMs = note.elapsedMs(DateTime.now());
-  final started =
-      (note.draft()
-            ..segments = [...note.segments, segment]
-            ..phase = phase
-            ..recordingStartedAt = DateTime.now().toUtc().toIso8601String()
-            ..error = null)
-          .save();
-  if (!_isCurrent(services)) return false;
-  _putLocal(services, started);
-  await _persist(services);
-
+/// Starts the native recorder on [segment]; null on success.
+Future<PlatformException?> _startNative(
+  NotesServices services,
+  String noteId,
+  LocalNoteSegment segment,
+  int priorElapsedMs,
+) async {
   try {
     await services.recorder.start(
-      noteId: note.id,
-      segmentId: segmentId,
-      path: file.path,
+      noteId: noteId,
+      segmentId: segment.id,
+      path: services.store.segmentFile(noteId, segment.fileName).path,
       priorElapsedMs: priorElapsedMs,
-      maxSegmentMs: noteMaxSegmentDuration.inMilliseconds,
+      maxSegmentMs: _segmentDuration.inMilliseconds,
       maxSegmentBytes: noteMaxSegmentBytes,
-      maxNoteMs: noteMaxDuration.inMilliseconds,
+      maxNoteMs: _noteLimit.inMilliseconds,
     );
-    return true;
+    _produce(services, (notes) {
+      notes.recorderNoteId = noteId;
+      notes.isRecorderSilent = false;
+    });
+    return null;
   } on PlatformException catch (e) {
     _logger.e('Failed to start recording: ${e.code}');
-    _produce(services, (notes) {
-      if (previous == null) {
-        notes.localNoteById.remove(note.id);
-      } else {
-        notes.localNoteById[note.id] = previous.draft();
-      }
-    });
-    await _persist(services);
-    await services.store.deleteSegmentFile(note.id, segment.fileName);
-    _showRecorderError(e);
-    return false;
+    return e;
   }
+}
+
+/// A brand-new local note (new meeting, or resuming a server note) and its
+/// first segment. On failure the note disappears again.
+Future<bool> _startNewNoteSegment(
+  NotesServices services,
+  LocalNote note, {
+  required int? index,
+}) async {
+  final segment = _newSegment(index);
+  await services.store.noteDirectory(note.id).create(recursive: true);
+  if (!_isCurrent(services)) return false;
+  _putLocal(
+    services,
+    (note.draft()
+          ..segments = [segment]
+          ..phase = LocalNotePhase.recording
+          ..recordingStartedAt = DateTime.now().toUtc().toIso8601String())
+        .save(),
+  );
+  await _persist(services);
+
+  final error = await _startNative(
+    services,
+    note.id,
+    segment,
+    note.elapsedMs(DateTime.now()),
+  );
+  if (error == null) return true;
+  _produce(services, (notes) => notes.localNoteById.remove(note.id));
+  await _persist(services);
+  await services.store.deleteSegmentFile(note.id, segment.fileName);
+  _showRecorderError(error);
+  return false;
+}
+
+/// One more segment for a note that is paused (recorder gone) or ready.
+/// On failure only the recorder fields go back.
+Future<bool> _startNextSegment(NotesServices services, String id) async {
+  final note = _localOf(services, id);
+  if (note == null) return false;
+  final phase = nextLocalNotePhase(note.phase, LocalNoteEvent.resume);
+  if (phase == null) return false;
+  final segment = _newSegment(_nextSegmentIndex(services, note));
+  await services.store.noteDirectory(id).create(recursive: true);
+
+  final current = _localOf(services, id);
+  if (current == null) return false;
+  final previous = _RecorderFields(
+    segments: current.segments,
+    phase: current.phase,
+  );
+  _setRecorderFields(
+    services,
+    id,
+    _RecorderFields(
+      segments: [...current.segments, segment],
+      phase: phase,
+      recordingStartedAt: DateTime.now().toUtc().toIso8601String(),
+    ),
+  );
+  _updateLocal(services, id, (n) => n.error = null);
+  await _persist(services);
+
+  final error = await _startNative(
+    services,
+    id,
+    segment,
+    current.elapsedMs(DateTime.now()),
+  );
+  if (error == null) return true;
+  _setRecorderFields(services, id, previous);
+  await _persist(services);
+  await services.store.deleteSegmentFile(id, segment.fileName);
+  _showRecorderError(error);
+  return false;
 }
 
 Future<void> pauseRecording(String id) async {
@@ -437,6 +568,7 @@ Future<void> pauseRecording(String id) async {
       }
       draft.recordingStartedAt = null;
     });
+    _produce(services, (notes) => notes.isRecorderSilent = false);
     await _persist(services);
   });
 }
@@ -449,6 +581,7 @@ Future<void> resumeRecording(String id) async {
     if (note?.phase != LocalNotePhase.paused) return;
     final native = await services.recorder.getState();
     if (native?.noteId == id) {
+      if (!await _passesRecordingChecks(services, note)) return;
       NoteRecorderState? resumed;
       try {
         resumed = await services.recorder.resume();
@@ -458,20 +591,26 @@ Future<void> resumeRecording(String id) async {
       }
       final current = _localOf(services, id);
       if (resumed == null || current == null) return;
-      _putLocal(services, await _withNativeState(services, current, resumed));
+      _setRecorderFields(
+        services,
+        id,
+        await _nativeFields(services.store, current, resumed),
+      );
       await _persist(services);
       return;
     }
     if (!await _ensureCanRecord(services, note)) return;
     final current = _localOf(services, id);
     if (current?.phase != LocalNotePhase.paused) return;
-    final closed = await _closeOpenSegments(services.store, current!);
-    await _startSegment(
+    _setRecorderFields(
       services,
-      closed,
-      previous: closed,
-      index: _nextSegmentIndex(services, closed),
+      id,
+      _RecorderFields(
+        segments: await _closedSegments(services.store, current!),
+        phase: LocalNotePhase.paused,
+      ),
     );
+    await _startNextSegment(services, id);
   });
 }
 
@@ -479,42 +618,68 @@ Future<void> resumeRecording(String id) async {
 Future<void> stopRecording(String id) async {
   final services = _services;
   if (services == null) return;
-  await _recorderCommand(services, () async {
-    if (!(_localOf(services, id)?.isCapturing ?? false)) return;
+  await _recorderCommand(services, () => _finishCapture(services, id));
+}
+
+/// Stops the recorder (if it holds [id]), closes the segments and queues
+/// the note. Runs inside a recorder command. Returns whether audio was
+/// queued.
+Future<bool> _finishCapture(NotesServices services, String id) async {
+  if (!(_localOf(services, id)?.isCapturing ?? false)) return false;
+  // Keep the process alive from the moment recording stops until the
+  // upload has taken over, so the service never stops in between.
+  final releaseKeepAlive = _holdKeepAlive(services);
+  try {
     try {
       final native = await services.recorder.getState();
-      if (native?.noteId == id) await services.recorder.stop();
+      if (native?.noteId == id) {
+        final last = await services.recorder.stop();
+        final note = _localOf(services, id);
+        if (last != null && note != null) {
+          // A rollover the event stream has not delivered yet.
+          _setRecorderFields(
+            services,
+            id,
+            await _nativeFields(services.store, note, last),
+          );
+        }
+      }
     } on PlatformException catch (e) {
       _logger.w('Stop failed: ${e.code}');
     }
+    _produce(services, (notes) {
+      if (notes.recorderNoteId == id) notes.recorderNoteId = null;
+      notes.isRecorderSilent = false;
+    });
 
     final note = _localOf(services, id);
-    if (note == null) return;
+    if (note == null) return false;
     final runSegmentIds = note.segments
         .where((s) => s.isOpen)
         .map((s) => s.id)
         .toSet();
-    final closed = await _closeOpenSegments(services.store, note);
-    if (_localOf(services, id) == null) return;
+    final segments = await _closedSegments(services.store, note);
+    final current = _localOf(services, id);
+    if (current == null) return false;
     // Audio from this run, or recovered after a crash, that the server lacks.
-    final hasAudioToSend = closed.segments.any(
+    final hasAudioToSend = segments.any(
       (s) => runSegmentIds.contains(s.id) || !s.isUploaded,
     );
 
     if (!hasAudioToSend) {
       // Nothing to send. Resuming a finished note is undone instead of
       // reprocessed; a new note waits for audio.
-      final isResume = closed.priorDurationMs > 0;
-      if (isResume && closed.segments.isEmpty) {
+      final isResume = current.priorDurationMs > 0;
+      if (isResume && segments.isEmpty) {
         _produce(services, (notes) => notes.localNoteById.remove(id));
       } else {
-        _putLocal(
+        _setRecorderFields(
           services,
-          (closed.draft()
-                ..phase = isResume
-                    ? LocalNotePhase.ready
-                    : LocalNotePhase.paused)
-              .save(),
+          id,
+          _RecorderFields(
+            segments: segments,
+            phase: isResume ? LocalNotePhase.ready : LocalNotePhase.paused,
+          ),
         );
         if (!isResume) {
           showSnackbar(
@@ -523,12 +688,19 @@ Future<void> stopRecording(String id) async {
         }
       }
       await _persist(services);
-      return;
+      return false;
     }
 
-    _putLocal(services, closed);
+    _setRecorderFields(
+      services,
+      id,
+      _RecorderFields(segments: segments, phase: current.phase),
+    );
     _transition(services, id, LocalNoteEvent.stop);
     await _persist(services);
-    unawaited(syncLocalNote(id, isUserInitiated: true));
-  });
+    unawaited(_syncLocalNote(services, id, isUserInitiated: true));
+    return true;
+  } finally {
+    releaseKeepAlive();
+  }
 }

@@ -64,6 +64,7 @@ void main() {
       const AppState(
         notes: NotesState(
           isInitialized: true,
+          recorderNoteId: 'rec',
           noteById: {'ready': _ready},
           serverNoteIds: ['ready'],
           localNoteById: {'rec': _recording},

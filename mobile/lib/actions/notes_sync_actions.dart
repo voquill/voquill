@@ -189,16 +189,28 @@ Future<T> _whileUploading<T>(
   NotesServices services,
   Future<T> Function() send,
 ) async {
-  if (services._activeUploads++ == 0) {
-    unawaited(services.recorder.setSyncActive(true).catchError((_) {}));
-  }
+  final release = _holdKeepAlive(services);
   try {
     return await send();
   } finally {
+    release();
+  }
+}
+
+/// Counts holders of the keep-alive; returns a release function that is
+/// safe to call more than once.
+void Function() _holdKeepAlive(NotesServices services) {
+  if (services._activeUploads++ == 0) {
+    unawaited(services.recorder.setSyncActive(true).catchError((_) {}));
+  }
+  var isReleased = false;
+  return () {
+    if (isReleased) return;
+    isReleased = true;
     if (--services._activeUploads == 0) {
       unawaited(services.recorder.setSyncActive(false).catchError((_) {}));
     }
-  }
+  };
 }
 
 String? _userTitle(LocalNote note) =>
@@ -310,12 +322,20 @@ Future<void> _uploadSegments(NotesServices services, String id) async {
   final totalBytes = max(1, sizes.values.fold<int>(0, (a, b) => a + b));
   var doneBytes = 0;
 
+  // At most every half second or 2%: each update rebuilds the list.
+  var lastReportedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  var lastReported = -1.0;
   void reportProgress(int bytes) {
-    _setSyncStatus(
-      services,
-      id,
-      NoteSyncStatus(uploadProgress: (bytes / totalBytes).clamp(0.0, 1.0)),
-    );
+    final progress = (bytes / totalBytes).clamp(0.0, 1.0);
+    final now = DateTime.now();
+    if (progress < 1 &&
+        progress - lastReported < 0.02 &&
+        now.difference(lastReportedAt) < const Duration(milliseconds: 500)) {
+      return;
+    }
+    lastReported = progress;
+    lastReportedAt = now;
+    _setSyncStatus(services, id, NoteSyncStatus(uploadProgress: progress));
   }
 
   for (final segment in pending) {
@@ -429,9 +449,11 @@ Future<void> _uploadSegment(
   }
 }
 
-/// Polls `GET /v1/notes/:id` while [isWanted] holds and the note is
-/// processing; returns the last copy seen, or null when abandoned. Sends
-/// [reprocess] when the note looks stale.
+/// Follows a processing note until it settles, the way the contract asks:
+/// `GET /v1/notes/:id` every few seconds only while its screen is open,
+/// otherwise the (shared, throttled) list refresh. Returns the last copy
+/// seen, or null when abandoned. Sends [reprocess] when the note looks
+/// stale.
 Future<Note?> _pollWhileProcessing(
   NotesServices services,
   String id, {
@@ -447,18 +469,55 @@ Future<Note?> _pollWhileProcessing(
       final note = await reprocess();
       _storeServerNoteFor(services, note);
     }
-    final note = await services.api.getNote(id);
+    final isOpen = services._openNoteIds.contains(id);
+    final note = isOpen
+        ? await services.api.getNote(id)
+        : await _noteFromList(services, id);
     if (!isWanted()) return null;
     _storeServerNoteFor(services, note);
     if (note.status != NoteStatus.processing) return note;
     final isSlow =
         DateTime.now().difference(startedAt) >= services.slowPollAfter;
     await Future.delayed(
-      isSlow ? services.slowPollInterval : services.pollInterval,
+      !isOpen
+          ? services.listPollInterval
+          : isSlow
+          ? services.slowPollInterval
+          : services.pollInterval,
     );
   }
   return null;
 }
+
+/// The note as the latest list page has it; one list request serves every
+/// processing note. Falls back to the note itself when it is not on the
+/// first page.
+Future<Note> _noteFromList(NotesServices services, String id) async {
+  final last = services._lastListRefreshAt;
+  if (last == null ||
+      DateTime.now().difference(last) >= services.listPollInterval) {
+    final refresh = services._listRefresh ??= _refreshList(services)
+        .whenComplete(() {
+          services._listRefresh = null;
+          services._lastListRefreshAt = DateTime.now();
+        });
+    await refresh;
+  }
+  final notes = _notesOf(services);
+  final listed = notes?.noteById[id];
+  if (notes != null &&
+      listed != null &&
+      notes.serverNoteIds.take(_pageSize).contains(id)) {
+    return listed;
+  }
+  return services.api.getNote(id);
+}
+
+/// The note screen is showing [id]; while it is, processing is followed
+/// note by note.
+void noteScreenOpened(String id) => _services?._openNoteIds.add(id);
+
+void noteScreenClosed(String id) => _services?._openNoteIds.remove(id);
 
 Future<void> _pollLocalNote(NotesServices services, String id) async {
   while (true) {
@@ -479,7 +538,13 @@ Future<void> _pollLocalNote(NotesServices services, String id) async {
         _onNoteSettled(services);
         return;
       case NoteStatus.failed:
-        _markSegmentsNeedingUpload(services, id, note!);
+        // The list carries no segments; which ones need a re-upload is
+        // only on the full note.
+        final full = note!.segments == null
+            ? await services.api.getNote(id)
+            : note;
+        _storeServerNoteFor(services, full);
+        _markSegmentsNeedingUpload(services, id, full);
         _transition(
           services,
           id,

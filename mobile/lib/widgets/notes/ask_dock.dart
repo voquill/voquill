@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:app/actions/notes_actions.dart';
 import 'package:app/model/note_model.dart';
 import 'package:app/store/store.dart';
@@ -35,6 +37,10 @@ class _AskDockState extends State<AskDock> {
   final _input = TextEditingController();
   final _focus = FocusNode();
 
+  /// Re-enables the box when Ask's daily limit resets.
+  Timer? _limitTimer;
+  String? _limitTimerFor;
+
   @override
   void initState() {
     super.initState();
@@ -47,6 +53,7 @@ class _AskDockState extends State<AskDock> {
     if (widget.thread == null) _thread.dispose();
     _input.dispose();
     _focus.dispose();
+    _limitTimer?.cancel();
     super.dispose();
   }
 
@@ -61,10 +68,26 @@ class _AskDockState extends State<AskDock> {
     context.push('/dashboard/notes/${source.noteId}');
   }
 
+  void _scheduleLimitReset(String? availableAt) {
+    if (availableAt == _limitTimerFor) return;
+    _limitTimerFor = availableAt;
+    _limitTimer?.cancel();
+    final at = DateTime.tryParse(availableAt ?? '');
+    final wait = at?.difference(DateTime.now());
+    if (wait != null && !wait.isNegative) {
+      _limitTimer = Timer(wait + const Duration(seconds: 1), () {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colors = context.colors;
+    _scheduleLimitReset(
+      useAppStore().select(context, (s) => s.notes.askAvailableAt),
+    );
     final reason = useAppStore().select(
       context,
       (s) => askUnavailableReason(

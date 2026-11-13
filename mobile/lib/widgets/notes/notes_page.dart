@@ -81,7 +81,7 @@ class _NotesPageState extends State<NotesPage> {
   }
 
   Future<void> _startNew() async {
-    final active = getAppState().notes.capturingNote;
+    final active = getAppState().notes.liveNote;
     if (active != null) {
       context.push('/dashboard/notes/${active.id}');
       return;
@@ -97,9 +97,12 @@ class _NotesPageState extends State<NotesPage> {
     final now = DateTime.now();
     final hasQuery = _query.trim().isNotEmpty;
     final all = buildNoteList(notes, query: _query);
-    final capturing = all.where((v) => v.state.isCapturing).toList();
+    // Only the meeting the recorder holds is pinned; a recording interrupted
+    // by the app closing stays in its day as "Paused".
+    final liveId = notes.liveNote?.id;
+    final capturing = all.where((v) => v.id == liveId).toList();
     final entries = groupNotesByDay(
-      all.where((v) => !v.state.isCapturing).toList(),
+      all.where((v) => v.id != liveId).toList(),
       now,
     );
     final listedIds = all.map((v) => v.id).toSet();

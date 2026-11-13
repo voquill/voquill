@@ -22,6 +22,9 @@ enum NoteRecorderReason {
 
   /// Paused or resumed from the notification.
   user,
+
+  /// [NoteRecorderState.isSilent] changed.
+  silence,
 }
 
 class NoteRecorderState {
@@ -33,12 +36,16 @@ class NoteRecorderState {
   final int segmentElapsedMs;
   final NoteRecorderReason? reason;
 
+  /// Only silence has been captured for a while.
+  final bool isSilent;
+
   const NoteRecorderState({
     required this.noteId,
     required this.segmentId,
     required this.isPaused,
     required this.segmentElapsedMs,
     this.reason,
+    this.isSilent = false,
   });
 
   factory NoteRecorderState.fromMap(Map<dynamic, dynamic> map) =>
@@ -47,6 +54,7 @@ class NoteRecorderState {
         segmentId: map['segmentId'] as String,
         isPaused: map['isPaused'] as bool,
         segmentElapsedMs: (map['segmentElapsedMs'] as num).toInt(),
+        isSilent: map['isSilent'] as bool? ?? false,
         reason: switch (map['reason']) {
           'interruption' => NoteRecorderReason.interruption,
           'rollover' => NoteRecorderReason.rollover,
@@ -54,6 +62,7 @@ class NoteRecorderState {
           'write_failed' => NoteRecorderReason.writeFailed,
           'error' => NoteRecorderReason.error,
           'user' => NoteRecorderReason.user,
+          'silence' => NoteRecorderReason.silence,
           _ => null,
         },
       );
@@ -141,10 +150,15 @@ class NoteRecorder {
 
   Future<NoteRecorderState?> getState() => _invokeState('getState');
 
-  /// A Live Activity / notification tap that arrived before Dart listened.
+  NoteRecorderActionEvent? _unheardAction;
+
+  /// A Live Activity / notification tap that arrived before Notes listened
+  /// (natively, or here while nothing was subscribed yet).
   Future<NoteRecorderActionEvent?> takePendingAction() async {
+    final unheard = _unheardAction;
+    _unheardAction = null;
     final result = await _channel.invokeMethod<Map>('takePendingAction');
-    return result == null ? null : _actionFrom(result);
+    return unheard ?? (result == null ? null : _actionFrom(result));
   }
 
   /// Keeps the process alive while uploads run in the background
@@ -170,7 +184,12 @@ class NoteRecorder {
       case 'onStateChanged':
         _events.add(NoteRecorderStateEvent(NoteRecorderState.fromMap(args)));
       case 'onAction':
-        _events.add(_actionFrom(args));
+        final action = _actionFrom(args);
+        if (_events.hasListener) {
+          _events.add(action);
+        } else {
+          _unheardAction = action;
+        }
     }
   }
 }
