@@ -84,4 +84,19 @@ describe("retranscribeTranscription", () => {
 
     expect(mocks.addWordsToCurrentUser).not.toHaveBeenCalled();
   });
+
+  it("counts a failed dictation's words once when retried twice at the same time", async () => {
+    setAppState({
+      ...INITIAL_APP_STATE,
+      transcriptionById: { t1: transcription(FAILED_TRANSCRIPT_PLACEHOLDER) },
+    });
+
+    await Promise.all([
+      retranscribeTranscription({ transcriptionId: "t1" }),
+      retranscribeTranscription({ transcriptionId: "t1" }),
+    ]);
+
+    expect(mocks.transcribeAudio).toHaveBeenCalledTimes(1);
+    expect(mocks.addWordsToCurrentUser).toHaveBeenCalledTimes(1);
+  });
 });

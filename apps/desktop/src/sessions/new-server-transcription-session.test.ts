@@ -341,6 +341,64 @@ describe("NewServerTranscriptionSession", () => {
     });
   });
 
+  it("returns the same result when finalize is called twice and sends finalize once", async () => {
+    const { session, socket } = await startReadySession();
+
+    const first = session.finalize(AUDIO);
+    const second = session.finalize(AUDIO);
+    await flushMicrotasks();
+    socket.receive({ type: "transcript", text: "once", source: "x" });
+
+    expect(first).toBe(second);
+    await expect(first).resolves.toMatchObject({ rawTranscript: "once" });
+    expect(
+      socket.sentMessages.filter((m) => m.type === "finalize"),
+    ).toHaveLength(1);
+  });
+
+  it("fails the session instead of throwing into the audio listener when send throws", async () => {
+    const { session, socket } = await startReadySession();
+    socket.send = () => {
+      throw new Error("socket write failed");
+    };
+
+    expect(() => emitAudioChunk([0.1])).not.toThrow();
+    await expect(session.finalize(AUDIO)).resolves.toMatchObject({
+      failureReason: "Failed to send audio: socket write failed",
+    });
+  });
+
+  it.each([
+    ["QUOTA_EXCEEDED", "quota_exceeded"],
+    ["AUTH_FAILED", "auth_failed"],
+  ])(
+    "reports %s as a non-retryable failure",
+    async (serverCode, failureCode) => {
+      const { session, started, socket } = await startSession();
+      socket.open();
+      await flushMicrotasks();
+      socket.receive({ type: "error", code: serverCode, message: "no" });
+      await started;
+
+      await expect(session.finalize(AUDIO)).resolves.toMatchObject({
+        failureReason: `Server error ${serverCode}: no`,
+        failureCode,
+      });
+    },
+  );
+
+  it("reports being signed out as an auth failure", async () => {
+    const { NotAuthenticatedError } = await import("../utils/new-server.utils");
+    idToken.mockRejectedValue(new NotAuthenticatedError());
+    const { session, started, socket } = await startSession();
+    socket.open();
+    await started;
+
+    await expect(session.finalize(AUDIO)).resolves.toMatchObject({
+      failureCode: "auth_failed",
+    });
+  });
+
   it("settles exactly once and ignores a transcript that arrives after a failure", async () => {
     const { session, socket } = await startReadySession();
     const onmessage = socket.onmessage;
@@ -441,6 +499,22 @@ describe("NewServerTranscriptionSession with recovery", () => {
     expect(result.warnings[0]).toContain("Default tone not found");
     expect(transcribe).toHaveBeenCalledTimes(1);
     expect(socket.closedByClient).toBe(true);
+  });
+
+  it("does not burn recovery attempts on an exhausted word quota", async () => {
+    const { session, started, transcribe, socket } = await startRecoverable();
+    socket.open();
+    await flushMicrotasks();
+    socket.receive({ type: "error", code: "QUOTA_EXCEEDED", message: "none" });
+    await started;
+
+    const result = await session.finalize(AUDIO);
+
+    expect(transcribe).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      rawTranscript: null,
+      failureCode: "quota_exceeded",
+    });
   });
 
   it("reports failure without discarding when recovery also fails", async () => {

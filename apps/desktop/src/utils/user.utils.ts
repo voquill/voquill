@@ -15,7 +15,6 @@ import type {
 import dayjs from "dayjs";
 import { detectLocale, matchSupportedLocale } from "../i18n";
 import { DEFAULT_LOCALE, type Locale } from "../i18n/config";
-import { createTranscriptionSession } from "../sessions";
 import type { AppState } from "../state/app.state";
 import { applyAiPreferences } from "./ai.utils";
 import { registerUsers } from "./app.utils";
@@ -316,12 +315,6 @@ export const getTranscriptionPrefs = (state: AppState): TranscriptionPrefs => {
     transcriptionDevice: config.device ?? null,
     transcriptionModelSize: config.modelSize ?? null,
   };
-};
-
-export const getTranscriptionSupportsStreaming = (state: AppState): boolean => {
-  const prefs = getTranscriptionPrefs(state);
-  const session = createTranscriptionSession(prefs);
-  return session.supportsStreaming();
 };
 
 type BaseGenerativePrefs = {

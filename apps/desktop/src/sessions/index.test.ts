@@ -82,4 +82,15 @@ describe("createTranscriptionSession", () => {
       expect.objectContaining({ transcriptionPrefs: prefs }),
     );
   });
+
+  it("does not accumulate warnings in the captured preferences across attempts", async () => {
+    const { getTranscribeAudioRepo } = await import("../repos");
+    const prefs = { ...apiPrefs("groq"), warnings: ["captured"] };
+
+    const first = getTranscribeAudioRepo(prefs);
+    first.warnings.push("attempt 1");
+    getTranscribeAudioRepo(prefs);
+
+    expect(prefs.warnings).toEqual(["captured"]);
+  });
 });

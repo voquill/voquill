@@ -58,7 +58,24 @@ type RetranscribeTranscriptionParams = {
   languageCode?: string | null;
 };
 
-export const retranscribeTranscription = async ({
+const retranscribingIds = new Set<string>();
+
+/** Concurrent retranscribes of the same entry (e.g. a double click) run once. */
+export const retranscribeTranscription = async (
+  params: RetranscribeTranscriptionParams,
+): Promise<void> => {
+  if (retranscribingIds.has(params.transcriptionId)) {
+    return;
+  }
+  retranscribingIds.add(params.transcriptionId);
+  try {
+    await runRetranscribe(params);
+  } finally {
+    retranscribingIds.delete(params.transcriptionId);
+  }
+};
+
+const runRetranscribe = async ({
   transcriptionId,
   toneId,
   languageCode,
