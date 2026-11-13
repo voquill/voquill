@@ -66,3 +66,33 @@ export const withTimeout = <T>(
     }),
     signal,
   );
+
+/**
+ * Runs a cancellable task, aborting it after `timeoutMs` (no limit when
+ * null) so a hung request ends with a timeout error instead of waiting
+ * forever.
+ */
+export const runWithAttemptTimeout = async <T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number | null,
+): Promise<T> => {
+  const attempt = new AbortController();
+  let timedOut = false;
+  const timer =
+    timeoutMs === null
+      ? null
+      : setTimeout(() => {
+          timedOut = true;
+          attempt.abort();
+        }, timeoutMs);
+  try {
+    return await abortable(run(attempt.signal), attempt.signal);
+  } catch (error) {
+    if (timedOut && timeoutMs !== null) {
+      throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
+    }
+    throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};

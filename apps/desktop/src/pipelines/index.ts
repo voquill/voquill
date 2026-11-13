@@ -24,6 +24,8 @@ import { applyReplacements } from "../utils/string.utils";
 import type { BaseNotePipeline } from "./base-note.pipeline";
 import { CloudNotePipeline, type Connectivity } from "./cloud-note.pipeline";
 import { LocalNotePipeline } from "./local-note.pipeline";
+import { getTranscriptionAttemptTimeout } from "../sessions";
+import { runWithAttemptTimeout } from "../utils/abort.utils";
 
 export { selectNoteStorage } from "../utils/note.utils";
 
@@ -70,7 +72,15 @@ const getLocalNotePipeline = (): LocalNotePipeline => {
     repo: getNoteRepo(),
     audio: getMeetingAudioRepo(),
     transcribe: async ({ samples, sampleRate }) => {
-      const { rawTranscript } = await transcribeAudio({ samples, sampleRate });
+      // Same per-request bound as dictation recovery: hosted providers get
+      // a timeout, local and self-hosted inference none.
+      const transcriptionPrefs = getTranscriptionPrefs(getAppState());
+      const timeout = getTranscriptionAttemptTimeout(transcriptionPrefs);
+      const { rawTranscript } = await runWithAttemptTimeout(
+        (signal) =>
+          transcribeAudio({ samples, sampleRate, transcriptionPrefs, signal }),
+        timeout ? timeout((samples.length / sampleRate) * 1000) : null,
+      );
       const replacements = collectDictionaryEntries(
         getAppState(),
       ).replacements.map((rule) => ({

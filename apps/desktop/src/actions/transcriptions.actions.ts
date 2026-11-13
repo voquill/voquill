@@ -142,3 +142,35 @@ export const retranscribeTranscription = async ({
     );
   }
 };
+
+const LATEST_TRANSCRIPT_PAGE_SIZE = 20;
+const LATEST_TRANSCRIPT_MAX_SCANNED = 200;
+
+/** The newest History transcript that is not a failed dictation. */
+export const findLatestSuccessfulTranscript = async (): Promise<
+  string | null
+> => {
+  const repo = getTranscriptionRepo();
+  for (
+    let offset = 0;
+    offset < LATEST_TRANSCRIPT_MAX_SCANNED;
+    offset += LATEST_TRANSCRIPT_PAGE_SIZE
+  ) {
+    const page = await repo.listTranscriptions({
+      limit: LATEST_TRANSCRIPT_PAGE_SIZE,
+      offset,
+    });
+    const found = page.find(
+      (entry) =>
+        entry.transcript.trim() &&
+        entry.transcript !== FAILED_TRANSCRIPT_PLACEHOLDER,
+    );
+    if (found) {
+      return found.transcript;
+    }
+    if (page.length < LATEST_TRANSCRIPT_PAGE_SIZE) {
+      return null;
+    }
+  }
+  return null;
+};

@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { INITIAL_APP_STATE } from "../state/app.state";
 import { getAppState, setAppState } from "../store";
 import { FAILED_TRANSCRIPT_PLACEHOLDER } from "./transcribe.actions";
-import { retranscribeTranscription } from "./transcriptions.actions";
+import {
+  findLatestSuccessfulTranscript,
+  retranscribeTranscription,
+} from "./transcriptions.actions";
 
 const mocks = vi.hoisted(() => ({
   transcribeAudio: vi.fn(),
   postProcessTranscript: vi.fn(),
   addWordsToCurrentUser: vi.fn(),
   updateTranscription: vi.fn(),
+  history: [] as Transcription[],
 }));
 
 vi.mock(import("./transcribe.actions"), async (importOriginal) => ({
@@ -29,6 +33,13 @@ vi.mock(import("../repos"), async (importOriginal) => ({
         sampleRate: 16_000,
       }),
       updateTranscription: mocks.updateTranscription,
+      listTranscriptions: async ({
+        limit,
+        offset,
+      }: {
+        limit: number;
+        offset: number;
+      }) => mocks.history.slice(offset, offset + limit),
     }) as never,
 }));
 
@@ -83,5 +94,23 @@ describe("retranscribeTranscription", () => {
     await retranscribeTranscription({ transcriptionId: "t1" });
 
     expect(mocks.addWordsToCurrentUser).not.toHaveBeenCalled();
+  });
+});
+
+describe("findLatestSuccessfulTranscript", () => {
+  it("skips failed dictations, across pages", async () => {
+    mocks.history = [
+      ...Array.from({ length: 25 }, () =>
+        transcription(FAILED_TRANSCRIPT_PLACEHOLDER),
+      ),
+      transcription("the good one"),
+      transcription("older"),
+    ];
+    expect(await findLatestSuccessfulTranscript()).toBe("the good one");
+  });
+
+  it("returns nothing when every entry failed", async () => {
+    mocks.history = [transcription(FAILED_TRANSCRIPT_PLACEHOLDER)];
+    expect(await findLatestSuccessfulTranscript()).toBeNull();
   });
 });
