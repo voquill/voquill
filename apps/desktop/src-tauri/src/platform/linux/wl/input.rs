@@ -224,9 +224,12 @@ fn paste_via_clipboard(
     simulate_paste_keystroke(style)?;
 
     if let Some(old) = previous {
+        let pasted = text.to_string();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(800));
-            let _ = clipboard_set(&old);
+            if clipboard_get().is_ok_and(|current| current == pasted) {
+                let _ = clipboard_set(&old);
+            }
         });
     }
 

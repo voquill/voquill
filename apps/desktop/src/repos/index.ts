@@ -12,6 +12,7 @@ import {
   getAgentModePrefs,
   getGenerativePrefs,
   getTranscriptionPrefs,
+  type TranscriptionPrefs,
 } from "../utils/user.utils";
 import { BaseApiKeyRepo, LocalApiKeyRepo } from "./api-key.repo";
 import { BaseAppTargetRepo, LocalAppTargetRepo } from "./app-target.repo";
@@ -97,6 +98,7 @@ import {
 import { ToolRepo } from "./tool.repo";
 import {
   AldeaTranscribeAudioRepo,
+  AssemblyAITranscribeAudioRepo,
   AzureTranscribeAudioRepo,
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
@@ -398,9 +400,9 @@ export type TranscribeAudioRepoOutput = {
   warnings: string[];
 };
 
-export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
-  const prefs = getTranscriptionPrefs(getAppState());
-
+export const getTranscribeAudioRepo = (
+  prefs: TranscriptionPrefs = getTranscriptionPrefs(getAppState()),
+): TranscribeAudioRepoOutput => {
   if (prefs.mode === "cloud") {
     let repo: BaseTranscribeAudioRepo;
     if (getIsEnterpriseEnabled()) {
@@ -461,6 +463,8 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
       );
     } else if (prefs.provider === "elevenlabs") {
       repo = new ElevenLabsTranscribeAudioRepo(prefs.apiKeyValue);
+    } else if (prefs.provider === "assemblyai") {
+      repo = new AssemblyAITranscribeAudioRepo(prefs.apiKeyValue);
     } else if (prefs.provider === "deepgram") {
       repo = new DeepgramTranscribeAudioRepo(
         prefs.apiKeyValue,

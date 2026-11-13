@@ -1,14 +1,10 @@
-import { listen } from "@tauri-apps/api/event";
 import { getAppState } from "../store";
-import {
-  StopRecordingResponse,
-  TranscriptionSession,
-  TranscriptionSessionFinalizeOptions,
-  TranscriptionSessionResult,
-} from "../types/transcription-session.types";
-import { getEffectiveAuth } from "../utils/auth.utils";
+import { TranscriptionSessionFinalizeOptions } from "../types/transcription-session.types";
 import { getLogger } from "../utils/log.utils";
-import { NEW_SERVER_URL } from "../utils/new-server.utils";
+import {
+  getNewServerIdToken,
+  getNewServerWebSocketUrl,
+} from "../utils/new-server.utils";
 import {
   buildPostProcessingPrompt,
   buildSystemPostProcessingTonePrompt,
@@ -19,8 +15,13 @@ import {
   getMyUserName,
   loadMyEffectiveDictationLanguage,
 } from "../utils/user.utils";
+import { toErrorMessage } from "./streaming-session.utils";
+import { WebSocketTranscriptionSession } from "./websocket-transcription-session";
 
-type TranscriptResult = {
+const FINALIZE_TIMEOUT_MS = 15_000;
+const FINALIZE_WITH_PROMPT_TIMEOUT_MS = 30_000;
+
+type NewServerTranscript = {
   text: string;
   source: string;
   durationMs?: number;
@@ -28,17 +29,11 @@ type TranscriptResult = {
     text: string;
     durationMs?: number;
   };
-  warnings: string[];
 };
 
 type FinalizeOptions = {
   prompt?: string;
   systemPrompt?: string;
-};
-
-type NewServerStreamingSession = {
-  finalize: (options?: FinalizeOptions) => Promise<TranscriptResult>;
-  cleanup: () => void;
 };
 
 export const getNewServerTranscriptDelta = (
@@ -63,434 +58,146 @@ export const getNewServerTranscriptDelta = (
   return next;
 };
 
-export const getRecoveredNewServerTranscriptResult = (
-  committedTranscript: string,
-  warning: string,
-): TranscriptResult => {
-  const recoveredTranscript = committedTranscript.trim();
+/** Streams to /v1/dictation: auth -> config -> ready -> audio -> finalize -> transcript. */
+export class NewServerTranscriptionSession extends WebSocketTranscriptionSession {
+  readonly name = "NewServer";
+  protected readonly metadata = {
+    inferenceDevice: "Cloud • New Server (Streaming)",
+    transcriptionMode: "cloud",
+  } as const;
+  protected readonly chunking = null;
+  protected readonly closeCompletesFinalize = false;
+  private config: { glossary: string[]; language: string } | null = null;
+  private committedTranscript = "";
+  private transcript: NewServerTranscript | null = null;
+  private hasPrompt = false;
 
-  if (!recoveredTranscript) {
-    return {
-      text: "",
-      source: "",
-      warnings: [warning],
+  protected async openSocket(
+    _sampleRate: number,
+    signal: AbortSignal,
+  ): Promise<WebSocket> {
+    const state = getAppState();
+    this.config = {
+      glossary: collectDictionaryEntries(state).sources,
+      language: await loadMyEffectiveDictationLanguage(state),
     };
+    signal.throwIfAborted();
+    return new WebSocket(getNewServerWebSocketUrl("/v1/dictation"));
   }
 
-  return {
-    text: recoveredTranscript,
-    source: "New Server (Recovered Stream)",
-    warnings: [warning],
-  };
-};
+  protected onSocketOpen(): void {
+    void this.authenticate();
+  }
 
-const startNewServerStreaming = async (
-  sampleRate: number,
-  glossary: string[],
-  language?: string,
-  interimCallback?: (segment: string) => void,
-): Promise<NewServerStreamingSession> => {
-  console.log("[NewServer WebSocket] Starting with sample rate:", sampleRate);
+  private async authenticate(): Promise<void> {
+    try {
+      const idToken = await getNewServerIdToken();
+      this.send(JSON.stringify({ type: "auth", idToken }));
+    } catch (error) {
+      this.fail(`Authentication failed: ${toErrorMessage(error)}`);
+    }
+  }
 
-  let ws: WebSocket | null = null;
-  let isFinalized = false;
-  let isReady = false;
-  let sentChunkCount = 0;
-  let droppedChunkCount = 0;
-  let committedTranscript = "";
-  const bufferedChunks: Float32Array[] = [];
+  protected encodeAudio(samples: Float32Array): Float32Array {
+    return samples;
+  }
 
-  const unlisten = await listen<{ samples: number[] }>(
-    "audio_chunk",
-    (event) => {
-      if (isFinalized) {
+  protected handleMessage(data: unknown): void {
+    const message = JSON.parse(String(data));
+    switch (message.type) {
+      case "error":
+        this.fail(`Server error ${message.code}: ${message.message}`);
         return;
-      }
-
-      const samples = new Float32Array(event.payload.samples);
-
-      if (!isReady) {
-        bufferedChunks.push(samples);
-        if (bufferedChunks.length <= 3 || bufferedChunks.length % 10 === 0) {
-          console.log(
-            `[NewServer WebSocket] Buffered chunk #${bufferedChunks.length} (${samples.length} samples)`,
-          );
-        }
-        return;
-      }
-
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(samples.buffer as ArrayBuffer);
-          sentChunkCount++;
-          if (sentChunkCount <= 3 || sentChunkCount % 10 === 0) {
-            console.log(
-              `[NewServer WebSocket] Sent chunk #${sentChunkCount} (${samples.length} samples)`,
-            );
-          }
-        } catch (error) {
-          console.error(
-            "[NewServer WebSocket] Error sending audio chunk:",
-            error,
-          );
-        }
-      } else {
-        droppedChunkCount++;
-        if (droppedChunkCount === 1) {
-          getLogger().warning(
-            `[NewServer WebSocket] Connection lost, dropping audio chunks (wsState=${ws?.readyState}, sent=${sentChunkCount})`,
-          );
-        }
-      }
-    },
-  );
-
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      if (finalizeTimeout) {
-        clearTimeout(finalizeTimeout);
-        finalizeTimeout = null;
-      }
-      unlisten();
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close();
-        ws = null;
-      }
-    };
-
-    let finalizeResolver: ((result: TranscriptResult) => void) | null = null;
-    let finalizeRejecter: ((error: Error) => void) | null = null;
-    let finalizeTimeout: ReturnType<typeof setTimeout> | null = null;
-
-    const settleFinalize = (result: TranscriptResult) => {
-      const resolver = finalizeResolver;
-      finalizeResolver = null;
-      finalizeRejecter = null;
-      cleanup();
-      resolver?.(result);
-    };
-
-    const finalize = (options?: FinalizeOptions): Promise<TranscriptResult> => {
-      return new Promise((resolveFinalize, rejectFinalize) => {
-        getLogger().info(
-          `[NewServer WebSocket] Finalize called (wsState=${ws?.readyState}, sent=${sentChunkCount}, dropped=${droppedChunkCount})`,
+      case "authenticated":
+        this.send(
+          JSON.stringify({
+            type: "config",
+            sampleRate: this.sampleRate,
+            glossary: this.config?.glossary ?? [],
+            language: this.config?.language,
+          }),
         );
-
-        if (isFinalized) {
-          resolveFinalize(
-            getRecoveredNewServerTranscriptResult(
-              committedTranscript,
-              "Streaming session was already finalized",
-            ),
+        return;
+      case "ready":
+        this.markReady();
+        return;
+      case "partial_transcript":
+        if (message.is_final && message.text) {
+          const nextTranscript = String(message.text).trim();
+          const delta = getNewServerTranscriptDelta(
+            this.committedTranscript,
+            nextTranscript,
           );
-          return;
+          this.committedTranscript = nextTranscript;
+          this.emitInterim(delta);
         }
-
-        isFinalized = true;
-        finalizeResolver = resolveFinalize;
-        finalizeRejecter = rejectFinalize;
-
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          const finalizeMsg: Record<string, unknown> = { type: "finalize" };
-          if (options?.prompt) {
-            finalizeMsg.prompt = options.prompt;
-          }
-          if (options?.systemPrompt) {
-            finalizeMsg.systemPrompt = options.systemPrompt;
-          }
-          getLogger().info(
-            `[NewServer WebSocket] Sending finalize message (hasPrompt=${!!options?.prompt})...`,
-          );
-          ws.send(JSON.stringify(finalizeMsg));
-
-          const timeoutMs = options?.prompt ? 30000 : 15000;
-          finalizeTimeout = setTimeout(() => {
-            const warning = `Server did not respond within ${timeoutMs / 1000} seconds; using recovered stream transcript if available`;
-            getLogger().warning(
-              `[NewServer WebSocket] Finalize timeout (${timeoutMs / 1000}s)`,
-            );
-            if (finalizeRejecter) {
-              settleFinalize(
-                getRecoveredNewServerTranscriptResult(
-                  committedTranscript,
-                  warning,
-                ),
-              );
-            }
-          }, timeoutMs);
-        } else {
-          const warning =
-            "Streaming connection closed before final transcript was received; using recovered stream transcript if available";
-          getLogger().warning(
-            `[NewServer WebSocket] Socket not open at finalize, using recovered transcript if available (wsState=${ws?.readyState})`,
-          );
-          settleFinalize(
-            getRecoveredNewServerTranscriptResult(committedTranscript, warning),
-          );
-        }
-      });
-    };
-
-    const wsUrl = NEW_SERVER_URL.replace(/^http/, "ws") + "/v1/dictation";
-    console.log("[NewServer WebSocket] Connecting to:", wsUrl);
-    ws = new WebSocket(wsUrl);
-
-    ws.onopen = async () => {
-      console.log("[NewServer WebSocket] Connected, authenticating...");
-
-      try {
-        const auth = getEffectiveAuth();
-        const user = auth.currentUser;
-        if (!user) {
-          reject(new Error("Not authenticated"));
-          cleanup();
-          return;
-        }
-        const idToken = await user.getIdToken();
-        ws!.send(JSON.stringify({ type: "auth", idToken }));
-      } catch (err) {
-        reject(err);
-        cleanup();
-      }
-    };
-
-    ws.onmessage = async (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        console.log("[NewServer WebSocket] Received:", msg.type);
-
-        if (msg.type === "error") {
-          console.error(
-            "[NewServer WebSocket] Server error:",
-            msg.code,
-            msg.message,
-          );
-          const error = new Error(`${msg.code}: ${msg.message}`);
-          if (finalizeRejecter) {
-            settleFinalize(
-              getRecoveredNewServerTranscriptResult(
-                committedTranscript,
-                `New server returned an error during finalize: ${error.message}`,
-              ),
-            );
-          } else {
-            reject(error);
-            cleanup();
-          }
-          return;
-        }
-
-        if (msg.type === "authenticated") {
-          console.log(
-            "[NewServer WebSocket] Authenticated, words remaining:",
-            msg.wordsRemaining,
-          );
-          ws!.send(
-            JSON.stringify({
-              type: "config",
-              sampleRate,
-              glossary,
-              language,
-            }),
-          );
-          return;
-        }
-
-        if (msg.type === "ready") {
-          console.log(
-            `[NewServer WebSocket] Ready, flushing ${bufferedChunks.length} buffered chunks`,
-          );
-          isReady = true;
-
-          for (const samples of bufferedChunks) {
-            if (ws && ws.readyState === WebSocket.OPEN && !isFinalized) {
-              try {
-                ws.send(samples.buffer as ArrayBuffer);
-                sentChunkCount++;
-              } catch (error) {
-                console.error(
-                  "[NewServer WebSocket] Error sending buffered chunk:",
-                  error,
-                );
+        return;
+      case "transcript":
+        this.transcript = {
+          text: String(message.text ?? ""),
+          source: String(message.source ?? ""),
+          durationMs: message.durationMs,
+          processed: message.processed
+            ? {
+                text: message.processed.text,
+                durationMs: message.processed.durationMs,
               }
-            }
-          }
-          bufferedChunks.length = 0;
-          console.log(
-            `[NewServer WebSocket] Flushed ${sentChunkCount} chunks, session ready`,
-          );
-
-          resolve({ finalize, cleanup });
-          return;
-        }
-
-        if (msg.type === "partial_transcript") {
-          if (msg.is_final && msg.text) {
-            const nextTranscript = String(msg.text).trim();
-            const newText = getNewServerTranscriptDelta(
-              committedTranscript,
-              nextTranscript,
-            );
-            committedTranscript = nextTranscript;
-
-            if (newText) {
-              interimCallback?.(newText);
-            }
-          }
-          return;
-        }
-
-        if (msg.type === "transcript") {
-          console.log(
-            "[NewServer WebSocket] Transcript received, length:",
-            msg.text?.length ?? 0,
-            "source:",
-            msg.source,
-            "hasProcessed:",
-            !!msg.processed,
-          );
-          if (finalizeTimeout) {
-            clearTimeout(finalizeTimeout);
-            finalizeTimeout = null;
-          }
-          if (finalizeResolver) {
-            settleFinalize({
-              text: msg.text || "",
-              source: msg.source || "",
-              durationMs: msg.durationMs,
-              processed: msg.processed
-                ? {
-                    text: msg.processed.text,
-                    durationMs: msg.processed.durationMs,
-                  }
-                : undefined,
-              warnings: [],
-            });
-          }
-          return;
-        }
-      } catch (err) {
-        console.error("[NewServer WebSocket] Error parsing message:", err);
-      }
-    };
-
-    ws.onerror = (error) => {
-      getLogger().error("[NewServer WebSocket] WebSocket error:", error);
-      if (!isReady) {
-        cleanup();
-        reject(new Error("WebSocket connection failed"));
-      }
-    };
-
-    ws.onclose = (event) => {
-      getLogger().warning(
-        `[NewServer WebSocket] Connection closed (code=${event.code}, reason=${event.reason || "none"}, sent=${sentChunkCount}, isReady=${isReady}, isFinalized=${isFinalized})`,
-      );
-      if (finalizeRejecter) {
-        settleFinalize(
-          getRecoveredNewServerTranscriptResult(
-            committedTranscript,
-            "Streaming connection closed unexpectedly; using recovered stream transcript if available",
-          ),
-        );
-      } else if (!isReady) {
-        reject(new Error("Connection closed before ready"));
-      }
-    };
-  });
-};
-
-export class NewServerTranscriptionSession implements TranscriptionSession {
-  private session: NewServerStreamingSession | null = null;
-  private startError: Error | null = null;
-  private interimCallback: ((segment: string) => void) | null = null;
-
-  async onRecordingStart(sampleRate: number): Promise<void> {
-    try {
-      getLogger().info("[NewServer] Starting streaming session...");
-
-      const state = getAppState();
-      const entries = collectDictionaryEntries(state);
-      const language = await loadMyEffectiveDictationLanguage(state);
-      this.session = await startNewServerStreaming(
-        sampleRate,
-        entries.sources,
-        language,
-        this.interimCallback ?? undefined,
-      );
-
-      getLogger().info("[NewServer] Streaming session started successfully");
-    } catch (error) {
-      getLogger().error("[NewServer] Failed to start streaming:", error);
-      this.startError =
-        error instanceof Error ? error : new Error(String(error));
-      throw new Error(
-        "Unable to connect to the server. Please check your internet connection or try signing in again.",
-      );
+            : undefined,
+        };
+        getLogger().info("[NewServer] Transcript received:", {
+          length: this.transcript.text.length,
+          source: this.transcript.source,
+          hasProcessed: !!this.transcript.processed,
+        });
+        this.complete();
+        return;
     }
   }
 
-  async finalize(
-    _audio: StopRecordingResponse,
+  protected async sendFinalizeRequest(
     options?: TranscriptionSessionFinalizeOptions,
-  ): Promise<TranscriptionSessionResult> {
-    if (!this.session) {
-      const reason = this.startError
-        ? `New server connection failed: ${this.startError.message}`
-        : "New server streaming session was not established";
-      return {
-        rawTranscript: null,
-        metadata: {
-          inferenceDevice: "Cloud • New Server (Streaming)",
-          transcriptionMode: "cloud",
-        },
-        warnings: [reason],
-      };
-    }
+  ): Promise<void> {
+    const finalizeOptions = await this.buildFinalizeOptions(options);
+    this.hasPrompt = !!finalizeOptions?.prompt;
+    this.send(
+      JSON.stringify({
+        type: "finalize",
+        ...(finalizeOptions?.prompt ? { prompt: finalizeOptions.prompt } : {}),
+        ...(finalizeOptions?.systemPrompt
+          ? { systemPrompt: finalizeOptions.systemPrompt }
+          : {}),
+      }),
+    );
+  }
 
-    try {
-      const finalizeOptions = await this.buildFinalizeOptions(options);
-      getLogger().info(
-        `[NewServer] Finalizing streaming session (hasPrompt=${!!finalizeOptions?.prompt})...`,
-      );
-      const result = await this.session.finalize(finalizeOptions);
-      getLogger().info("[NewServer] Transcript received:", {
-        length: result.text?.length ?? 0,
-        source: result.source,
-        durationMs: result.durationMs,
-        hasProcessed: !!result.processed,
-      });
+  protected getFinalizeTimeoutMs(): number {
+    return this.hasPrompt
+      ? FINALIZE_WITH_PROMPT_TIMEOUT_MS
+      : FINALIZE_TIMEOUT_MS;
+  }
 
-      return {
-        rawTranscript: result.text || null,
-        processedTranscript: result.processed?.text || null,
-        metadata: {
-          inferenceDevice: `Cloud • ${result.source || "New Server"}`,
-          transcriptionMode: "cloud",
-          transcriptionDurationMs: result.durationMs ?? null,
-        },
-        postProcessMetadata: result.processed
-          ? {
-              postProcessMode: "cloud",
-              postProcessDevice: "Cloud • Dictation Server",
-              postprocessDurationMs: result.processed.durationMs ?? null,
-            }
-          : undefined,
-        warnings: result.warnings,
-      };
-    } catch (error) {
-      getLogger().error("[NewServer] Failed to finalize session:", error);
-      return {
-        rawTranscript: null,
-        metadata: {
-          inferenceDevice: "Cloud • New Server (Streaming)",
-          transcriptionMode: "cloud",
-        },
-        warnings: [
-          `New server finalization failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ],
-      };
-    }
+  protected onFinalizeTimeout(timeoutMs: number): void {
+    this.fail(`Server did not return a transcript within ${timeoutMs / 1000}s`);
+  }
+
+  protected buildResult() {
+    const transcript = this.transcript;
+    return {
+      rawTranscript: transcript?.text || null,
+      processedTranscript: transcript?.processed?.text || null,
+      metadata: {
+        inferenceDevice: `Cloud • ${transcript?.source || "New Server"}`,
+        transcriptionMode: "cloud" as const,
+        transcriptionDurationMs: transcript?.durationMs ?? null,
+      },
+      postProcessMetadata: transcript?.processed
+        ? {
+            postProcessMode: "cloud" as const,
+            postProcessDevice: "Cloud • Dictation Server",
+            postprocessDurationMs: transcript.processed.durationMs ?? null,
+          }
+        : undefined,
+    };
   }
 
   private async buildFinalizeOptions(
@@ -520,20 +227,5 @@ export class NewServerTranscriptionSession implements TranscriptionSession {
       prompt: buildPostProcessingPrompt(promptInput),
       systemPrompt: buildSystemPostProcessingTonePrompt(promptInput),
     };
-  }
-
-  cleanup(): void {
-    if (this.session) {
-      this.session.cleanup();
-      this.session = null;
-    }
-  }
-
-  supportsStreaming(): boolean {
-    return true;
-  }
-
-  setInterimResultCallback(callback: (segment: string) => void): void {
-    this.interimCallback = callback;
   }
 }

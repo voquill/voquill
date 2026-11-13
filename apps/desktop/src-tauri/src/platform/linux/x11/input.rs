@@ -166,11 +166,15 @@ fn paste_via_clipboard(
     if skip_clipboard_restore {
         drop(previous);
     } else {
+        let pasted = text.to_string();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(800));
+            let unchanged = crate::platform::clipboard_holds_text(&pasted);
             let mut hold = CLIPBOARD_HOLD.lock().unwrap_or_else(|p| p.into_inner());
             *hold = None;
-            previous.restore();
+            if unchanged {
+                previous.restore();
+            }
         });
     }
 

@@ -2,151 +2,72 @@ import {
   AzureStreamingSession,
   createAzureStreamingSession,
 } from "@voquill/voice-ai";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { getAppState } from "../store";
-import {
-  StopRecordingResponse,
-  TranscriptionSession,
-  TranscriptionSessionResult,
-} from "../types/transcription-session.types";
+import { TranscriptionSessionResult } from "../types/transcription-session.types";
 import {
   buildLocalizedTranscriptionPrompt,
   collectDictionaryEntries,
 } from "../utils/prompt.utils";
 import { loadMyEffectiveDictationLanguage } from "../utils/user.utils";
+import { PushStreamTranscriptionSession } from "./push-stream-transcription-session";
+import { STREAM_CONNECT_TIMEOUT_MS } from "../utils/websocket.utils";
 
-export class AzureTranscriptionSession implements TranscriptionSession {
-  private session: AzureStreamingSession | null = null;
-  private subscriptionKey: string;
-  private region: string;
-  private unlisten: UnlistenFn | null = null;
-  private receivedChunkCount = 0;
+export class AzureTranscriptionSession extends PushStreamTranscriptionSession<AzureStreamingSession> {
+  readonly name = "Azure";
+  protected readonly metadata = {
+    inferenceDevice: "API • Azure (Streaming)",
+    transcriptionMode: "api",
+  } as const;
+  protected readonly connectTimeoutMs = STREAM_CONNECT_TIMEOUT_MS;
 
-  constructor(subscriptionKey: string, region: string) {
-    this.subscriptionKey = subscriptionKey;
-    this.region = region;
+  constructor(
+    private readonly subscriptionKey: string,
+    private readonly region: string,
+  ) {
+    super();
   }
 
-  async onRecordingStart(sampleRate: number): Promise<void> {
-    try {
-      console.log("[Azure] Starting streaming session...");
-
-      const state = getAppState();
-      const language = await loadMyEffectiveDictationLanguage(state);
-      const dictionaryEntries = collectDictionaryEntries(state);
-      const prompt = buildLocalizedTranscriptionPrompt({
-        entries: dictionaryEntries,
-        dictationLanguage: language,
-        state,
-      });
-
-      this.session = await createAzureStreamingSession({
-        subscriptionKey: this.subscriptionKey,
-        region: this.region,
-        sampleRate,
-        language,
-        prompt: prompt || undefined,
-      });
-
-      this.unlisten = await listen<{ samples: number[] }>(
-        "audio_chunk",
-        (event) => {
-          this.receivedChunkCount++;
-          if (
-            this.receivedChunkCount <= 3 ||
-            this.receivedChunkCount % 10 === 0
-          ) {
-            console.log(
-              `[Azure] Received chunk #${this.receivedChunkCount}, samples:`,
-              event.payload.samples.length,
-            );
-          }
-
-          if (this.session) {
-            try {
-              const typedChunk =
-                event.payload.samples instanceof Float32Array
-                  ? event.payload.samples
-                  : Float32Array.from(event.payload.samples);
-
-              this.session.writeAudioChunk(typedChunk);
-            } catch (error) {
-              console.error("[Azure] Error writing audio chunk:", error);
-            }
-          }
-        },
-      );
-
-      console.log("[Azure] Streaming session started successfully");
-    } catch (error) {
-      console.error("[Azure] Failed to start streaming:", error);
-    }
+  protected async createStream(
+    sampleRate: number,
+  ): Promise<AzureStreamingSession> {
+    const state = getAppState();
+    const language = await loadMyEffectiveDictationLanguage(state);
+    const prompt = buildLocalizedTranscriptionPrompt({
+      entries: collectDictionaryEntries(state),
+      dictationLanguage: language,
+      state,
+    });
+    return await createAzureStreamingSession({
+      subscriptionKey: this.subscriptionKey,
+      region: this.region,
+      sampleRate,
+      language,
+      prompt: prompt || undefined,
+    });
   }
 
-  async finalize(
-    _audio: StopRecordingResponse,
+  protected async finishStream(
+    stream: AzureStreamingSession,
   ): Promise<TranscriptionSessionResult> {
-    if (!this.session) {
-      return {
-        rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • Azure (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: ["Azure streaming session was not established"],
-      };
+    const canceledBefore = stream.getError();
+    if (canceledBefore) {
+      return this.failure(`Azure recognition canceled: ${canceledBefore}`);
     }
 
-    try {
-      console.log("[Azure] Finalizing streaming session...");
-      const finalizeStart = performance.now();
-      const transcript = await this.session.finalize();
-      const durationMs = Math.round(performance.now() - finalizeStart);
-
-      console.log("[Azure] Transcript timing:", { durationMs });
-      console.log(
-        "[Azure] Received transcript, length:",
-        transcript?.length ?? 0,
-      );
-
-      return {
-        rawTranscript: transcript || null,
-        metadata: {
-          inferenceDevice: "API • Azure (Streaming)",
-          transcriptionMode: "api",
-          transcriptionDurationMs: durationMs,
-        },
-        warnings: [],
-      };
-    } catch (error) {
-      console.error("[Azure] Failed to finalize session:", error);
-      return {
-        rawTranscript: null,
-        metadata: {
-          inferenceDevice: "API • Azure (Streaming)",
-          transcriptionMode: "api",
-        },
-        warnings: [
-          `Azure finalization failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        ],
-      };
+    const startedAt = Date.now();
+    const transcript = await stream.finalize();
+    const canceledDuring = stream.getError();
+    if (canceledDuring) {
+      return this.failure(`Azure recognition canceled: ${canceledDuring}`);
     }
+
+    return {
+      rawTranscript: transcript || null,
+      metadata: {
+        ...this.metadata,
+        transcriptionDurationMs: Date.now() - startedAt,
+      },
+      warnings: [],
+    };
   }
-
-  cleanup(): void {
-    if (this.unlisten) {
-      this.unlisten();
-      this.unlisten = null;
-    }
-    if (this.session) {
-      this.session.cleanup();
-      this.session = null;
-    }
-  }
-
-  supportsStreaming(): boolean {
-    return false;
-  }
-
-  setInterimResultCallback(): void {}
 }

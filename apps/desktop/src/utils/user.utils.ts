@@ -471,6 +471,16 @@ export const getEffectivePillVisibility = (
   return "persistent";
 };
 
+export const getPillVisibilityToApply = (
+  state: AppState,
+): DictationPillVisibility => {
+  if (state.isPillFlashShowing) {
+    return "persistent";
+  }
+
+  return getEffectivePillVisibility(state.userPrefs?.dictationPillVisibility);
+};
+
 const SILENCE_PADDING_MS = 1500;
 const MIN_DURATION_FOR_PADDING_MS = 4000;
 

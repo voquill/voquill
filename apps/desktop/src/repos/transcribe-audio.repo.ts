@@ -1,9 +1,10 @@
 import { invokeHandler } from "@voquill/functions";
 import { Nullable } from "@voquill/types";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { batchAsync } from "@voquill/utilities";
 import {
   aldeaTranscribeAudio,
-  azureTranscribeAudio,
+  azureTranscribeRecording,
   deepgramTranscribeAudio,
   elevenlabsTranscribeAudio,
   geminiTranscribeAudio,
@@ -23,7 +24,6 @@ import {
   ensureFloat32Array,
   normalizeSamples,
 } from "../utils/audio.utils";
-import { getEffectiveAuth } from "../utils/auth.utils";
 import { invokeEnterprise } from "../utils/enterprise.utils";
 import { getLocalTranscriptionSidecarManager } from "../sidecars";
 import {
@@ -32,15 +32,30 @@ import {
   type LocalWhisperModel,
   normalizeLocalWhisperModel,
 } from "../utils/local-transcription.utils";
+import {
+  abortable,
+  abortableDelay,
+  createAbortError,
+} from "../utils/abort.utils";
+import { AUTO_LANGUAGE } from "../utils/language.utils";
 import { getLogger } from "../utils/log.utils";
-import { NEW_SERVER_URL } from "../utils/new-server.utils";
+import {
+  getNewServerIdToken,
+  getNewServerWebSocketUrl,
+} from "../utils/new-server.utils";
 import { openaiCompatibleTranscribeAudio } from "../utils/openai-compatible-transcribe.utils";
 import { collectDictionaryEntries } from "../utils/prompt.utils";
 import { speachesTranscribeAudio } from "../utils/speaches.utils";
 import {
+  getTranscriptionProcessingTimeoutMs,
   mergeTranscriptions,
   splitAudioTranscription,
 } from "../utils/transcribe.utils";
+import {
+  closeSocket,
+  STREAM_CONNECT_TIMEOUT_MS,
+  waitForUploadDrain,
+} from "../utils/websocket.utils";
 import { BaseRepo } from "./base.repo";
 
 type TranscriptionOptionsPayload = {
@@ -60,6 +75,7 @@ export type TranscribeAudioInput = {
   sampleRate: number;
   prompt?: Nullable<string>;
   language?: string;
+  signal?: AbortSignal;
 };
 
 export type TranscribeAudioOutput = {
@@ -72,6 +88,8 @@ export type TranscribeSegmentInput = {
   sampleRate: number;
   prompt?: Nullable<string>;
   language?: string;
+  /** Repos that can cancel their request should; callers stop waiting regardless. */
+  signal?: AbortSignal;
 };
 
 export abstract class BaseTranscribeAudioRepo extends BaseRepo {
@@ -120,14 +138,21 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
       input.sampleRate * segmentDurationSec,
     );
 
+    const transcribeSegment = (samples: Float32Array) =>
+      abortable(
+        this.transcribeSegment({
+          samples,
+          sampleRate: input.sampleRate,
+          prompt: input.prompt,
+          language: input.language,
+          signal: input.signal,
+        }),
+        input.signal,
+      );
+
     // If audio fits in a single segment, transcribe directly
     if (floatSamples.length <= segmentSampleCount) {
-      return this.transcribeSegment({
-        samples: floatSamples,
-        sampleRate: input.sampleRate,
-        prompt: input.prompt,
-        language: input.language,
-      });
+      return transcribeSegment(floatSamples);
     }
 
     // Split into overlapping segments
@@ -140,13 +165,7 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
 
     // Create promise factories for batched execution
     const transcriptionTasks = segments.map(
-      (segmentSamples) => () =>
-        this.transcribeSegment({
-          samples: segmentSamples,
-          sampleRate: input.sampleRate,
-          prompt: input.prompt,
-          language: input.language,
-        }),
+      (segmentSamples) => () => transcribeSegment(segmentSamples),
     );
 
     // Execute in batches
@@ -451,6 +470,117 @@ export class ElevenLabsTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   }
 }
 
+const ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2";
+const ASSEMBLYAI_POLL_INTERVAL_MS = 1_000;
+
+type AssemblyAITranscriptResponse = {
+  id: string;
+  status: "queued" | "processing" | "completed" | "error";
+  text?: string | null;
+  error?: string;
+};
+
+export class AssemblyAITranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    super();
+    this.apiKey = apiKey;
+  }
+
+  protected getSegmentDurationSec(): number {
+    return 600;
+  }
+
+  protected getOverlapDurationSec(): number {
+    return 5;
+  }
+
+  protected getBatchChunkCount(): number {
+    return 2;
+  }
+
+  private async request<T>(
+    path: string,
+    init: RequestInit,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
+    const response = await tauriFetch(`${ASSEMBLYAI_API_URL}${path}`, {
+      ...init,
+      headers: { authorization: this.apiKey, ...init.headers },
+      signal,
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `AssemblyAI ${path} failed: ${response.status} ${detail}`,
+      );
+    }
+    return (await response.json()) as T;
+  }
+
+  protected async transcribeSegment(
+    input: TranscribeSegmentInput,
+  ): Promise<TranscribeAudioOutput> {
+    const { upload_url } = await this.request<{ upload_url: string }>(
+      "/upload",
+      {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: buildWaveFile(input.samples, input.sampleRate),
+      },
+      input.signal,
+    );
+    const deadline =
+      Date.now() +
+      getTranscriptionProcessingTimeoutMs(
+        (input.samples.length / input.sampleRate) * 1000,
+      );
+
+    const language =
+      input.language && input.language !== AUTO_LANGUAGE
+        ? { language_code: input.language }
+        : { language_detection: true };
+    let transcript = await this.request<AssemblyAITranscriptResponse>(
+      "/transcript",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ audio_url: upload_url, ...language }),
+      },
+      input.signal,
+    );
+
+    while (
+      transcript.status === "queued" ||
+      transcript.status === "processing"
+    ) {
+      if (Date.now() > deadline) {
+        throw new Error("AssemblyAI transcription timed out");
+      }
+      await abortableDelay(ASSEMBLYAI_POLL_INTERVAL_MS, input.signal);
+      transcript = await this.request<AssemblyAITranscriptResponse>(
+        `/transcript/${transcript.id}`,
+        { method: "GET" },
+        input.signal,
+      );
+    }
+
+    if (transcript.status === "error") {
+      throw new Error(`AssemblyAI transcription failed: ${transcript.error}`);
+    }
+
+    return {
+      text: transcript.text ?? "",
+      metadata: {
+        inferenceDevice: "API • AssemblyAI",
+        modelSize: null,
+        transcriptionMode: "api",
+      },
+    };
+  }
+}
+
 export class DeepgramTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   private apiKey: string;
   private model: string;
@@ -553,9 +683,9 @@ export class AzureTranscribeAudioRepo extends BaseTranscribeAudioRepo {
     this.azureRegion = region;
   }
 
-  // Azure supports up to 30MB, 60s segments are safe
+  // Continuous recognition handles long audio; segments only bound memory.
   protected getSegmentDurationSec(): number {
-    return 60;
+    return 300;
   }
 
   protected getOverlapDurationSec(): number {
@@ -570,12 +700,11 @@ export class AzureTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   protected async transcribeSegment(
     input: TranscribeSegmentInput,
   ): Promise<TranscribeAudioOutput> {
-    const wavBuffer = buildWaveFile(input.samples, input.sampleRate);
-
-    const { text: transcript } = await azureTranscribeAudio({
+    const { text: transcript } = await azureTranscribeRecording({
       subscriptionKey: this.azureSubscriptionKey,
       region: this.azureRegion,
-      blob: wavBuffer,
+      samples: input.samples,
+      sampleRate: input.sampleRate,
       prompt: input.prompt ?? undefined,
       language: input.language,
     });
@@ -792,49 +921,56 @@ export class NewServerTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   protected async transcribeSegment(
     input: TranscribeSegmentInput,
   ): Promise<TranscribeAudioOutput> {
-    const wsUrl = NEW_SERVER_URL.replace(/^http/, "ws") + "/v1/transcribe-raw";
+    const audioDurationMs = (input.samples.length / input.sampleRate) * 1000;
 
     return new Promise((resolve, reject) => {
-      const ws = new WebSocket(wsUrl);
-      let resolved = false;
+      const ws = new WebSocket(getNewServerWebSocketUrl("/v1/transcribe-raw"));
+      const uploadWatch = new AbortController();
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      let lastMessageAt = 0;
 
-      const cleanup = () => {
-        ws.close();
+      const setTimer = (timeoutMs: number, message: string) => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => fail(new Error(message)), timeoutMs);
       };
 
-      const settle = (
-        fn: typeof resolve | typeof reject,
-        value: TranscribeAudioOutput | Error,
-      ) => {
-        if (resolved) return;
-        resolved = true;
-        (fn as (v: unknown) => void)(value);
+      const finish = () => {
+        settled = true;
+        if (timer) clearTimeout(timer);
+        uploadWatch.abort();
+        input.signal?.removeEventListener("abort", onAbort);
+        closeSocket(ws);
       };
+      const fail = (error: Error) => {
+        if (settled) return;
+        finish();
+        reject(error);
+      };
+      const onAbort = () => fail(createAbortError());
+      input.signal?.addEventListener("abort", onAbort, { once: true });
+
+      setTimer(
+        STREAM_CONNECT_TIMEOUT_MS,
+        `Server not ready within ${STREAM_CONNECT_TIMEOUT_MS / 1000}s`,
+      );
 
       ws.onopen = async () => {
         try {
-          const auth = getEffectiveAuth();
-          const user = auth.currentUser;
-          if (!user) {
-            settle(reject, new Error("Not authenticated"));
-            cleanup();
-            return;
-          }
-          const idToken = await user.getIdToken();
+          const idToken = await getNewServerIdToken();
           ws.send(JSON.stringify({ type: "auth", idToken }));
         } catch (err) {
-          settle(reject, err instanceof Error ? err : new Error(String(err)));
-          cleanup();
+          fail(err instanceof Error ? err : new Error(String(err)));
         }
       };
 
       ws.onmessage = (event) => {
+        lastMessageAt = Date.now();
         try {
           const msg = JSON.parse(event.data);
 
           if (msg.type === "error") {
-            settle(reject, new Error(`${msg.code}: ${msg.message}`));
-            cleanup();
+            fail(new Error(`${msg.code}: ${msg.message}`));
             return;
           }
 
@@ -853,34 +989,48 @@ export class NewServerTranscribeAudioRepo extends BaseTranscribeAudioRepo {
           }
 
           if (msg.type === "ready") {
-            ws.send(input.samples.buffer as ArrayBuffer);
+            if (timer) clearTimeout(timer);
+            ws.send(input.samples);
             ws.send(JSON.stringify({ type: "finalize" }));
+            waitForUploadDrain({
+              ws,
+              armed: false,
+              getLastMessageAt: () => lastMessageAt,
+              signal: uploadWatch.signal,
+            }).then(() => {
+              if (settled) return;
+              const processingTimeoutMs =
+                getTranscriptionProcessingTimeoutMs(audioDurationMs);
+              setTimer(
+                processingTimeoutMs,
+                `Server did not return a transcript within ${Math.round(processingTimeoutMs / 1000)}s of receiving the audio`,
+              );
+            }, fail);
             return;
           }
 
           if (msg.type === "transcript") {
-            settle(resolve, {
+            if (settled) return;
+            finish();
+            resolve({
               text: msg.text,
               metadata: {
                 transcriptionMode: "cloud",
               },
             });
-            cleanup();
             return;
           }
         } catch (err) {
-          settle(reject, err instanceof Error ? err : new Error(String(err)));
-          cleanup();
+          fail(err instanceof Error ? err : new Error(String(err)));
         }
       };
 
       ws.onerror = () => {
-        settle(reject, new Error("WebSocket error"));
-        cleanup();
+        fail(new Error("WebSocket error"));
       };
 
       ws.onclose = () => {
-        settle(reject, new Error("Connection closed unexpectedly"));
+        fail(new Error("Connection closed unexpectedly"));
       };
     });
   }

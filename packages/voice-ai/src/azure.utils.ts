@@ -171,6 +171,99 @@ export const azureTranscribeAudio = async ({
   });
 };
 
+export type AzureTranscribeRecordingArgs = {
+  subscriptionKey: string;
+  region: string;
+  samples: Float32Array;
+  sampleRate: number;
+  language?: string;
+  prompt?: string;
+};
+
+/**
+ * Transcribes a whole recording with continuous recognition. Unlike
+ * azureTranscribeAudio (single-shot, which stops at the first pause), this
+ * returns every recognized phrase and only resolves once the service has
+ * reached the end of the pushed audio.
+ */
+export const azureTranscribeRecording = async ({
+  subscriptionKey,
+  region,
+  samples,
+  sampleRate,
+  language,
+  prompt,
+}: AzureTranscribeRecordingArgs): Promise<AzureTranscribeAudioOutput> => {
+  return new Promise((resolve, reject) => {
+    const speechConfig = sdk.SpeechConfig.fromSubscription(
+      subscriptionKey.trim(),
+      region.trim()
+    );
+    speechConfig.speechRecognitionLanguage = mapToAzureLocale(language);
+
+    const pushStream = sdk.AudioInputStream.createPushStream(
+      sdk.AudioStreamFormat.getWaveFormatPCM(sampleRate, 16, 1)
+    );
+    const recognizer = new sdk.SpeechRecognizer(
+      speechConfig,
+      sdk.AudioConfig.fromStreamInput(pushStream)
+    );
+
+    if (prompt) {
+      const phraseListGrammar = sdk.PhraseListGrammar.fromRecognizer(recognizer);
+      prompt
+        .split(/[\s,]+/)
+        .filter((phrase) => phrase.length > 0)
+        .forEach((phrase) => phraseListGrammar.addPhrase(phrase));
+    }
+
+    const phrases: string[] = [];
+    let settled = false;
+    const settle = (error: Error | null) => {
+      if (settled) return;
+      settled = true;
+      recognizer.stopContinuousRecognitionAsync(
+        () => recognizer.close(),
+        () => recognizer.close()
+      );
+      if (error) {
+        reject(error);
+      } else {
+        resolve({ text: phrases.join(" ") });
+      }
+    };
+
+    recognizer.recognized = (_s, e) => {
+      if (e.result.reason === sdk.ResultReason.RecognizedSpeech && e.result.text) {
+        phrases.push(e.result.text);
+      }
+    };
+    recognizer.canceled = (_s, e) => {
+      if (e.reason === sdk.CancellationReason.Error) {
+        settle(
+          new Error(
+            `Azure recognition failed: ${e.errorDetails || `error code ${e.errorCode}`}`
+          )
+        );
+      }
+    };
+    recognizer.sessionStopped = () => settle(null);
+
+    recognizer.startContinuousRecognitionAsync(
+      () => {
+        const pcm16 = new Int16Array(samples.length);
+        for (let i = 0; i < samples.length; i++) {
+          const s = Math.max(-1, Math.min(1, samples[i] ?? 0));
+          pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        pushStream.write(pcm16.buffer);
+        pushStream.close();
+      },
+      (error) => settle(new Error(`Azure API request failed: ${error}`))
+    );
+  });
+};
+
 export type AzureTestIntegrationArgs = {
   subscriptionKey: string;
   region: string;
@@ -198,6 +291,8 @@ export type AzureStreamingSession = {
   writeAudioChunk: (chunk: Float32Array) => void;
   finalize: () => Promise<string>;
   cleanup: () => void;
+  /** Details of the error that canceled recognition, or null if none occurred. */
+  getError: () => string | null;
 };
 
 export type CreateAzureStreamingSessionArgs = {
@@ -243,6 +338,7 @@ export const createAzureStreamingSession = async ({
 
     let fullTranscript = "";
     let isFinalized = false;
+    let canceledError: string | null = null;
 
     recognizer.recognized = (_s, e) => {
       if (e.result.reason === sdk.ResultReason.RecognizedSpeech) {
@@ -263,6 +359,7 @@ export const createAzureStreamingSession = async ({
       console.error("[Azure Streaming] Recognition canceled:", e.errorDetails);
       if (e.reason === sdk.CancellationReason.Error) {
         console.error("[Azure Streaming] Error code:", e.errorCode);
+        canceledError = e.errorDetails || `Azure error code ${e.errorCode}`;
       }
     };
 
@@ -342,6 +439,7 @@ export const createAzureStreamingSession = async ({
           writeAudioChunk,
           finalize,
           cleanup,
+          getError: () => canceledError,
         });
       },
       (error) => {

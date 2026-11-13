@@ -161,6 +161,14 @@ impl SavedClipboard {
         Self::Empty
     }
 
+    /// Restores the saved contents only if the clipboard still holds `pasted`,
+    /// so text copied after the paste (by the app or the user) is not clobbered.
+    pub fn restore_unless_replaced(self, pasted: &str) {
+        if clipboard_holds_text(pasted) {
+            self.restore();
+        }
+    }
+
     pub fn restore(self) {
         if let Ok(mut cb) = arboard::Clipboard::new() {
             match self {
@@ -174,6 +182,13 @@ impl SavedClipboard {
             }
         }
     }
+}
+
+pub fn clipboard_holds_text(expected: &str) -> bool {
+    arboard::Clipboard::new()
+        .and_then(|mut clipboard| clipboard.get_text())
+        .map(|current| current == expected)
+        .unwrap_or(false)
 }
 
 pub type LevelCallback = Arc<dyn Fn(Vec<f32>) + Send + Sync>;

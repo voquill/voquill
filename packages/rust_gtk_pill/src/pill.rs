@@ -509,8 +509,12 @@ pub fn run(receiver: Receiver<InMessage>) {
         let is_active = state_tick.phase.get() != Phase::Idle;
         let is_assistant = state_tick.assistant_active.get();
         let should_show = match backend_tick {
+            // Wayland ignores the visibility setting and only surfaces the pill
+            // while recording, plus while a flash message is still animating.
             Backend::LayerShell | Backend::PlainWayland => {
                 state_tick.phase.get() == Phase::Recording
+                    || state_tick.flash_visible.get()
+                    || state_tick.flash_t.get() > 0.01
             }
             Backend::X11 => match visibility {
                 Visibility::Hidden => is_assistant,
