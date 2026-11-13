@@ -198,6 +198,8 @@ export type AzureStreamingSession = {
   writeAudioChunk: (chunk: Float32Array) => void;
   finalize: () => Promise<string>;
   cleanup: () => void;
+  /** Details of the error that canceled recognition, or null if none occurred. */
+  getError: () => string | null;
 };
 
 export type CreateAzureStreamingSessionArgs = {
@@ -243,6 +245,7 @@ export const createAzureStreamingSession = async ({
 
     let fullTranscript = "";
     let isFinalized = false;
+    let canceledError: string | null = null;
 
     recognizer.recognized = (_s, e) => {
       if (e.result.reason === sdk.ResultReason.RecognizedSpeech) {
@@ -263,6 +266,7 @@ export const createAzureStreamingSession = async ({
       console.error("[Azure Streaming] Recognition canceled:", e.errorDetails);
       if (e.reason === sdk.CancellationReason.Error) {
         console.error("[Azure Streaming] Error code:", e.errorCode);
+        canceledError = e.errorDetails || `Azure error code ${e.errorCode}`;
       }
     };
 
@@ -342,6 +346,7 @@ export const createAzureStreamingSession = async ({
           writeAudioChunk,
           finalize,
           cleanup,
+          getError: () => canceledError,
         });
       },
       (error) => {
