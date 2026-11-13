@@ -42,6 +42,7 @@ import {
   getMyEffectiveUserId,
   getMyUserName,
   loadMyEffectiveDictationLanguage,
+  type TranscriptionPrefs,
 } from "../utils/user.utils";
 import { showErrorSnackbar } from "./app.actions";
 import { addWordsToCurrentUser } from "./user.actions";
@@ -50,6 +51,9 @@ export type TranscribeAudioInput = {
   samples: AudioSamples;
   sampleRate: number;
   dictationLanguage?: string;
+  /** Defaults to the current preferences; a dictation passes the ones it started with. */
+  transcriptionPrefs?: TranscriptionPrefs;
+  signal?: AbortSignal;
 };
 
 export type TranscribeAudioMetadata = {
@@ -101,6 +105,8 @@ export const transcribeAudio = async ({
   samples,
   sampleRate,
   dictationLanguage: dictationLanguageOverride,
+  transcriptionPrefs,
+  signal,
 }: TranscribeAudioInput): Promise<TranscribeAudioResult> => {
   const state = getAppState();
 
@@ -111,7 +117,7 @@ export const transcribeAudio = async ({
     repo: transcribeRepo,
     apiKeyId: transcriptionApiKeyId,
     warnings: transcribeWarnings,
-  } = getTranscribeAudioRepo();
+  } = getTranscribeAudioRepo(transcriptionPrefs);
   warnings.push(...transcribeWarnings);
 
   const dictationLanguage = dictationLanguageOverride
@@ -141,6 +147,7 @@ export const transcribeAudio = async ({
     sampleRate,
     prompt: transcriptionPrompt,
     language: whisperLanguage,
+    signal,
   });
   const transcribeDuration = performance.now() - transcribeStart;
   const rawTranscript = transcribeOutput.text.trim();

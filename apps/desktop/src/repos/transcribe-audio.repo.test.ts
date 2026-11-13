@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  FakeWebSocket,
+  flushMicrotasks,
+} from "../sessions/streaming-session.fakes";
 
 const tauriFetch = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: tauriFetch }));
+vi.mock(import("../utils/new-server.utils"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  getNewServerIdToken: async () => "id-token",
+}));
 import { INITIAL_APP_STATE } from "../state/app.state";
 import { setAppState } from "../store";
 import { getTranscribeAudioRepo } from ".";
@@ -10,6 +18,7 @@ import {
   AssemblyAITranscribeAudioRepo,
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
+  NewServerTranscribeAudioRepo,
   TranscribeAudioOutput,
   TranscribeSegmentInput,
 } from "./transcribe-audio.repo";
@@ -455,5 +464,88 @@ describe("AssemblyAITranscribeAudioRepo", () => {
     const { repo } = getTranscribeAudioRepo();
 
     expect(repo).toBeInstanceOf(AssemblyAITranscribeAudioRepo);
+  });
+});
+
+describe("NewServerTranscribeAudioRepo", () => {
+  const SAMPLE_RATE = 16_000;
+  // 60s of audio
+  const samples = new Float32Array(SAMPLE_RATE * 60);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("WebSocket", FakeWebSocket);
+    FakeWebSocket.reset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const startUpload = async (signal?: AbortSignal) => {
+    const repo = new NewServerTranscribeAudioRepo();
+    const result = repo.transcribeAudio({
+      samples,
+      sampleRate: SAMPLE_RATE,
+      signal,
+    });
+    result.catch(() => {});
+    await flushMicrotasks();
+    const socket = FakeWebSocket.latest;
+    socket.open();
+    await flushMicrotasks();
+    socket.receive({ type: "authenticated" });
+    socket.bufferedAmount = samples.byteLength;
+    socket.receive({ type: "ready" });
+    return { result, socket };
+  };
+
+  it("waits as long as a slow upload keeps draining, then for the transcript", async () => {
+    const { result, socket } = await startUpload();
+    expect(socket.sentAudio).toHaveLength(1);
+    expect(socket.sentMessages.at(-1)).toEqual({ type: "finalize" });
+
+    // ~3.8 MB at ~130 KB/s takes ~30s, well past a fixed 20s + 0.25x budget.
+    for (let t = 0; t < 30; t += 3) {
+      await vi.advanceTimersByTimeAsync(3_000);
+      socket.bufferedAmount = Math.max(0, socket.bufferedAmount - 400_000);
+    }
+    socket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(20_000);
+    socket.receive({ type: "transcript", text: "slow but fine" });
+
+    await expect(result).resolves.toMatchObject({ text: "slow but fine" });
+  });
+
+  it("fails once the upload stops draining", async () => {
+    const { result, socket } = await startUpload();
+    await vi.advanceTimersByTimeAsync(1_000);
+    socket.bufferedAmount -= 100_000;
+    await vi.advanceTimersByTimeAsync(10_500);
+
+    await expect(result).rejects.toThrow(/Upload stalled/);
+    expect(socket.closedByClient).toBe(true);
+  });
+
+  it("fails when the server does not answer after receiving everything", async () => {
+    const { result, socket } = await startUpload();
+    socket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(36_000);
+
+    await expect(result).rejects.toThrow(
+      "Server did not return a transcript within 36s of receiving the audio",
+    );
+  });
+
+  it("closes the socket when the caller aborts", async () => {
+    const controller = new AbortController();
+    const { result, socket } = await startUpload(controller.signal);
+
+    controller.abort();
+
+    await expect(result).rejects.toThrow("Cancelled");
+    expect(socket.closedByClient).toBe(true);
   });
 });

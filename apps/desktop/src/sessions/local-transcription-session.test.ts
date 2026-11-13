@@ -81,8 +81,64 @@ describe("LocalTranscriptionSession", () => {
 
     const result = await session.finalize(AUDIO);
     expect(result.failureReason).toBe(
-      "Local streaming session unavailable (sidecar not running)",
+      "Local streaming session was not established: sidecar not running",
     );
+    expect(getAudioChunkListenerCount()).toBe(0);
+  });
+
+  it("waits for a model still loading at stop, then finishes the stream", async () => {
+    const sidecar = makeSidecarSession();
+    let ready: (value: typeof sidecar) => void = () => {};
+    createStreamingSession.mockReturnValue(
+      new Promise((resolve) => (ready = resolve)),
+    );
+    const session = new LocalTranscriptionSession();
+    void session.onRecordingStart(16_000);
+    await flushMicrotasks();
+    emitAudioChunk([0.1]);
+
+    const result = session.finalize(AUDIO);
+    ready(sidecar);
+
+    await expect(result).resolves.toMatchObject({
+      rawTranscript: "local text",
+    });
+    expect(sidecar.writeAudioChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases a sidecar session that only becomes ready after cleanup", async () => {
+    const sidecar = makeSidecarSession();
+    let ready: (value: typeof sidecar) => void = () => {};
+    createStreamingSession.mockReturnValue(
+      new Promise((resolve) => (ready = resolve)),
+    );
+    const session = new LocalTranscriptionSession();
+    const started = session.onRecordingStart(16_000);
+    await flushMicrotasks();
+
+    session.cleanup();
+    await started;
+    ready(sidecar);
+    await flushMicrotasks();
+    emitAudioChunk([0.1]);
+
+    expect(sidecar.cleanup).toHaveBeenCalled();
+    expect(sidecar.writeAudioChunk).not.toHaveBeenCalled();
+    expect(getAudioChunkListenerCount()).toBe(0);
+  });
+
+  it("stops buffering and reports a failure once 30s of audio piles up during a model load", async () => {
+    createStreamingSession.mockReturnValue(new Promise(() => {}));
+    const session = new LocalTranscriptionSession();
+    void session.onRecordingStart(16_000);
+    await flushMicrotasks();
+    for (let i = 0; i < 31; i++) {
+      emitAudioChunk(recordedSamples(16_000));
+    }
+
+    await expect(session.finalize(AUDIO)).resolves.toMatchObject({
+      failureReason: "Local not ready after 30s of audio",
+    });
     expect(getAudioChunkListenerCount()).toBe(0);
   });
 

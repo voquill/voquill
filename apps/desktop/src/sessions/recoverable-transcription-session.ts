@@ -1,5 +1,5 @@
-import { delayed } from "@voquill/utilities";
-import { transcribeAudio } from "../actions/transcribe.actions";
+import type { TranscribeAudioResult } from "../actions/transcribe.actions";
+import type { AudioSamples } from "../types/audio.types";
 import {
   InterimResultCallback,
   StopRecordingResponse,
@@ -7,50 +7,65 @@ import {
   TranscriptionSessionFinalizeOptions,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
+import { abortable, abortableDelay } from "../utils/abort.utils";
 import { getLogger } from "../utils/log.utils";
-import { toErrorMessage, withTimeout } from "./streaming-session.utils";
+import { toErrorMessage } from "./streaming-session.utils";
+
+export type RecordedAudioTranscriber = (input: {
+  samples: AudioSamples;
+  sampleRate: number;
+  signal: AbortSignal;
+}) => Promise<TranscribeAudioResult>;
 
 export type TranscriptionRecoveryOptions = {
+  /** Non-streaming transcription of the whole recording, bound to the dictation's preferences. */
+  transcribe: RecordedAudioTranscriber;
   maxAttempts: number;
   retryDelayMs: number;
-  /** Null disables the per-attempt timeout (local inference cannot hang on a network). */
+  /** Null when no total-time cap is safe (local/self-hosted inference, or a transport that watches its own progress). */
   getAttemptTimeoutMs: ((audioDurationMs: number) => number) | null;
-  transcribe: typeof transcribeAudio;
 };
 
-const DEFAULT_RECOVERY_OPTIONS: TranscriptionRecoveryOptions = {
+const DEFAULT_RECOVERY_OPTIONS: Omit<
+  TranscriptionRecoveryOptions,
+  "transcribe"
+> = {
   maxAttempts: 2,
   retryDelayMs: 1_500,
   getAttemptTimeoutMs: null,
-  transcribe: transcribeAudio,
 };
 
+const CANCELLED_REASON = "Cancelled";
+
 /**
- * Wraps any transcription session so a failure at any stage (start, stream,
- * finalize) re-transcribes the full recording returned by `stop_recording`
- * through the configured non-streaming path, instead of losing the audio.
+ * The single owner of how a dictation's recording becomes text. With a
+ * streaming `inner` session, any failure at start, while streaming or at
+ * finalize re-transcribes the full recording returned by `stop_recording`.
+ * Without one (batch modes), the recording is transcribed directly. Either
+ * way there is one retry policy, timed-out attempts are aborted, and
+ * `cleanup()` cancels everything in flight.
  */
 export class RecoverableTranscriptionSession implements TranscriptionSession {
+  readonly name: string;
   private readonly options: TranscriptionRecoveryOptions;
+  private readonly lifetime = new AbortController();
   private startFailureReason: string | null = null;
 
   constructor(
-    private readonly inner: TranscriptionSession,
-    options: Partial<TranscriptionRecoveryOptions> = {},
+    private readonly inner: TranscriptionSession | null,
+    options: Partial<TranscriptionRecoveryOptions> &
+      Pick<TranscriptionRecoveryOptions, "transcribe">,
   ) {
     this.options = { ...DEFAULT_RECOVERY_OPTIONS, ...options };
-  }
-
-  get sessionName(): string {
-    return this.inner.constructor.name;
+    this.name = inner?.name ?? "Batch";
   }
 
   async onRecordingStart(sampleRate: number): Promise<void> {
     try {
-      await this.inner.onRecordingStart(sampleRate);
+      await this.inner?.onRecordingStart(sampleRate);
     } catch (error) {
       this.startFailureReason = `Streaming session failed to start: ${toErrorMessage(error)}`;
-      getLogger().warning(`[${this.sessionName}] ${this.startFailureReason}`);
+      getLogger().warning(`[${this.name}] ${this.startFailureReason}`);
     }
   }
 
@@ -58,31 +73,48 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
     audio: StopRecordingResponse,
     options?: TranscriptionSessionFinalizeOptions,
   ): Promise<TranscriptionSessionResult> {
-    const result = await this.finalizeInner(audio, options);
-    if (!result.failureReason) {
-      return result;
+    if (!this.inner) {
+      return await this.transcribeRecording(audio, {
+        metadata: {},
+        warnings: [],
+        recovered: false,
+      });
+    }
+
+    const streamed = await this.finalizeInner(this.inner, audio, options);
+    if (!streamed.failureReason || this.lifetime.signal.aborted) {
+      return streamed;
     }
 
     getLogger().warning(
-      `[${this.sessionName}] transcript incomplete, recovering from recorded audio: ${result.failureReason}`,
+      `[${this.name}] transcript incomplete, recovering from recorded audio: ${streamed.failureReason}`,
     );
     this.inner.cleanup();
-    return await this.recover(audio, result);
+    return await this.transcribeRecording(audio, {
+      metadata: streamed.metadata,
+      warnings: [
+        ...streamed.warnings,
+        `Transcript incomplete (${streamed.failureReason}); re-transcribed the recorded audio`,
+      ],
+      recovered: true,
+    });
   }
 
   cleanup(): void {
-    this.inner.cleanup();
+    this.lifetime.abort();
+    this.inner?.cleanup();
   }
 
   supportsStreaming(): boolean {
-    return this.inner.supportsStreaming();
+    return this.inner?.supportsStreaming() ?? false;
   }
 
   setInterimResultCallback(callback: InterimResultCallback): void {
-    this.inner.setInterimResultCallback(callback);
+    this.inner?.setInterimResultCallback(callback);
   }
 
   private async finalizeInner(
+    inner: TranscriptionSession,
     audio: StopRecordingResponse,
     options?: TranscriptionSessionFinalizeOptions,
   ): Promise<TranscriptionSessionResult> {
@@ -96,7 +128,7 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
     }
 
     try {
-      return await this.inner.finalize(audio, options);
+      return await inner.finalize(audio, options);
     } catch (error) {
       return {
         rawTranscript: null,
@@ -107,61 +139,115 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
     }
   }
 
-  private async recover(
+  private async transcribeRecording(
     audio: StopRecordingResponse,
-    failed: TranscriptionSessionResult,
+    context: Pick<TranscriptionSessionResult, "metadata" | "warnings"> & {
+      recovered: boolean;
+    },
   ): Promise<TranscriptionSessionResult> {
-    const warnings = [
-      ...failed.warnings,
-      `Transcript incomplete (${failed.failureReason}); re-transcribed the recorded audio`,
-    ];
+    const warnings = [...context.warnings];
     const sampleRate = audio.sampleRate ?? 0;
     const sampleCount = audio.samples?.length ?? 0;
     if (sampleRate <= 0 || sampleCount === 0) {
-      getLogger().warning(`[${this.sessionName}] no recorded audio to recover`);
-      return { rawTranscript: null, metadata: failed.metadata, warnings };
+      getLogger().warning(`[${this.name}] no recorded audio to transcribe`);
+      return { rawTranscript: null, metadata: context.metadata, warnings };
     }
 
-    const audioDurationMs = (sampleCount / sampleRate) * 1000;
-    const timeoutMs = this.options.getAttemptTimeoutMs?.(audioDurationMs);
-    let failureReason = failed.failureReason ?? "Transcription failed";
+    const timeoutMs = this.options.getAttemptTimeoutMs?.(
+      (sampleCount / sampleRate) * 1000,
+    );
+    let failureReason = "Transcription failed";
 
     for (let attempt = 1; attempt <= this.options.maxAttempts; attempt++) {
       try {
-        const transcription = this.options.transcribe({
-          samples: audio.samples,
-          sampleRate,
-        });
-        const result = timeoutMs
-          ? await withTimeout(transcription, timeoutMs)
-          : await transcription;
-
+        const result = await this.runAttempt(audio, sampleRate, timeoutMs);
         getLogger().info(
-          `[${this.sessionName}] recovery attempt ${attempt} succeeded (${result.rawTranscript.length} chars)`,
+          `[${this.name}] transcription attempt ${attempt} succeeded (${result.rawTranscript.length} chars)`,
         );
         return {
           rawTranscript: result.rawTranscript || null,
           metadata: result.metadata,
           warnings: [...warnings, ...result.warnings],
-          recovered: true,
+          ...(context.recovered ? { recovered: true } : {}),
         };
       } catch (error) {
+        if (this.lifetime.signal.aborted) {
+          return this.cancelled(context.metadata, warnings);
+        }
         failureReason = toErrorMessage(error);
-        warnings.push(`Recovery attempt ${attempt} failed: ${failureReason}`);
-        getLogger().warning(
-          `[${this.sessionName}] recovery attempt ${attempt}/${this.options.maxAttempts} failed: ${failureReason}`,
+        warnings.push(
+          `Transcription attempt ${attempt} failed: ${failureReason}`,
         );
-        if (attempt < this.options.maxAttempts) {
-          await delayed(this.options.retryDelayMs * attempt);
+        getLogger().warning(
+          `[${this.name}] transcription attempt ${attempt}/${this.options.maxAttempts} failed: ${failureReason}`,
+        );
+      }
+
+      if (attempt < this.options.maxAttempts) {
+        try {
+          await abortableDelay(
+            this.options.retryDelayMs * attempt,
+            this.lifetime.signal,
+          );
+        } catch {
+          return this.cancelled(context.metadata, warnings);
         }
       }
     }
 
     return {
       rawTranscript: null,
-      metadata: failed.metadata,
+      metadata: context.metadata,
       warnings,
       failureReason,
+    };
+  }
+
+  private async runAttempt(
+    audio: StopRecordingResponse,
+    sampleRate: number,
+    timeoutMs: number | undefined,
+  ): Promise<TranscribeAudioResult> {
+    const attempt = new AbortController();
+    const cancel = () => attempt.abort();
+    this.lifetime.signal.addEventListener("abort", cancel, { once: true });
+    let timedOut = false;
+    const timer = timeoutMs
+      ? setTimeout(() => {
+          timedOut = true;
+          attempt.abort();
+        }, timeoutMs)
+      : null;
+
+    try {
+      return await abortable(
+        this.options.transcribe({
+          samples: audio.samples,
+          sampleRate,
+          signal: attempt.signal,
+        }),
+        attempt.signal,
+      );
+    } catch (error) {
+      if (timedOut && timeoutMs) {
+        throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      this.lifetime.signal.removeEventListener("abort", cancel);
+    }
+  }
+
+  private cancelled(
+    metadata: TranscriptionSessionResult["metadata"],
+    warnings: string[],
+  ): TranscriptionSessionResult {
+    return {
+      rawTranscript: null,
+      metadata,
+      warnings,
+      failureReason: CANCELLED_REASON,
     };
   }
 }

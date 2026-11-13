@@ -266,12 +266,16 @@ export const splitAudioTranscription = (args: {
   return segments;
 };
 
-const TRANSCRIPTION_TIMEOUT_BASE_MS = 20_000;
-const TRANSCRIPTION_TIMEOUT_PER_AUDIO_MS = 0.25;
+/**
+ * Cap for one request to a hosted provider whose upload progress cannot be
+ * observed (plain fetch). 2x the audio duration allows uplinks down to about
+ * 0.4 Mbps for 16-bit 48 kHz WAV before a healthy request is cut off.
+ */
+export const getHostedTranscriptionTimeoutMs = (
+  audioDurationMs: number,
+): number => Math.round(60_000 + audioDurationMs * 2);
 
-/** Upper bound for one network transcription request of the given audio length. */
-export const getTranscriptionTimeoutMs = (audioDurationMs: number): number =>
-  Math.round(
-    TRANSCRIPTION_TIMEOUT_BASE_MS +
-      audioDurationMs * TRANSCRIPTION_TIMEOUT_PER_AUDIO_MS,
-  );
+/** How long a provider may take to answer once it has received all the audio. */
+export const getTranscriptionProcessingTimeoutMs = (
+  audioDurationMs: number,
+): number => Math.round(30_000 + audioDurationMs * 0.1);

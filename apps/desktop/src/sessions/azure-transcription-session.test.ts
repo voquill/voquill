@@ -17,6 +17,10 @@ vi.mock(
   "@tauri-apps/api/event",
   async () => (await import("./streaming-session.fakes")).tauriEventMock,
 );
+vi.mock(
+  "../utils/log.utils",
+  async () => (await import("./streaming-session.fakes")).logUtilsMock,
+);
 vi.mock(import("@voquill/voice-ai"), async (importOriginal) => ({
   ...(await importOriginal()),
   createAzureStreamingSession,
@@ -70,6 +74,45 @@ describe("AzureTranscriptionSession", () => {
     expect(result).toMatchObject({ rawTranscript: "azure text" });
     expect(result.failureReason).toBeUndefined();
     expect(getAudioChunkListenerCount()).toBe(0);
+  });
+
+  it("waits for a session still connecting at stop", async () => {
+    const { session: azure } = makeAzureSession();
+    let connect: (value: AzureStreamingSession) => void = () => {};
+    createAzureStreamingSession.mockReturnValue(
+      new Promise<AzureStreamingSession>((resolve) => (connect = resolve)),
+    );
+    const session = new AzureTranscriptionSession("key", "eastus");
+    void session.onRecordingStart(16_000);
+    await flushMicrotasks();
+    emitAudioChunk([0.1]);
+
+    const result = session.finalize(AUDIO);
+    connect(azure);
+
+    await expect(result).resolves.toMatchObject({
+      rawTranscript: "azure text",
+    });
+    expect(azure.writeAudioChunk).toHaveBeenCalledTimes(1);
+  });
+
+  it("cleans up a session that connects after the dictation was cancelled", async () => {
+    const { session: azure } = makeAzureSession();
+    let connect: (value: AzureStreamingSession) => void = () => {};
+    createAzureStreamingSession.mockReturnValue(
+      new Promise<AzureStreamingSession>((resolve) => (connect = resolve)),
+    );
+    const session = new AzureTranscriptionSession("key", "eastus");
+    const started = session.onRecordingStart(16_000);
+    await flushMicrotasks();
+
+    session.cleanup();
+    await started;
+    connect(azure);
+    await flushMicrotasks();
+
+    expect(azure.cleanup).toHaveBeenCalled();
+    expect(azure.writeAudioChunk).not.toHaveBeenCalled();
   });
 
   it("reports a failure when recognition was canceled mid-recording", async () => {

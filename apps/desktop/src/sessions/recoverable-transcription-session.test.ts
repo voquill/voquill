@@ -35,6 +35,7 @@ const makeInner = (
   finalize: TranscriptionSession["finalize"],
   onRecordingStart: TranscriptionSession["onRecordingStart"] = async () => {},
 ) => ({
+  name: "FakeStream",
   onRecordingStart: vi.fn(onRecordingStart),
   finalize: vi.fn(finalize),
   cleanup: vi.fn(),
@@ -59,6 +60,7 @@ describe("RecoverableTranscriptionSession", () => {
     await session.onRecordingStart(16_000);
     const result = await session.finalize(AUDIO);
 
+    expect(session.name).toBe("FakeStream");
     expect(result).toEqual(streamedResult("hello world"));
     expect(transcribe).not.toHaveBeenCalled();
     expect(inner.cleanup).not.toHaveBeenCalled();
@@ -78,6 +80,7 @@ describe("RecoverableTranscriptionSession", () => {
     expect(transcribe).toHaveBeenCalledWith({
       samples: AUDIO.samples,
       sampleRate: 16_000,
+      signal: expect.any(AbortSignal),
     });
     expect(result.rawTranscript).toBe("recovered text");
     expect(result.processedTranscript).toBeUndefined();
@@ -135,7 +138,9 @@ describe("RecoverableTranscriptionSession", () => {
     expect(transcribe).toHaveBeenCalledTimes(2);
     expect(result.rawTranscript).toBe("second try");
     expect(result.recovered).toBe(true);
-    expect(result.warnings).toContain("Recovery attempt 1 failed: offline");
+    expect(result.warnings).toContain(
+      "Transcription attempt 1 failed: offline",
+    );
   });
 
   it("reports a failure with the audio kept when every attempt fails", async () => {
@@ -159,8 +164,8 @@ describe("RecoverableTranscriptionSession", () => {
     expect(result.failureReason).toBe("offline");
     expect(result.warnings).toEqual([
       "Transcript incomplete (dropped); re-transcribed the recorded audio",
-      "Recovery attempt 1 failed: offline",
-      "Recovery attempt 2 failed: offline",
+      "Transcription attempt 1 failed: offline",
+      "Transcription attempt 2 failed: offline",
     ]);
   });
 
@@ -187,7 +192,7 @@ describe("RecoverableTranscriptionSession", () => {
     expect(transcribe).toHaveBeenCalledTimes(2);
     expect(result.rawTranscript).toBe("after timeout");
     expect(result.warnings).toContain(
-      "Recovery attempt 1 failed: Timed out after 5s",
+      "Transcription attempt 1 failed: Timed out after 5s",
     );
   });
 
@@ -233,5 +238,105 @@ describe("RecoverableTranscriptionSession", () => {
 
     expect(result.rawTranscript).toBeNull();
     expect(result.failureReason).toBeUndefined();
+  });
+
+  it("aborts a timed-out attempt instead of leaving it running", async () => {
+    const inner = makeInner(async () => failedResult("dropped"));
+    const signals: AbortSignal[] = [];
+    const transcribe = vi.fn(({ signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return new Promise<ReturnType<typeof transcribeResult>>(() => {});
+    });
+    const session = new RecoverableTranscriptionSession(inner, {
+      transcribe,
+      maxAttempts: 1,
+      getAttemptTimeoutMs: () => 5_000,
+    });
+
+    const pending = session.finalize(AUDIO);
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await pending;
+
+    expect(signals[0].aborted).toBe(true);
+    expect(result.failureReason).toBe("Timed out after 5s");
+  });
+
+  it("cancels in-flight recovery immediately on cleanup", async () => {
+    const inner = makeInner(async () => failedResult("dropped"));
+    const signals: AbortSignal[] = [];
+    const transcribe = vi.fn(({ signal }: { signal: AbortSignal }) => {
+      signals.push(signal);
+      return new Promise<ReturnType<typeof transcribeResult>>(() => {});
+    });
+    const session = new RecoverableTranscriptionSession(inner, { transcribe });
+
+    const pending = session.finalize(AUDIO);
+    await vi.advanceTimersByTimeAsync(0);
+    session.cleanup();
+    const result = await pending;
+
+    expect(signals[0].aborted).toBe(true);
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      rawTranscript: null,
+      failureReason: "Cancelled",
+    });
+  });
+
+  it("does not retry after cleanup during the retry delay", async () => {
+    const inner = makeInner(async () => failedResult("dropped"));
+    const transcribe = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const session = new RecoverableTranscriptionSession(inner, {
+      transcribe,
+      retryDelayMs: 1_000,
+    });
+
+    const pending = session.finalize(AUDIO);
+    await vi.advanceTimersByTimeAsync(0);
+    session.cleanup();
+    const result = await pending;
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(result.failureReason).toBe("Cancelled");
+  });
+
+  describe("without a streaming session (batch modes)", () => {
+    it("transcribes the recording directly without marking it recovered", async () => {
+      const transcribe = vi.fn(async () => transcribeResult("batch text"));
+      const session = new RecoverableTranscriptionSession(null, { transcribe });
+
+      await session.onRecordingStart(16_000);
+      const result = await session.finalize(AUDIO);
+
+      expect(session.name).toBe("Batch");
+      expect(session.supportsStreaming()).toBe(false);
+      expect(result).toMatchObject({
+        rawTranscript: "batch text",
+        warnings: [],
+      });
+      expect(result.recovered).toBeUndefined();
+    });
+
+    it("makes exactly two transcription attempts in total before reporting failure", async () => {
+      const transcribe = vi.fn(async () => {
+        throw new Error("502 Bad Gateway");
+      });
+      const session = new RecoverableTranscriptionSession(null, {
+        transcribe,
+        retryDelayMs: 1_000,
+      });
+
+      const pending = session.finalize(AUDIO);
+      await vi.advanceTimersByTimeAsync(10_000);
+      const result = await pending;
+
+      expect(transcribe).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({
+        rawTranscript: null,
+        failureReason: "502 Bad Gateway",
+      });
+    });
   });
 });

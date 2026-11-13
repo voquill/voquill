@@ -32,6 +32,8 @@ export type TranscriptionSessionFinalizeOptions = {
 export type InterimResultCallback = (segment: string) => void;
 
 export interface TranscriptionSession {
+  /** Stable provider name for logs (class names are mangled when minified). */
+  readonly name: string;
   onRecordingStart(sampleRate: number): Promise<void>;
   finalize(
     audio: StopRecordingResponse,
