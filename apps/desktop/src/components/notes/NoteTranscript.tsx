@@ -1,46 +1,48 @@
-import { Stack, Typography } from "@mui/material";
+import { Box, Stack, Typography } from "@mui/material";
 import { FormattedMessage } from "react-intl";
-import { useAppStore } from "../../store";
-import {
-  formatNoteDuration,
-  getNoteSegmentOffsetsMs,
-} from "../../utils/note.utils";
+import { Virtuoso } from "react-virtuoso";
+import { useNoteTranscriptEntries } from "../../hooks/note.hooks";
+import { formatNoteDuration } from "../../utils/note.utils";
+import type { NoteTranscriptEntry } from "../../utils/note-transcript.utils";
 
-type TranscriptEntry = {
-  key: string;
-  startMs: number | null;
-  speaker: number | null;
-  text: string;
-};
+const TranscriptEntry = ({ entry }: { entry: NoteTranscriptEntry }) => (
+  <Stack spacing={0.25} sx={{ pb: 2 }}>
+    {(entry.startMs !== null || entry.speaker !== null) && (
+      <Typography
+        variant="caption"
+        color="text.secondary"
+        sx={{ fontVariantNumeric: "tabular-nums" }}
+      >
+        {entry.speaker !== null && (
+          <Box component="span" sx={{ fontWeight: 600 }}>
+            <FormattedMessage
+              defaultMessage="Speaker {number}"
+              values={{ number: entry.speaker + 1 }}
+            />
+          </Box>
+        )}
+        {entry.speaker !== null && entry.startMs !== null && " · "}
+        {entry.startMs !== null && formatNoteDuration(entry.startMs)}
+      </Typography>
+    )}
+    <Typography variant="body1" sx={{ whiteSpace: "pre-wrap" }}>
+      {entry.text}
+    </Typography>
+  </Stack>
+);
 
-export const NoteTranscript = ({ noteId }: { noteId: string }) => {
-  const segments = useAppStore(
-    (state) => state.noteSegmentsByNoteId[noteId] ?? [],
-  );
-  const offsets = getNoteSegmentOffsetsMs(segments);
-  const entries = segments.flatMap((segment): TranscriptEntry[] => {
-    const transcript = segment.transcript;
-    if (!transcript?.text.trim()) {
-      return [];
-    }
-    if (transcript.utterances.length === 0) {
-      return [
-        {
-          key: segment.id,
-          startMs: null,
-          speaker: null,
-          text: transcript.text,
-        },
-      ];
-    }
-    const offset = offsets.get(segment.id) ?? 0;
-    return transcript.utterances.map((utterance, index) => ({
-      key: `${segment.id}-${index}`,
-      startMs: offset + utterance.startMs,
-      speaker: utterance.speaker,
-      text: utterance.text,
-    }));
-  });
+/**
+ * The transcript, virtualized against the note page's scroller so multi-hour
+ * meetings stay responsive.
+ */
+export const NoteTranscript = ({
+  noteId,
+  scrollParent,
+}: {
+  noteId: string;
+  scrollParent: HTMLElement | null;
+}) => {
+  const entries = useNoteTranscriptEntries(noteId);
 
   if (entries.length === 0) {
     return (
@@ -49,32 +51,17 @@ export const NoteTranscript = ({ noteId }: { noteId: string }) => {
       </Typography>
     );
   }
+  if (!scrollParent) {
+    return null;
+  }
 
   return (
-    <Stack spacing={2}>
-      {entries.map((entry) => (
-        <Stack key={entry.key} spacing={0.25}>
-          {(entry.startMs !== null || entry.speaker !== null) && (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{ fontVariantNumeric: "tabular-nums" }}
-            >
-              {entry.speaker !== null && (
-                <FormattedMessage
-                  defaultMessage="Speaker {number}"
-                  values={{ number: entry.speaker + 1 }}
-                />
-              )}
-              {entry.speaker !== null && entry.startMs !== null && " · "}
-              {entry.startMs !== null && formatNoteDuration(entry.startMs)}
-            </Typography>
-          )}
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-            {entry.text}
-          </Typography>
-        </Stack>
-      ))}
-    </Stack>
+    <Virtuoso
+      customScrollParent={scrollParent}
+      data={entries}
+      computeItemKey={(_, entry) => entry.key}
+      itemContent={(_, entry) => <TranscriptEntry entry={entry} />}
+      increaseViewportBy={600}
+    />
   );
 };

@@ -1,6 +1,6 @@
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
-import { CircularProgress, Stack, Tooltip, Typography } from "@mui/material";
-import { Fragment } from "react";
+import { Box, Stack, Tooltip, Typography } from "@mui/material";
+import { Fragment, memo } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { getNotePath } from "../../hooks/note.hooks";
 import { useAppStore } from "../../store";
@@ -38,14 +38,24 @@ const HighlightedText = ({
   </>
 );
 
-const NoteRowStatus = ({ noteId }: { noteId: string }) => {
+/** The row's second line when not searching: length, plus the state until ready. */
+const NoteRowState = ({ noteId }: { noteId: string }) => {
   const status = useAppStore((state) => state.noteById[noteId]?.status);
-  const activityKind = useAppStore(
-    (state) => state.notes.cloudActivityByNoteId[noteId]?.kind ?? null,
+  const durationMs = useAppStore(
+    (state) => state.noteById[noteId]?.durationMs ?? 0,
   );
   const isImport = useAppStore(
     (state) => state.noteById[noteId]?.source === "import",
   );
+  const activity = useAppStore((state) => {
+    const current = state.notes.cloudActivityByNoteId[noteId];
+    if (current?.kind !== "uploading") return current?.kind ?? null;
+    const percent =
+      current.totalBytes > 0
+        ? Math.round((current.uploadedBytes / current.totalBytes) * 100)
+        : 0;
+    return `uploading:${percent}`;
+  });
   const isCapturing = useAppStore(
     (state) => state.notes.capture?.noteId === noteId,
   );
@@ -53,17 +63,27 @@ const NoteRowStatus = ({ noteId }: { noteId: string }) => {
     formatNoteDuration(getNoteElapsedMs(state, noteId)),
   );
 
+  const length = isImport ? (
+    <FormattedMessage defaultMessage="Imported" />
+  ) : (
+    formatNoteDuration(durationMs)
+  );
+
   if (isCapturing) {
     return (
-      <Stack direction="row" alignItems="center" spacing={0.75}>
+      <Stack
+        component="span"
+        direction="row"
+        alignItems="center"
+        spacing={0.75}
+      >
         <RecordingDot />
-        <Typography
-          variant="body2"
-          color="error"
-          sx={{ fontVariantNumeric: "tabular-nums" }}
-        >
-          {elapsed}
-        </Typography>
+        <Box component="span" sx={{ color: "error.main" }}>
+          <FormattedMessage
+            defaultMessage="Recording {elapsed}"
+            values={{ elapsed }}
+          />
+        </Box>
       </Stack>
     );
   }
@@ -72,107 +92,112 @@ const NoteRowStatus = ({ noteId }: { noteId: string }) => {
     case "recording":
     case "paused":
       return (
-        <Typography variant="body2" color="text.secondary">
-          <FormattedMessage defaultMessage="Paused" />
-        </Typography>
+        <FormattedMessage
+          defaultMessage="Paused {elapsed}"
+          values={{ elapsed }}
+        />
       );
     case "pending":
     case "processing":
       return (
-        <Stack direction="row" alignItems="center" spacing={0.75}>
-          <CircularProgress size={12} />
-          <Typography variant="body2" color="text.secondary">
-            {activityKind === "waiting-for-connection" ? (
-              <FormattedMessage defaultMessage="Waiting for connection" />
-            ) : activityKind === "uploading" ? (
-              <FormattedMessage defaultMessage="Uploading" />
-            ) : (
-              <FormattedMessage defaultMessage="Processing" />
-            )}
-          </Typography>
-        </Stack>
+        <>
+          {length}
+          {" · "}
+          {activity === "waiting-for-connection" ? (
+            <FormattedMessage defaultMessage="Waiting for connection" />
+          ) : activity?.startsWith("uploading:") ? (
+            <FormattedMessage
+              defaultMessage="Uploading {percent}%"
+              values={{ percent: activity.split(":")[1] }}
+            />
+          ) : activity === "server-busy" ? (
+            <FormattedMessage defaultMessage="Queued" />
+          ) : (
+            <FormattedMessage defaultMessage="Processing" />
+          )}
+        </>
       );
     case "failed":
       return (
-        <Typography variant="body2" color="error">
-          <FormattedMessage defaultMessage="Failed" />
-        </Typography>
+        <>
+          {length}
+          {" · "}
+          <Box component="span" sx={{ color: "error.main" }}>
+            <FormattedMessage defaultMessage="Didn't finish" />
+          </Box>
+        </>
       );
     default:
-      return (
-        <Typography
-          variant="body2"
-          color="text.secondary"
-          sx={{ fontVariantNumeric: "tabular-nums" }}
-        >
-          {isImport ? <FormattedMessage defaultMessage="Imported" /> : elapsed}
-        </Typography>
-      );
+      return length;
   }
 };
 
 export type NoteRowProps = {
   noteId: string;
+  /** Search results show a matching snippet instead of the state line. */
   snippet: string | null;
   highlightTerms: string[];
+  /** "time" in day groups; "date" in search results, which aren't grouped. */
+  when: "time" | "date";
   onDelete: (noteId: string) => void;
 };
 
-export const NoteRow = ({
+export const NoteRow = memo(function NoteRow({
   noteId,
   snippet,
   highlightTerms,
+  when,
   onDelete,
-}: NoteRowProps) => {
+}: NoteRowProps) {
   const intl = useIntl();
-  const note = useAppStore((state) => state.noteById[noteId]);
-  if (!note) {
+  const title = useAppStore((state) => state.noteById[noteId]?.title);
+  const createdAt = useAppStore((state) => state.noteById[noteId]?.createdAt);
+  if (title === undefined || !createdAt) {
     return null;
   }
 
-  const date = intl.formatDate(note.createdAt, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const deleteLabel = intl.formatMessage({ defaultMessage: "Delete note" });
 
   return (
     <ListTile
       href={getNotePath(noteId)}
-      title={<HighlightedText text={note.title} terms={highlightTerms} />}
+      title={<HighlightedText text={title} terms={highlightTerms} />}
       subtitle={
-        <Stack component="span" spacing={0.25}>
-          <span>{date}</span>
-          {snippet && (
-            <Typography
-              component="span"
-              variant="body2"
-              color="text.secondary"
-              sx={{
-                display: "-webkit-box",
-                WebkitLineClamp: 2,
-                WebkitBoxOrient: "vertical",
-                overflow: "hidden",
-              }}
-            >
-              <HighlightedText text={snippet} terms={highlightTerms} />
-            </Typography>
+        <Box
+          component="span"
+          sx={{
+            display: "-webkit-box",
+            WebkitLineClamp: snippet ? 2 : 1,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+            fontVariantNumeric: "tabular-nums",
+          }}
+        >
+          {snippet ? (
+            <HighlightedText text={snippet} terms={highlightTerms} />
+          ) : (
+            <NoteRowState noteId={noteId} />
           )}
-        </Stack>
+        </Box>
       }
-      trailing={<NoteRowStatus noteId={noteId} />}
+      trailing={
+        <Typography
+          variant="body2"
+          color="text.secondary"
+          sx={{ fontVariantNumeric: "tabular-nums", fontWeight: 400 }}
+        >
+          {when === "time"
+            ? intl.formatTime(createdAt, { timeStyle: "short" })
+            : intl.formatDate(createdAt, { month: "short", day: "numeric" })}
+        </Typography>
+      }
       trailingHover={
-        <Tooltip title={intl.formatMessage({ defaultMessage: "Delete note" })}>
-          <DeleteOutlineRounded
-            fontSize="small"
-            aria-label={intl.formatMessage({ defaultMessage: "Delete note" })}
-          />
+        <Tooltip title={deleteLabel}>
+          <DeleteOutlineRounded fontSize="small" aria-label={deleteLabel} />
         </Tooltip>
       }
       trailingOnClick={() => onDelete(noteId)}
       sx={{ mx: -2 }}
     />
   );
-};
+});

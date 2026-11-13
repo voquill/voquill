@@ -317,6 +317,7 @@ export class CloudNoteRepo extends BaseRepo {
     method: string,
     path: string,
     body?: unknown,
+    signal?: AbortSignal,
   ): Promise<Response> {
     const attempt = async (forceRefresh: boolean) => {
       const headers = await this.getAuthHeaders(forceRefresh);
@@ -325,6 +326,7 @@ export class CloudNoteRepo extends BaseRepo {
           method,
           headers,
           body: body === undefined ? undefined : JSON.stringify(body),
+          signal,
         });
       } catch (error) {
         throw new NotesNetworkError(
@@ -488,13 +490,19 @@ export class CloudNoteRepo extends BaseRepo {
     question,
     noteId,
     history,
+    signal,
   }: NoteAskInput): AsyncGenerator<NoteAskEvent> {
-    const response = await this.send("POST", "/ask", {
-      question,
-      ...(noteId ? { noteId } : {}),
-      history: history.slice(-20),
-      stream: true,
-    });
+    const response = await this.send(
+      "POST",
+      "/ask",
+      {
+        question,
+        ...(noteId ? { noteId } : {}),
+        history: history.slice(-20),
+        stream: true,
+      },
+      signal,
+    );
     if (!response.body) {
       yield { type: "error", message: "ask_incomplete" };
       return;

@@ -19,7 +19,7 @@ import {
   type MeetingCaptureStatus,
   type ResumableUploadProgress,
 } from "../../repos/meeting-audio.repo";
-import { getAppState, useAppStore } from "../../store";
+import { getAppState, produceAppState, useAppStore } from "../../store";
 import { getLogger } from "../../utils/log.utils";
 import {
   formatNoteDuration,
@@ -49,16 +49,25 @@ export const NotesSideEffects = () => {
   }, [cloudNotesUserId]);
 
   useEffect(() => {
+    const setOnline = (online: boolean) =>
+      produceAppState((draft) => {
+        draft.notes.online = online;
+      });
     const onFocus = () => void syncCloudNotes();
     const onOnline = () => {
+      setOnline(true);
       saveUnsyncedNoteEdits();
       void syncCloudNotes({ force: true });
     };
+    const onOffline = () => setOnline(false);
+    setOnline(navigator.onLine);
     window.addEventListener("focus", onFocus);
     window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
     return () => {
       window.removeEventListener("focus", onFocus);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
     };
   }, []);
 
@@ -116,7 +125,7 @@ export const NotesSideEffects = () => {
             { elapsed },
           )
         : intl.formatMessage(
-            { defaultMessage: "Paused — {elapsed}" },
+            { defaultMessage: "Meeting paused — {elapsed}" },
             { elapsed },
           ),
       stopLabel: intl.formatMessage({ defaultMessage: "Stop Meeting" }),

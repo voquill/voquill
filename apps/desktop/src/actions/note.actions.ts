@@ -16,7 +16,7 @@ import type {
   MeetingCaptureStatus,
   ResumableUploadProgress,
 } from "../repos/meeting-audio.repo";
-import type { NoteAskMessage } from "../state/notes.state";
+import type { NoteView } from "../state/notes.state";
 import { getAppState, produceAppState } from "../store";
 import { createId } from "../utils/id.utils";
 import { getLogger } from "../utils/log.utils";
@@ -37,6 +37,7 @@ import {
   getNoteCaptureAction,
   getNoteResumeBlocker,
 } from "../utils/note-audio.utils";
+import { clearNotesAsk } from "./note-ask.actions";
 import { needsFullNoteFetch } from "../utils/note-sync.utils";
 import { syncCloudNotes } from "./note-sync.actions";
 import { addNoteSegment, loadNotes, noteStore } from "./note-store.actions";
@@ -698,6 +699,7 @@ export const deleteNote = async (noteId: string) => {
       }
     });
   });
+  clearNotesAsk(noteId);
   await getPipelineFor(noteId)?.deleteNote(noteId);
 };
 
@@ -737,102 +739,8 @@ export const closeImportTranscriptDialog = () => {
   });
 };
 
-export const openNotesAsk = (noteId: string | null) => {
+export const setNoteView = (view: NoteView) => {
   produceAppState((draft) => {
-    if (draft.notes.askNoteId !== noteId) {
-      draft.notes.askMessages = [];
-    }
-    draft.notes.askNoteId = noteId;
-    draft.notes.askDialogOpen = true;
+    draft.notes.noteView = view;
   });
-};
-
-export const closeNotesAsk = () => {
-  produceAppState((draft) => {
-    draft.notes.askDialogOpen = false;
-  });
-};
-
-const updateAskMessage = (
-  messageId: string,
-  recipe: (message: NoteAskMessage) => void,
-) => {
-  produceAppState((draft) => {
-    const message = draft.notes.askMessages.find(
-      (candidate) => candidate.id === messageId,
-    );
-    if (message) {
-      recipe(message);
-    }
-  });
-};
-
-export const askNotes = async (question: string): Promise<void> => {
-  const trimmed = question.trim();
-  const { askNoteId, askMessages } = getAppState().notes;
-  if (!trimmed || askMessages.some((message) => message.streaming)) {
-    return;
-  }
-
-  const history = askMessages
-    .filter((message) => !message.error && message.content)
-    .map((message) => ({ role: message.role, content: message.content }));
-  const answerId = createId();
-  produceAppState((draft) => {
-    draft.notes.askMessages.push(
-      {
-        id: createId(),
-        role: "user",
-        content: trimmed,
-        sources: [],
-        error: null,
-        errorDetails: null,
-        streaming: false,
-      },
-      {
-        id: answerId,
-        role: "assistant",
-        content: "",
-        sources: [],
-        error: null,
-        errorDetails: null,
-        streaming: true,
-      },
-    );
-  });
-
-  try {
-    const storage = askNoteId
-      ? (noteStore.getNote(askNoteId)?.storage ?? "local")
-      : selectNoteStorage(getAppState());
-    const events = getNotePipeline(storage).ask({
-      question: trimmed,
-      noteId: askNoteId,
-      history,
-    });
-    for await (const event of events) {
-      updateAskMessage(answerId, (message) => {
-        if (event.type === "sources") {
-          message.sources = event.sources;
-        } else if (event.type === "done") {
-          message.sources = event.sources;
-          // The final answer is authoritative; streamed blocks were a preview.
-          message.content = event.answer;
-        } else if (event.type === "delta") {
-          message.content += event.text;
-        } else {
-          message.error = event.message;
-          message.errorDetails = event.details ?? null;
-        }
-      });
-    }
-  } catch (error) {
-    updateAskMessage(answerId, (message) => {
-      message.error = error instanceof Error ? error.message : String(error);
-    });
-  } finally {
-    updateAskMessage(answerId, (message) => {
-      message.streaming = false;
-    });
-  }
 };

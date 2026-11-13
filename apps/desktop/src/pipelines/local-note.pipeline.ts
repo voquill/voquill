@@ -291,6 +291,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
     question,
     noteId,
     history,
+    signal,
   }: NoteAskInput): AsyncGenerator<NoteAskEvent> {
     const generator = this.deps.getChatGenerator();
     if (!generator) {
@@ -323,6 +324,9 @@ export class LocalNotePipeline extends BaseNotePipeline {
     let answer = "";
     try {
       for await (const event of generator.streamChat({ messages })) {
+        if (signal?.aborted) {
+          return;
+        }
         if (event.type === "text-delta") {
           answer += event.text;
           yield { type: "delta", text: event.text };

@@ -1,9 +1,15 @@
-import { useCallback } from "react";
+import type { NoteSegment } from "@voquill/types";
+import { useCallback, useMemo } from "react";
 import { useIntl } from "react-intl";
 import { useNavigate } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../actions/app.actions";
 import { startMeetingNote } from "../actions/note.actions";
+import { useAppStore } from "../store";
 import { getLogger } from "../utils/log.utils";
+import {
+  formatNoteTranscriptForCopy,
+  getNoteTranscriptEntries,
+} from "../utils/note-transcript.utils";
 
 export const getNotePath = (noteId: string) => `/dashboard/notes/${noteId}`;
 
@@ -34,4 +40,26 @@ export const useStartMeetingNote = () => {
       );
     }
   }, [intl, navigate]);
+};
+
+const NO_SEGMENTS: NoteSegment[] = [];
+
+export const useNoteTranscriptEntries = (noteId: string) => {
+  const segments = useAppStore(
+    (state) => state.noteSegmentsByNoteId[noteId] ?? NO_SEGMENTS,
+  );
+  return useMemo(() => getNoteTranscriptEntries(segments), [segments]);
+};
+
+/** Builds the transcript's plain-text copy (speaker labels and times). */
+export const useNoteTranscriptCopyText = (noteId: string) => {
+  const intl = useIntl();
+  const entries = useNoteTranscriptEntries(noteId);
+  return () =>
+    formatNoteTranscriptForCopy(entries, (speaker) =>
+      intl.formatMessage(
+        { defaultMessage: "Speaker {number}" },
+        { number: speaker + 1 },
+      ),
+    );
 };

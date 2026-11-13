@@ -28,7 +28,7 @@ export const DeleteNoteDialog = ({
   return (
     <ConfirmDialog
       isOpen={noteId !== null}
-      title={<FormattedMessage defaultMessage="Delete note?" />}
+      title={<FormattedMessage defaultMessage="Delete this note?" />}
       content={
         isRecording ? (
           <FormattedMessage defaultMessage="Recording stops and the note, its transcript and its audio are permanently deleted." />

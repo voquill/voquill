@@ -7,7 +7,6 @@ import type {
 import type { AppState } from "../state/app.state";
 import { getIntl } from "../i18n";
 import { getIsVoquillCloudUser } from "./member.utils";
-import { buildNoteTranscriptText } from "./note-audio.utils";
 import {
   getEffectivePostProcessingMode,
   getEffectiveTranscriptionMode,
@@ -81,18 +80,6 @@ export const getNoteGenerationAvailableFor = (
 export const getIsMeetingCapturing = (state: AppState): boolean =>
   state.notes.capture !== null;
 
-/** Newest first, with the meeting in progress pinned on top. */
-export const getSortedNoteIds = (state: AppState): string[] => {
-  const activeNoteId = state.notes.activeNoteId;
-  return Object.values(state.noteById)
-    .sort((left, right) => {
-      if (left.id === activeNoteId) return -1;
-      if (right.id === activeNoteId) return 1;
-      return right.createdAt.localeCompare(left.createdAt);
-    })
-    .map((note) => note.id);
-};
-
 /** Recorded audio so far, including the segment being captured now. */
 export const getNoteElapsedMs = (state: AppState, noteId: string): number => {
   const note = state.noteById[noteId];
@@ -134,34 +121,61 @@ export const getDefaultNoteTitle = (
     : intl.formatMessage({ defaultMessage: "Meeting, {date}" }, { date });
 };
 
-export const getNoteTranscriptText = (
+/** Cheap enough for store selectors, unlike building the transcript text. */
+export const getNoteHasTranscript = (
   state: AppState,
   noteId: string,
-): string => buildNoteTranscriptText(state.noteSegmentsByNoteId[noteId] ?? []);
+): boolean =>
+  (state.noteSegmentsByNoteId[noteId] ?? []).some((segment) =>
+    Boolean(segment.transcript?.text.trim()),
+  );
 
 export type NoteAskAvailability =
   | "available"
   | "post-processing-disabled"
-  | "no-transcript";
+  | "no-transcript"
+  | "offline"
+  | "limit-reached";
 
+const hasAskableContent = (state: AppState, noteId: string): boolean => {
+  const note = state.noteById[noteId];
+  return Boolean(
+    note &&
+    (getNoteHasTranscript(state, noteId) ||
+      (note.generatedNotes && note.status !== "processing")),
+  );
+};
+
+/**
+ * Whether Ask can answer about a note (or, with null, about all notes), and
+ * why not. Cloud answers need the connection and the daily cap; local ones
+ * need the user's post-processing model.
+ */
 export const getNoteAskAvailability = (
   state: AppState,
   noteId: string | null,
+  now = Date.now(),
 ): NoteAskAvailability => {
   const storage = noteId
     ? state.noteById[noteId]?.storage
     : selectNoteStorage(state);
-  if (storage !== "cloud" && !getNoteGenerationAvailable(state)) {
+  if (storage === "cloud") {
+    if (!state.notes.online) {
+      return "offline";
+    }
+    const resetsAt = state.notes.askLimitResetsAt;
+    if (resetsAt && Date.parse(resetsAt) > now) {
+      return "limit-reached";
+    }
+  } else if (!getNoteGenerationAvailable(state)) {
     return "post-processing-disabled";
   }
   if (noteId) {
-    const note = state.noteById[noteId];
-    const ready = note?.status === "ready";
-    return ready && getNoteTranscriptText(state, noteId)
-      ? "available"
-      : "no-transcript";
+    return hasAskableContent(state, noteId) ? "available" : "no-transcript";
   }
-  return Object.values(state.noteById).some((note) => note.status === "ready")
+  return Object.values(state.noteById).some(
+    (note) => note.status === "ready" || note.generatedNotes,
+  )
     ? "available"
     : "no-transcript";
 };

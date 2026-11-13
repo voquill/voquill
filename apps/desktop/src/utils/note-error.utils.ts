@@ -14,6 +14,8 @@ export type NoteErrorDescription = {
   retryable: boolean;
   /** When the blocking limit frees up, if the server said. */
   availableAt: Date | null;
+  /** Say the recording is kept (the body doesn't already say what happened to it). */
+  audioSafe: boolean;
 };
 
 type NoteErrorEntry = {
@@ -21,14 +23,11 @@ type NoteErrorEntry = {
   body: MessageDescriptor;
   upgrade?: boolean;
   retryable?: boolean;
+  /** The body itself says what happened to the recording. */
+  explainsAudio?: boolean;
 };
 
 const messages = defineMessages({
-  wordQuotaTitle: { defaultMessage: "You're out of free words" },
-  wordQuotaBody: {
-    defaultMessage:
-      "Upgrade to Pro to turn this meeting into notes, then retry.",
-  },
   audioQuotaTitle: { defaultMessage: "Meeting allowance reached" },
   audioQuotaBody: {
     defaultMessage:
@@ -160,6 +159,7 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
     title: messages.deletedTitle,
     body: messages.deletedBody,
     retryable: false,
+    explainsAudio: true,
   },
   notes_unavailable: {
     title: messages.unavailableTitle,
@@ -202,6 +202,7 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
     title: messages.missingTitle,
     body: messages.missingBody,
     retryable: false,
+    explainsAudio: true,
   },
   transcription_failed: {
     title: messages.transcriptionTitle,
@@ -218,15 +219,18 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
   capture_interrupted: {
     title: messages.interruptedTitle,
     body: messages.interruptedBody,
+    explainsAudio: true,
   },
   capture_write_failed: {
     title: messages.writeFailedTitle,
     body: messages.writeFailedBody,
+    explainsAudio: true,
   },
   note_length_limit: {
     title: messages.lengthLimitTitle,
     body: messages.lengthLimitBody,
     retryable: false,
+    explainsAudio: true,
   },
 };
 
@@ -272,5 +276,6 @@ export const describeNoteError = (
     upgrade: entry.upgrade ?? false,
     retryable: entry.retryable ?? true,
     availableAt: getNoteErrorAvailableAt(details),
+    audioSafe: !entry.explainsAudio,
   };
 };

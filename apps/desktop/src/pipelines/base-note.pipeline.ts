@@ -19,6 +19,8 @@ export type NoteAskInput = {
   question: string;
   noteId: string | null;
   history: NoteAskHistoryMessage[];
+  /** Stops the answer (the user pressed stop or left). */
+  signal?: AbortSignal;
 };
 
 /** Mirrors the server's `POST /v1/notes/ask` stream events. */

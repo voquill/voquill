@@ -1,59 +1,70 @@
 import ArrowBackRounded from "@mui/icons-material/ArrowBackRounded";
 import AutorenewRounded from "@mui/icons-material/AutorenewRounded";
+import CalendarTodayOutlined from "@mui/icons-material/CalendarTodayOutlined";
+import CloudOffOutlined from "@mui/icons-material/CloudOffOutlined";
+import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded";
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
+import ErrorOutlineRounded from "@mui/icons-material/ErrorOutlineRounded";
+import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
+import HourglassEmptyRounded from "@mui/icons-material/HourglassEmptyRounded";
+import LaptopOutlined from "@mui/icons-material/LaptopOutlined";
 import MicRounded from "@mui/icons-material/MicRounded";
 import PauseRounded from "@mui/icons-material/PauseRounded";
-import QuestionAnswerOutlined from "@mui/icons-material/QuestionAnswerOutlined";
+import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
 import StopRounded from "@mui/icons-material/StopRounded";
 import {
   Alert,
   AlertTitle,
   Box,
   Button,
+  Chip,
+  CircularProgress,
   Container,
   IconButton,
   LinearProgress,
   Link,
   Stack,
-  Tab,
-  Tabs,
   Tooltip,
   Typography,
 } from "@mui/material";
 import type { Note, NoteError } from "@voquill/types";
-import { useState, type ReactNode } from "react";
+import { useState, type ReactElement, type ReactNode } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../../actions/app.actions";
 import {
-  loadNoteSegments,
-  openNotesAsk,
-  pauseMeetingNote,
   dropNoteSegment,
+  loadNoteSegments,
   NoteRecordingBlockedError,
+  pauseMeetingNote,
   regenerateNote,
   renameNote,
   resumeMeetingNote,
   retryNote,
   retryNoteSegment,
+  setNoteView,
   stopMeetingNote,
 } from "../../actions/note.actions";
 import { openUpgradePlanDialog } from "../../actions/pricing.actions";
-import { describeNoteError } from "../../utils/note-error.utils";
 import { useAsyncEffect } from "../../hooks/async.hooks";
-import { getNotePath } from "../../hooks/note.hooks";
+import { getNotePath, useNoteTranscriptCopyText } from "../../hooks/note.hooks";
+import type { NoteView } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
+import { getNoteResumeBlocker } from "../../utils/note-audio.utils";
+import { describeNoteError } from "../../utils/note-error.utils";
 import {
   formatNoteDuration,
   getNoteElapsedMs,
   getNoteGenerationAvailableFor,
-  getNoteTranscriptText,
+  getNoteHasTranscript,
 } from "../../utils/note.utils";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { EditTypography } from "../common/EditTypography";
+import { SegmentedControl } from "../common/SegmentedControl";
 import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { RecordingDot } from "./MeetingIndicatorChip";
+import { NoteAskDock } from "./NoteAskDock";
 import { NoteMarkdown } from "./NoteMarkdown";
 import { NoteTranscript } from "./NoteTranscript";
 import { PersonalNotesEditor } from "./PersonalNotesEditor";
@@ -66,20 +77,13 @@ const openPostProcessingSettings = () => {
   });
 };
 
-const Section = ({
-  title,
-  children,
-}: {
-  title: ReactNode;
-  children: ReactNode;
-}) => (
-  <Stack spacing={1}>
-    <Typography variant="subtitle2" color="text.secondary">
-      {title}
-    </Typography>
-    {children}
-  </Stack>
-);
+const panelSx = {
+  border: 1,
+  borderColor: "divider",
+  borderRadius: 1,
+  bgcolor: "level1",
+  p: 2,
+} as const;
 
 const IconAction = ({
   label,
@@ -100,6 +104,16 @@ const IconAction = ({
     </span>
   </Tooltip>
 );
+
+/** Mirrors resumeMeetingNote's check, so Resume is only offered when it can work. */
+const useCanResumeNote = (noteId: string) =>
+  useAppStore(
+    (state) =>
+      getNoteResumeBlocker({
+        noteElapsedMs: state.noteById[noteId]?.durationMs ?? 0,
+        segments: state.noteSegmentsByNoteId[noteId] ?? [],
+      }) === null,
+  );
 
 const useResumeNote = () => {
   const intl = useIntl();
@@ -132,6 +146,214 @@ const useResumeNote = () => {
   };
 };
 
+const MetaChip = ({
+  icon,
+  label,
+  color,
+}: {
+  icon: ReactElement;
+  label: ReactNode;
+  color?: "error" | "default";
+}) => (
+  <Chip
+    size="small"
+    variant="outlined"
+    color={color}
+    icon={icon}
+    label={label}
+    sx={{
+      height: 26,
+      borderColor: color === "error" ? undefined : "divider",
+      color: color === "error" ? undefined : "text.secondary",
+      "& .MuiChip-icon": {
+        fontSize: 15,
+        color: color === "error" ? undefined : "text.secondary",
+      },
+      "& .MuiChip-label": { fontVariantNumeric: "tabular-nums" },
+    }}
+  />
+);
+
+const NoteStateChip = ({ note }: { note: Note }) => {
+  const isCapturing = useAppStore(
+    (state) => state.notes.capture?.noteId === note.id,
+  );
+  const activityKind = useAppStore(
+    (state) => state.notes.cloudActivityByNoteId[note.id]?.kind ?? null,
+  );
+  const hasFailedPart = useAppStore((state) =>
+    (state.noteSegmentsByNoteId[note.id] ?? []).some(
+      (segment) => segment.status === "failed",
+    ),
+  );
+
+  switch (note.status) {
+    case "recording":
+    case "paused":
+      return isCapturing ? (
+        <MetaChip
+          color="error"
+          icon={<MicRounded />}
+          label={<FormattedMessage defaultMessage="Recording" />}
+        />
+      ) : (
+        <MetaChip
+          icon={<PauseRounded />}
+          label={<FormattedMessage defaultMessage="Paused" />}
+        />
+      );
+    case "pending":
+    case "processing":
+      if (activityKind === "waiting-for-connection") {
+        return (
+          <MetaChip
+            icon={<CloudOffOutlined />}
+            label={<FormattedMessage defaultMessage="Waiting for connection" />}
+          />
+        );
+      }
+      if (activityKind === "server-busy") {
+        return (
+          <MetaChip
+            icon={<HourglassEmptyRounded />}
+            label={<FormattedMessage defaultMessage="Queued" />}
+          />
+        );
+      }
+      return (
+        <MetaChip
+          icon={<CircularProgress size={12} color="inherit" />}
+          label={
+            activityKind === "uploading" ? (
+              <FormattedMessage defaultMessage="Uploading" />
+            ) : (
+              <FormattedMessage defaultMessage="Processing" />
+            )
+          }
+        />
+      );
+    case "failed":
+      return (
+        <MetaChip
+          color="error"
+          icon={<ErrorOutlineRounded />}
+          label={<FormattedMessage defaultMessage="Didn't finish" />}
+        />
+      );
+    case "ready":
+      return hasFailedPart ? (
+        <MetaChip
+          color="error"
+          icon={<ErrorOutlineRounded />}
+          label={<FormattedMessage defaultMessage="Part not transcribed" />}
+        />
+      ) : null;
+  }
+};
+
+const NoteMetaChips = ({ note }: { note: Note }) => {
+  const intl = useIntl();
+  const isActive = note.status === "recording" || note.status === "paused";
+  return (
+    <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+      <MetaChip
+        icon={<CalendarTodayOutlined />}
+        label={`${intl.formatDate(note.createdAt, {
+          weekday: "short",
+          month: "short",
+          day: "numeric",
+        })}, ${intl.formatTime(note.createdAt, { timeStyle: "short" })}`}
+      />
+      {note.source === "import" ? (
+        <MetaChip
+          icon={<FileUploadOutlined />}
+          label={<FormattedMessage defaultMessage="Imported" />}
+        />
+      ) : (
+        !isActive &&
+        note.durationMs > 0 && (
+          <MetaChip
+            icon={<ScheduleOutlined />}
+            label={formatNoteDuration(note.durationMs)}
+          />
+        )
+      )}
+      <NoteStateChip note={note} />
+      {note.storage === "cloud" ? (
+        <MetaChip
+          icon={<CloudOutlined />}
+          label={<FormattedMessage defaultMessage="Voquill Cloud" />}
+        />
+      ) : (
+        <MetaChip
+          icon={<LaptopOutlined />}
+          label={<FormattedMessage defaultMessage="On this device" />}
+        />
+      )}
+    </Stack>
+  );
+};
+
+const NoteProblem = ({
+  error,
+  hasAudio,
+  onRetry,
+  action,
+  severity = "error",
+}: {
+  error: NoteError | string | null | undefined;
+  hasAudio: boolean;
+  onRetry?: () => void;
+  action?: ReactNode;
+  severity?: "error" | "warning";
+}) => {
+  const intl = useIntl();
+  const description = describeNoteError(intl, error);
+  const showRetry = Boolean(onRetry) && description.retryable;
+  const hasActions = description.upgrade || showRetry || Boolean(action);
+  return (
+    <Alert severity={severity}>
+      <AlertTitle>{description.title}</AlertTitle>
+      {description.body}{" "}
+      {description.availableAt && (
+        <>
+          <FormattedMessage
+            defaultMessage="Available again {when}."
+            values={{
+              when: intl.formatDate(description.availableAt, {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }),
+            }}
+          />{" "}
+        </>
+      )}
+      {hasAudio && description.audioSafe && (
+        <FormattedMessage defaultMessage="Your recording is safe on this device." />
+      )}
+      {hasActions && (
+        <Stack direction="row" spacing={1} sx={{ mt: 1, ml: -0.75 }}>
+          {showRetry && (
+            <Button color="inherit" size="small" onClick={onRetry}>
+              <FormattedMessage defaultMessage="Retry" />
+            </Button>
+          )}
+          {description.upgrade && (
+            <Button
+              color="inherit"
+              size="small"
+              onClick={openUpgradePlanDialog}
+            >
+              <FormattedMessage defaultMessage="Upgrade" />
+            </Button>
+          )}
+          {action}
+        </Stack>
+      )}
+    </Alert>
+  );
+};
+
 const RecordingPanel = ({ note }: { note: Note }) => {
   const intl = useIntl();
   const isCapturing = useAppStore(
@@ -144,50 +366,73 @@ const RecordingPanel = ({ note }: { note: Note }) => {
     formatNoteDuration(getNoteElapsedMs(state, note.id)),
   );
   const resumeNote = useResumeNote();
+  const canResume = useCanResumeNote(note.id);
 
   return (
-    <Stack spacing={3}>
+    <Stack spacing={1.5}>
       {note.error && !isCapturing && (
-        <NoteProblem severity="warning" error={note.error} />
+        <NoteProblem severity="warning" error={note.error} hasAudio />
       )}
-      <Stack alignItems="center" spacing={2} sx={{ py: 2 }}>
-        <Stack direction="row" alignItems="center" spacing={1.5}>
-          {isCapturing && <RecordingDot size={12} />}
-          <Typography
-            variant="h3"
-            fontWeight={600}
-            sx={{ fontVariantNumeric: "tabular-nums" }}
-            aria-live="off"
-          >
-            {elapsed}
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={2}
+        sx={panelSx}
+        role="group"
+        aria-label={intl.formatMessage({ defaultMessage: "Recording" })}
+      >
+        <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.5}>
+          <Stack direction="row" alignItems="center" spacing={1.25}>
+            {isCapturing ? (
+              <RecordingDot size={10} />
+            ) : (
+              <PauseRounded sx={{ fontSize: 16, color: "text.secondary" }} />
+            )}
+            <Typography
+              variant="h5"
+              fontWeight={600}
+              sx={{ fontVariantNumeric: "tabular-nums" }}
+              aria-live="off"
+            >
+              {elapsed}
+            </Typography>
+            {isCapturing && (
+              <LinearProgress
+                variant="determinate"
+                value={Math.min(100, level * 400)}
+                aria-label={intl.formatMessage({
+                  defaultMessage: "Input level",
+                })}
+                sx={{
+                  width: 56,
+                  height: 4,
+                  borderRadius: 2,
+                  "& .MuiLinearProgress-bar": { transition: "none" },
+                }}
+              />
+            )}
+          </Stack>
+          <Typography variant="body2" color="text.secondary">
+            {isCapturing ? (
+              <FormattedMessage defaultMessage="Keeps recording if you leave this page." />
+            ) : canResume ? (
+              <FormattedMessage defaultMessage="Paused. Resume to add to this note." />
+            ) : (
+              <FormattedMessage defaultMessage="Paused. Stop to write the notes." />
+            )}
           </Typography>
         </Stack>
-        <Typography variant="body2" color="text.secondary">
-          {isCapturing ? (
-            <FormattedMessage defaultMessage="Recording. You can leave this page; recording continues." />
-          ) : (
-            <FormattedMessage defaultMessage="Paused" />
-          )}
-        </Typography>
-        {isCapturing && (
-          <LinearProgress
-            variant="determinate"
-            value={Math.min(100, level * 400)}
-            aria-label={intl.formatMessage({ defaultMessage: "Input level" })}
-            sx={{ width: 160, height: 4, borderRadius: 2 }}
-          />
-        )}
-        <Stack direction="row" spacing={1.5}>
-          {isCapturing ? (
-            <Button
-              variant="outlined"
-              size="large"
-              startIcon={<PauseRounded />}
-              onClick={() => pauseMeetingNote(note.id).catch(showErrorSnackbar)}
-            >
-              <FormattedMessage defaultMessage="Pause" />
-            </Button>
-          ) : (
+        {isCapturing ? (
+          <Button
+            variant="outlined"
+            size="large"
+            startIcon={<PauseRounded />}
+            onClick={() => pauseMeetingNote(note.id).catch(showErrorSnackbar)}
+          >
+            <FormattedMessage defaultMessage="Pause" />
+          </Button>
+        ) : (
+          canResume && (
             <Button
               variant="outlined"
               size="large"
@@ -196,29 +441,29 @@ const RecordingPanel = ({ note }: { note: Note }) => {
             >
               <FormattedMessage defaultMessage="Resume" />
             </Button>
-          )}
-          <Button
-            variant="contained"
-            color="error"
-            size="large"
-            startIcon={<StopRounded />}
-            onClick={() => stopMeetingNote(note.id).catch(showErrorSnackbar)}
-            sx={{ px: 4 }}
-          >
-            <FormattedMessage defaultMessage="Stop" />
-          </Button>
-        </Stack>
+          )
+        )}
+        <Button
+          variant="contained"
+          color="error"
+          size="large"
+          startIcon={<StopRounded />}
+          onClick={() => stopMeetingNote(note.id).catch(showErrorSnackbar)}
+          sx={{ px: 3 }}
+        >
+          <FormattedMessage defaultMessage="Stop" />
+        </Button>
       </Stack>
-      <Section title={<FormattedMessage defaultMessage="My notes" />}>
-        <PersonalNotesEditor noteId={note.id} />
-      </Section>
     </Stack>
   );
 };
 
 type ProgressView = {
   label: ReactNode;
+  /** Null shows ongoing work without a known amount. */
   percent: number | null;
+  /** Waiting (offline, queued) rather than working: no progress bar. */
+  waiting?: boolean;
   hint: ReactNode;
 };
 
@@ -242,23 +487,17 @@ const useProcessingProgress = (note: Note): ProgressView => {
     };
   });
   const leaveHint = (
-    <FormattedMessage defaultMessage="You can leave this page. The note will be ready here when processing finishes." />
+    <FormattedMessage defaultMessage="You can leave this page. The notes appear here when they're ready." />
   );
 
   if (note.storage === "cloud") {
     if (activity?.kind === "uploading") {
-      const percent =
-        activity.totalBytes > 0
-          ? Math.round((activity.uploadedBytes / activity.totalBytes) * 100)
-          : 0;
       return {
-        label: (
-          <FormattedMessage
-            defaultMessage="Uploading the recording… {percent}%"
-            values={{ percent }}
-          />
-        ),
-        percent,
+        label: <FormattedMessage defaultMessage="Uploading the recording" />,
+        percent:
+          activity.totalBytes > 0
+            ? Math.round((activity.uploadedBytes / activity.totalBytes) * 100)
+            : 0,
         hint: leaveHint,
       };
     }
@@ -266,26 +505,28 @@ const useProcessingProgress = (note: Note): ProgressView => {
       return {
         label: <FormattedMessage defaultMessage="Waiting for a connection" />,
         percent: null,
+        waiting: true,
         hint: (
-          <FormattedMessage defaultMessage="Your recording is safe on this device and is sent to Voquill as soon as you're back online." />
+          <FormattedMessage defaultMessage="Your recording is safe on this device. It uploads as soon as you're back online." />
         ),
       };
     }
     if (activity?.kind === "server-busy") {
       return {
-        label: (
-          <FormattedMessage defaultMessage="Waiting for other meetings to finish" />
-        ),
+        label: <FormattedMessage defaultMessage="Queued" />,
         percent: null,
-        hint: leaveHint,
+        waiting: true,
+        hint: (
+          <FormattedMessage defaultMessage="Your other meetings are still processing. This one starts when one finishes." />
+        ),
       };
     }
     return {
       label:
         note.status === "pending" ? (
-          <FormattedMessage defaultMessage="Preparing…" />
+          <FormattedMessage defaultMessage="Getting ready to upload" />
         ) : (
-          <FormattedMessage defaultMessage="Transcribing and writing notes…" />
+          <FormattedMessage defaultMessage="Transcribing and writing notes" />
         ),
       percent: null,
       hint: leaveHint,
@@ -294,17 +535,12 @@ const useProcessingProgress = (note: Note): ProgressView => {
 
   return local.transcribing
     ? {
-        label: (
-          <FormattedMessage
-            defaultMessage="Transcribing… {percent}%"
-            values={{ percent: local.percent }}
-          />
-        ),
+        label: <FormattedMessage defaultMessage="Transcribing" />,
         percent: local.percent,
         hint: leaveHint,
       }
     : {
-        label: <FormattedMessage defaultMessage="Writing notes…" />,
+        label: <FormattedMessage defaultMessage="Writing notes" />,
         percent: null,
         hint: leaveHint,
       };
@@ -313,97 +549,34 @@ const useProcessingProgress = (note: Note): ProgressView => {
 const ProcessingPanel = ({ note }: { note: Note }) => {
   const progress = useProcessingProgress(note);
   return (
-    <Stack spacing={3}>
-      <Stack spacing={1} sx={{ py: 2 }} role="status">
-        <Typography variant="body1" fontWeight={600}>
+    <Stack spacing={1} sx={panelSx} role="status">
+      <Stack direction="row" alignItems="baseline" spacing={1}>
+        <Typography variant="subtitle2" fontWeight={600} sx={{ flex: 1 }}>
           {progress.label}
         </Typography>
+        {progress.percent !== null && (
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ fontVariantNumeric: "tabular-nums" }}
+          >
+            {progress.percent}%
+          </Typography>
+        )}
+      </Stack>
+      {!progress.waiting && (
         <LinearProgress
           variant={progress.percent === null ? "indeterminate" : "determinate"}
           value={progress.percent ?? 0}
+          sx={{ height: 4, borderRadius: 2 }}
         />
-        <Typography variant="body2" color="text.secondary">
-          {progress.hint}
-        </Typography>
-      </Stack>
-      <Section title={<FormattedMessage defaultMessage="My notes" />}>
-        <PersonalNotesEditor noteId={note.id} />
-      </Section>
+      )}
+      <Typography variant="body2" color="text.secondary">
+        {progress.hint}
+      </Typography>
     </Stack>
   );
 };
-
-const NoteProblem = ({
-  error,
-  action,
-  severity = "error",
-}: {
-  error: NoteError | string | null | undefined;
-  action?: ReactNode;
-  severity?: "error" | "warning";
-}) => {
-  const intl = useIntl();
-  const description = describeNoteError(intl, error);
-  const code = typeof error === "string" ? error : error?.code;
-  return (
-    <Alert
-      severity={severity}
-      action={
-        <Stack direction="row" spacing={1}>
-          {description.upgrade && (
-            <Button
-              color="inherit"
-              size="small"
-              onClick={openUpgradePlanDialog}
-            >
-              <FormattedMessage defaultMessage="Upgrade" />
-            </Button>
-          )}
-          {action}
-        </Stack>
-      }
-    >
-      <AlertTitle>{description.title}</AlertTitle>
-      {description.body}{" "}
-      {description.availableAt && (
-        <>
-          <FormattedMessage
-            defaultMessage="Available again {when}."
-            values={{
-              when: intl.formatDate(description.availableAt, {
-                dateStyle: "medium",
-                timeStyle: "short",
-              }),
-            }}
-          />{" "}
-        </>
-      )}
-      {code !== "audio_missing" && (
-        <FormattedMessage defaultMessage="Your audio is safe on this device." />
-      )}
-    </Alert>
-  );
-};
-
-const FailedPanel = ({ note }: { note: Note }) => (
-  <Stack spacing={3}>
-    <NoteProblem
-      error={note.error}
-      action={
-        <Button
-          color="inherit"
-          size="small"
-          onClick={() => retryNote(note.id).catch(showErrorSnackbar)}
-        >
-          <FormattedMessage defaultMessage="Retry" />
-        </Button>
-      }
-    />
-    <Section title={<FormattedMessage defaultMessage="My notes" />}>
-      <PersonalNotesEditor noteId={note.id} />
-    </Section>
-  </Stack>
-);
 
 /** Parts of a ready cloud note the server could not transcribe. */
 const FailedSegments = ({ note }: { note: Note }) => {
@@ -423,29 +596,21 @@ const FailedSegments = ({ note }: { note: Note }) => {
           key={segment.id}
           severity="warning"
           error={segment.audioPath ? segment.error : "audio_missing"}
+          hasAudio={Boolean(segment.audioPath)}
+          onRetry={
+            segment.audioPath
+              ? () =>
+                  retryNoteSegment(note.id, segment.id).catch(showErrorSnackbar)
+              : undefined
+          }
           action={
-            <>
-              {segment.audioPath && (
-                <Button
-                  color="inherit"
-                  size="small"
-                  onClick={() =>
-                    retryNoteSegment(note.id, segment.id).catch(
-                      showErrorSnackbar,
-                    )
-                  }
-                >
-                  <FormattedMessage defaultMessage="Retry" />
-                </Button>
-              )}
-              <Button
-                color="inherit"
-                size="small"
-                onClick={() => setDropSegmentId(segment.id)}
-              >
-                <FormattedMessage defaultMessage="Remove part" />
-              </Button>
-            </>
+            <Button
+              color="inherit"
+              size="small"
+              onClick={() => setDropSegmentId(segment.id)}
+            >
+              <FormattedMessage defaultMessage="Remove part" />
+            </Button>
           }
         />
       ))}
@@ -470,66 +635,153 @@ const FailedSegments = ({ note }: { note: Note }) => {
   );
 };
 
-type ReadyTab = "notes" | "mine" | "transcript";
-
-const ReadyPanel = ({ note }: { note: Note }) => {
-  const [tab, setTab] = useState<ReadyTab>("notes");
-  const hasTranscript = useAppStore(
-    (state) => getNoteTranscriptText(state, note.id).length > 0,
+const AiNotesView = ({ note }: { note: Note }) => {
+  const hasTranscript = useAppStore((state) =>
+    getNoteHasTranscript(state, note.id),
   );
   const generationAvailable = useAppStore((state) =>
     getNoteGenerationAvailableFor(state, note.id),
   );
+  const showTranscript = () => setNoteView("transcript");
+
+  if (note.generatedNotes) {
+    return <NoteMarkdown>{note.generatedNotes}</NoteMarkdown>;
+  }
+  return (
+    <Typography variant="body2" color="text.secondary">
+      {!hasTranscript ? (
+        <FormattedMessage defaultMessage="No speech was detected, so there is nothing to summarize." />
+      ) : note.status !== "ready" ? (
+        <>
+          <FormattedMessage defaultMessage="The AI notes weren't written. The transcript is ready." />{" "}
+          <Link component="button" onClick={showTranscript}>
+            <FormattedMessage defaultMessage="Show transcript" />
+          </Link>
+        </>
+      ) : generationAvailable ? (
+        <FormattedMessage defaultMessage="This note has no AI notes yet. Use Regenerate to write them from the transcript." />
+      ) : (
+        <>
+          <FormattedMessage defaultMessage="AI notes need post-processing, which is turned off. The transcript is ready." />{" "}
+          <Link component="button" onClick={openPostProcessingSettings}>
+            <FormattedMessage defaultMessage="Turn it on" />
+          </Link>
+          {" · "}
+          <Link component="button" onClick={showTranscript}>
+            <FormattedMessage defaultMessage="Show transcript" />
+          </Link>
+        </>
+      )}
+    </Typography>
+  );
+};
+
+const NoteViews = ({
+  note,
+  scrollParent,
+}: {
+  note: Note;
+  scrollParent: HTMLElement | null;
+}) => {
+  const intl = useIntl();
+  const view = useAppStore((state) => state.notes.noteView);
+  const hasTranscript = useAppStore((state) =>
+    getNoteHasTranscript(state, note.id),
+  );
+  const getTranscriptCopyText = useNoteTranscriptCopyText(note.id);
+
+  const copy = async (text: string, message: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showSnackbar(message, { mode: "success" });
+    } catch (error) {
+      showErrorSnackbar(error);
+    }
+  };
+
+  const copyAction =
+    view === "notes" && note.generatedNotes
+      ? {
+          label: intl.formatMessage({ defaultMessage: "Copy notes" }),
+          run: () =>
+            copy(
+              note.generatedNotes ?? "",
+              intl.formatMessage({ defaultMessage: "Notes copied" }),
+            ),
+        }
+      : view === "transcript" && hasTranscript
+        ? {
+            label: intl.formatMessage({ defaultMessage: "Copy transcript" }),
+            run: () =>
+              copy(
+                getTranscriptCopyText(),
+                intl.formatMessage({ defaultMessage: "Transcript copied" }),
+              ),
+          }
+        : null;
+
+  const options: { value: NoteView; label: string }[] = [
+    {
+      value: "notes",
+      label: intl.formatMessage({ defaultMessage: "AI notes" }),
+    },
+    {
+      value: "mine",
+      label: intl.formatMessage({ defaultMessage: "My notes" }),
+    },
+    {
+      value: "transcript",
+      label: intl.formatMessage({ defaultMessage: "Transcript" }),
+    },
+  ];
 
   return (
-    <Stack spacing={2}>
-      <FailedSegments note={note} />
-      <Tabs
-        value={tab}
-        onChange={(_, value: ReadyTab) => setTab(value)}
-        sx={{ borderBottom: 1, borderColor: "divider" }}
+    <Stack spacing={2.5}>
+      <Stack direction="row" alignItems="center" spacing={1}>
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <SegmentedControl<NoteView>
+            value={view}
+            options={options}
+            onChange={setNoteView}
+            ariaLabel={intl.formatMessage({ defaultMessage: "Note view" })}
+          />
+        </Box>
+        {copyAction && (
+          <Button
+            variant="text"
+            size="small"
+            startIcon={<ContentCopyRounded fontSize="small" />}
+            onClick={copyAction.run}
+            sx={{ flexShrink: 0, color: "text.secondary" }}
+          >
+            {copyAction.label}
+          </Button>
+        )}
+      </Stack>
+      <Box
+        role="region"
+        aria-label={options.find((o) => o.value === view)?.label}
       >
-        <Tab
-          value="notes"
-          label={<FormattedMessage defaultMessage="Notes" />}
-        />
-        <Tab
-          value="mine"
-          label={<FormattedMessage defaultMessage="My notes" />}
-        />
-        <Tab
-          value="transcript"
-          label={<FormattedMessage defaultMessage="Transcript" />}
-        />
-      </Tabs>
-      <Box role="tabpanel" sx={{ pb: 4 }}>
-        {tab === "notes" &&
-          (note.generatedNotes ? (
-            <NoteMarkdown>{note.generatedNotes}</NoteMarkdown>
-          ) : !hasTranscript ? (
-            <Typography variant="body2" color="text.secondary">
-              <FormattedMessage defaultMessage="No speech was detected, so there is nothing to summarize." />
-            </Typography>
-          ) : generationAvailable ? (
-            <Typography variant="body2" color="text.secondary">
-              <FormattedMessage defaultMessage="This note has no AI notes yet. Use Regenerate to write them from the transcript." />
-            </Typography>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              <FormattedMessage defaultMessage="AI notes need post-processing, which is turned off. The transcript is ready." />{" "}
-              <Link component="button" onClick={openPostProcessingSettings}>
-                <FormattedMessage defaultMessage="Turn it on" />
-              </Link>
-            </Typography>
-          ))}
-        {tab === "mine" && (
+        {view === "notes" && <AiNotesView note={note} />}
+        {view === "mine" && (
           <PersonalNotesEditor noteId={note.id} minRows={12} />
         )}
-        {tab === "transcript" && <NoteTranscript noteId={note.id} />}
+        {view === "transcript" && (
+          <NoteTranscript noteId={note.id} scrollParent={scrollParent} />
+        )}
       </Box>
     </Stack>
   );
 };
+
+const MyNotesSection = ({ noteId }: { noteId: string }) => (
+  <Stack spacing={1}>
+    <Typography variant="subtitle2" color="text.secondary">
+      <FormattedMessage defaultMessage="My notes" />
+    </Typography>
+    <PersonalNotesEditor noteId={noteId} />
+  </Stack>
+);
 
 export default function NotePage() {
   const intl = useIntl();
@@ -540,11 +792,13 @@ export default function NotePage() {
   const generationAvailable = useAppStore((state) =>
     getNoteGenerationAvailableFor(state, noteId),
   );
-  const transcript = useAppStore((state) =>
-    getNoteTranscriptText(state, noteId),
+  const hasTranscript = useAppStore((state) =>
+    getNoteHasTranscript(state, noteId),
   );
   const resumeNote = useResumeNote();
+  const canResume = useCanResumeNote(noteId);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
 
   useAsyncEffect(async () => {
     if (note) {
@@ -553,11 +807,16 @@ export default function NotePage() {
   }, [noteId, Boolean(note)]);
 
   const goBack = () => navigate(NOTES_PATH);
+  const backLabel = intl.formatMessage({ defaultMessage: "Back to notes" });
 
   if (!note) {
     return (
-      <Container maxWidth="md" sx={{ pt: 2 }}>
-        <Button startIcon={<ArrowBackRounded />} onClick={goBack}>
+      <Container maxWidth="sm" sx={{ pt: 1 }}>
+        <Button
+          startIcon={<ArrowBackRounded />}
+          onClick={goBack}
+          sx={{ ml: -1 }}
+        >
           <FormattedMessage defaultMessage="Notes" />
         </Button>
         {loaded && (
@@ -576,57 +835,41 @@ export default function NotePage() {
   const isProcessing =
     note.status === "pending" || note.status === "processing";
   const isReady = note.status === "ready";
-
-  const handleCopy = async () => {
-    const text = note.generatedNotes ?? transcript;
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-    showSnackbar(intl.formatMessage({ defaultMessage: "Copied to clipboard" }));
-  };
+  const showViews =
+    isReady ||
+    (note.status === "failed" && (hasTranscript || !!note.generatedNotes));
 
   return (
-    <Box sx={{ flex: 1, overflowY: "auto" }}>
-      <Container key={note.id} maxWidth="md" sx={{ pt: 1, pb: 6 }}>
-        <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
-          <Tooltip
-            title={intl.formatMessage({ defaultMessage: "Back to notes" })}
+    <Box
+      sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+    >
+      <Box
+        ref={setScroller}
+        sx={{
+          flex: 1,
+          overflowY: "auto",
+          pr: 2,
+          overscrollBehavior: "contain",
+        }}
+      >
+        <Container key={note.id} maxWidth="sm" sx={{ pt: 1, pb: 4 }}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            spacing={0.5}
+            sx={{ mb: 1 }}
           >
-            <IconButton
-              onClick={goBack}
-              aria-label={intl.formatMessage({
-                defaultMessage: "Back to notes",
-              })}
-              sx={{ ml: -1 }}
-            >
-              <ArrowBackRounded />
-            </IconButton>
-          </Tooltip>
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <EditTypography
-              value={note.title}
-              onChange={(next) => renameNote(note.id, String(next))}
-              validate={(next) => String(next).trim().length > 0}
-              typographyProps={{
-                variant: "h5",
-                fontWeight: 700,
-                "aria-label": intl.formatMessage({
-                  defaultMessage: "Note title, press Enter to rename",
-                }),
-              }}
-              textFieldProps={{
-                slotProps: {
-                  htmlInput: {
-                    "aria-label": intl.formatMessage({
-                      defaultMessage: "Note title",
-                    }),
-                    style: { fontSize: "1.5rem", fontWeight: 700 },
-                  },
-                },
-              }}
-            />
-          </Box>
-          {isReady && (
-            <>
+            <Tooltip title={backLabel}>
+              <IconButton
+                onClick={goBack}
+                aria-label={backLabel}
+                sx={{ ml: -1 }}
+              >
+                <ArrowBackRounded />
+              </IconButton>
+            </Tooltip>
+            <Box sx={{ flex: 1 }} />
+            {isReady && note.source === "recording" && canResume && (
               <IconAction
                 label={intl.formatMessage({
                   defaultMessage: "Resume recording",
@@ -635,6 +878,8 @@ export default function NotePage() {
               >
                 <MicRounded />
               </IconAction>
+            )}
+            {isReady && (
               <IconAction
                 label={
                   generationAvailable
@@ -651,47 +896,70 @@ export default function NotePage() {
                     showSnackbar(`${problem.title}. ${problem.body}`);
                   }
                 }}
-                disabled={!generationAvailable || !transcript}
+                disabled={!generationAvailable || !hasTranscript}
               >
                 <AutorenewRounded />
               </IconAction>
-              <IconAction
-                label={intl.formatMessage({ defaultMessage: "Copy notes" })}
-                onClick={handleCopy}
-                disabled={!note.generatedNotes && !transcript}
-              >
-                <ContentCopyRounded />
-              </IconAction>
-            </>
-          )}
-          <IconAction
-            label={intl.formatMessage({ defaultMessage: "Delete note" })}
-            onClick={() => setConfirmDelete(true)}
-          >
-            <DeleteOutlineRounded />
-          </IconAction>
-          <Button
-            variant="outlined"
-            startIcon={<QuestionAnswerOutlined />}
-            onClick={() => openNotesAsk(note.id)}
-          >
-            <FormattedMessage defaultMessage="Ask" />
-          </Button>
-        </Stack>
+            )}
+            <IconAction
+              label={intl.formatMessage({ defaultMessage: "Delete note" })}
+              onClick={() => setConfirmDelete(true)}
+            >
+              <DeleteOutlineRounded />
+            </IconAction>
+          </Stack>
 
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-          {intl.formatDate(note.createdAt, {
-            dateStyle: "full",
-          })}
-          {" · "}
-          {intl.formatTime(note.createdAt, { timeStyle: "short" })}
-        </Typography>
+          <EditTypography
+            value={note.title}
+            onChange={(next) => renameNote(note.id, String(next))}
+            validate={(next) => String(next).trim().length > 0}
+            typographyProps={{
+              variant: "h4",
+              fontWeight: 700,
+              sx: { overflowWrap: "anywhere" },
+              "aria-label": intl.formatMessage({
+                defaultMessage: "Note title, press Enter to rename",
+              }),
+            }}
+            textFieldProps={{
+              fullWidth: true,
+              sx: { width: "100%" },
+              slotProps: {
+                htmlInput: {
+                  "aria-label": intl.formatMessage({
+                    defaultMessage: "Note title",
+                  }),
+                  style: { fontSize: "2.125rem", fontWeight: 700 },
+                },
+              },
+            }}
+          />
 
-        {isActive && <RecordingPanel note={note} />}
-        {isProcessing && <ProcessingPanel note={note} />}
-        {note.status === "failed" && <FailedPanel note={note} />}
-        {isReady && <ReadyPanel note={note} />}
-      </Container>
+          <Box sx={{ mt: 1.5, mb: 3 }}>
+            <NoteMetaChips note={note} />
+          </Box>
+
+          <Stack spacing={3}>
+            {isActive && <RecordingPanel note={note} />}
+            {isProcessing && <ProcessingPanel note={note} />}
+            {note.status === "failed" && (
+              <NoteProblem
+                error={note.error}
+                hasAudio={note.source === "recording"}
+                onRetry={() => retryNote(note.id).catch(showErrorSnackbar)}
+              />
+            )}
+            {isReady && <FailedSegments note={note} />}
+            {showViews ? (
+              <NoteViews note={note} scrollParent={scroller} />
+            ) : (
+              <MyNotesSection noteId={note.id} />
+            )}
+          </Stack>
+        </Container>
+      </Box>
+
+      <NoteAskDock noteId={note.id} />
 
       <DeleteNoteDialog
         noteId={confirmDelete ? note.id : null}
