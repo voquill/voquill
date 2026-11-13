@@ -11,42 +11,57 @@ export const PILL_FLAME_DURATION_MS = 5_000;
 // The banner's critically damped spring (stiffness 200) settles in ~0.6s.
 export const PILL_FLASH_EXIT_ANIMATION_MS = 750;
 
-let pillFlashHoldUntil = 0;
-let pillFlashHoldTimer: ReturnType<typeof setTimeout> | null = null;
+type PillHoldKind = "banner" | "effect";
 
-const setPillFlashHoldUntil = (until: number): void => {
-  pillFlashHoldUntil = until;
-  if (pillFlashHoldTimer) {
-    clearTimeout(pillFlashHoldTimer);
+// "banner" is the toast/flash text, which dismiss_toast hides early; "effect"
+// is fireworks/flame, whose animation keeps running after a dismiss.
+const pillHoldUntil: Record<PillHoldKind, number> = { banner: 0, effect: 0 };
+let pillHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+const applyPillHold = (): void => {
+  if (pillHoldTimer) {
+    clearTimeout(pillHoldTimer);
+    pillHoldTimer = null;
   }
 
+  const remainingMs =
+    Math.max(pillHoldUntil.banner, pillHoldUntil.effect) - Date.now();
+  const isHeld = remainingMs > 0;
   produceAppState((draft) => {
-    draft.isPillFlashShowing = true;
+    draft.isPillFlashShowing = isHeld;
   });
+  if (isHeld) {
+    pillHoldTimer = setTimeout(applyPillHold, remainingMs);
+  } else {
+    pillHoldUntil.banner = 0;
+    pillHoldUntil.effect = 0;
+  }
+};
 
-  pillFlashHoldTimer = setTimeout(
-    () => {
-      pillFlashHoldTimer = null;
-      pillFlashHoldUntil = 0;
-      produceAppState((draft) => {
-        draft.isPillFlashShowing = false;
-      });
-    },
-    Math.max(0, until - Date.now()),
-  );
+const holdPillVisible = (kind: PillHoldKind, displayMs: number): void => {
+  const until = Date.now() + displayMs + PILL_FLASH_EXIT_ANIMATION_MS;
+  pillHoldUntil[kind] = Math.max(pillHoldUntil[kind], until);
+  applyPillHold();
 };
 
 /**
  * Keeps the pill window visible regardless of the visibility setting until a
  * flash message shown now for `displayMs` has finished its exit animation.
  */
-export const holdPillVisibleForFlash = (displayMs: number): void => {
-  const until = Date.now() + displayMs + PILL_FLASH_EXIT_ANIMATION_MS;
-  setPillFlashHoldUntil(Math.max(until, pillFlashHoldUntil));
-};
+export const holdPillVisibleForFlash = (displayMs: number): void =>
+  holdPillVisible("banner", displayMs);
 
+/** A dismissed toast only needs its exit animation; other holds are kept. */
 export const releasePillFlashHold = (): void => {
-  setPillFlashHoldUntil(Date.now() + PILL_FLASH_EXIT_ANIMATION_MS);
+  const now = Date.now();
+  if (pillHoldUntil.banner <= now) {
+    return;
+  }
+  pillHoldUntil.banner = Math.min(
+    pillHoldUntil.banner,
+    now + PILL_FLASH_EXIT_ANIMATION_MS,
+  );
+  applyPillHold();
 };
 
 export type PillToast = {
@@ -89,14 +104,14 @@ export const sendPillFlashMessage = (message: string): void => {
 };
 
 export const sendPillFireworks = (message: string): void => {
-  holdPillVisibleForFlash(PILL_FIREWORKS_DURATION_MS);
+  holdPillVisible("effect", PILL_FIREWORKS_DURATION_MS);
   invoke("sync_native_pill_assistant", {
     payload: JSON.stringify({ type: "fireworks", message }),
   }).catch(console.error);
 };
 
 export const sendPillFlame = (message: string): void => {
-  holdPillVisibleForFlash(PILL_FLAME_DURATION_MS);
+  holdPillVisible("effect", PILL_FLAME_DURATION_MS);
   invoke("sync_native_pill_assistant", {
     payload: JSON.stringify({ type: "flame", message }),
   }).catch(console.error);

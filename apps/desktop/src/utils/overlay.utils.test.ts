@@ -100,4 +100,23 @@ describe("pill flash visibility hold", () => {
     vi.advanceTimersByTime(1);
     expect(isHeld()).toBe(false);
   });
+
+  it("keeps a fireworks hold when a toast is dismissed", async () => {
+    sendPillFireworks("Congratulations!");
+    vi.advanceTimersByTime(1_000);
+    await dismissPillToast();
+
+    vi.advanceTimersByTime(
+      PILL_FIREWORKS_DURATION_MS - 1_000 + PILL_FLASH_EXIT_ANIMATION_MS - 1,
+    );
+    expect(isHeld()).toBe(true);
+    vi.advanceTimersByTime(1);
+    expect(isHeld()).toBe(false);
+  });
+
+  it("does not show a hidden pill when dismissing with no toast showing", async () => {
+    await dismissPillToast();
+
+    expect(isHeld()).toBe(false);
+  });
 });
