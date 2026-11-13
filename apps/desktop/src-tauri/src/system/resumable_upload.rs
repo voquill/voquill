@@ -630,4 +630,38 @@ mod tests {
         assert_eq!(result.outcome, UploadOutcomeKind::Expired);
         std::fs::remove_file(path).unwrap();
     }
+
+    /// Uploads to a real session URL: `NOTES_SMOKE_UPLOAD_URL=<url>
+    /// NOTES_SMOKE_UPLOAD_FILE=<path> cargo test -- --ignored smoke`.
+    #[test]
+    #[ignore]
+    fn smoke_uploads_to_a_real_session() {
+        let url = std::env::var("NOTES_SMOKE_UPLOAD_URL").unwrap();
+        let path = std::env::var("NOTES_SMOKE_UPLOAD_FILE").unwrap();
+        let client = build_client().unwrap();
+        let first = run_upload(
+            &client,
+            Path::new(&path),
+            &url,
+            &[],
+            CHUNK,
+            Some(CHUNK),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(first.outcome, UploadOutcomeKind::Partial);
+        let second = run_upload(
+            &client,
+            Path::new(&path),
+            &url,
+            &[],
+            CHUNK,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(second.outcome, UploadOutcomeKind::Complete);
+    }
 }
