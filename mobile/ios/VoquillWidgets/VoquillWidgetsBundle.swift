@@ -5,5 +5,6 @@ import WidgetKit
 struct VoquillWidgetsBundle: WidgetBundle {
     var body: some Widget {
         DictationLiveActivity()
+        MeetingNoteLiveActivity()
     }
 }

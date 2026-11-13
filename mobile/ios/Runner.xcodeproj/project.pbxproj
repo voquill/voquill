@@ -24,13 +24,16 @@
 		8A85E6652F41FCB500A6698B /* DictationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E6642F41FCB300A6698B /* DictationService.swift */; };
 		8A85E6662F41FCD500A6698B /* DarwinNotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E6602F41FC9F00A6698B /* DarwinNotificationManager.swift */; };
 		8A85E6672F41FCD500A6698B /* DictationConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E65E2F41FC7F00A6698B /* DictationConstants.swift */; };
-		8A85E6682F41FCD500A6698B /* DictationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E6642F41FCB300A6698B /* DictationService.swift */; };
 		8A85E6692F41FCD500A6698B /* DictationAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E6622F41FCAB00A6698B /* DictationAttributes.swift */; };
 		8A85E66A2F41FD3B00A6698B /* DictationAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A85E6622F41FCAB00A6698B /* DictationAttributes.swift */; };
 		8AE398A92F6305B900127B97 /* Settings.bundle in Resources */ = {isa = PBXBuildFile; fileRef = 8AE398A82F6305B900127B97 /* Settings.bundle */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		8A9E00022F50000100A6698B /* MicrophoneEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00012F50000100A6698B /* MicrophoneEngine.swift */; };
+		8A9E00042F50000100A6698B /* MeetingRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00032F50000100A6698B /* MeetingRecorder.swift */; };
+		8A9E00062F50000100A6698B /* MeetingNoteAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */; };
+		8A9E00072F50000100A6698B /* MeetingNoteAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -145,6 +148,9 @@
 		E6F4A00E09D0041319E35BE4 /* Pods-RunnerTests.profile-prod.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile-prod.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile-prod.xcconfig"; sourceTree = "<group>"; };
 		F5EAE51418F8180C64AB0A2E /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		F7BAD0074FED4C7B9AF3BB6A /* Pods-Runner.release-dev.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release-dev.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release-dev.xcconfig"; sourceTree = "<group>"; };
+		8A9E00012F50000100A6698B /* MicrophoneEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneEngine.swift; sourceTree = "<group>"; };
+		8A9E00032F50000100A6698B /* MeetingRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingRecorder.swift; sourceTree = "<group>"; };
+		8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingNoteAttributes.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -290,6 +296,9 @@
 			children = (
 				8AE398A82F6305B900127B97 /* Settings.bundle */,
 				8A85E6642F41FCB300A6698B /* DictationService.swift */,
+				8A9E00012F50000100A6698B /* MicrophoneEngine.swift */,
+				8A9E00032F50000100A6698B /* MeetingRecorder.swift */,
+				8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */,
 				8A85E6622F41FCAB00A6698B /* DictationAttributes.swift */,
 				8A85E6602F41FC9F00A6698B /* DarwinNotificationManager.swift */,
 				8A85E65E2F41FC7F00A6698B /* DictationConstants.swift */,
@@ -688,7 +697,6 @@
 			files = (
 				8A85E6662F41FCD500A6698B /* DarwinNotificationManager.swift in Sources */,
 				8A85E6672F41FCD500A6698B /* DictationConstants.swift in Sources */,
-				8A85E6682F41FCD500A6698B /* DictationService.swift in Sources */,
 				8A85E6692F41FCD500A6698B /* DictationAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -698,6 +706,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8A85E66A2F41FD3B00A6698B /* DictationAttributes.swift in Sources */,
+				8A9E00072F50000100A6698B /* MeetingNoteAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -711,6 +720,9 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				8A85E6632F41FCAD00A6698B /* DictationAttributes.swift in Sources */,
 				8A85E6652F41FCB500A6698B /* DictationService.swift in Sources */,
+				8A9E00022F50000100A6698B /* MicrophoneEngine.swift in Sources */,
+				8A9E00042F50000100A6698B /* MeetingRecorder.swift in Sources */,
+				8A9E00062F50000100A6698B /* MeetingNoteAttributes.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

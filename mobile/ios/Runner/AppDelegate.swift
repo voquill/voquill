@@ -5,14 +5,17 @@ import UIKit
 @objc class AppDelegate: FlutterAppDelegate {
   private static let appGroupId = "group.com.voquill.mobile"
   private var channel: FlutterMethodChannel?
+  private var noteRecorderChannel: NoteRecorderChannel?
 
   override func application(
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     DictationService.shared.cleanupOnLaunch()
+    MeetingRecorder.shared.cleanupOnLaunch()
 
     let controller = window?.rootViewController as! FlutterViewController
+    noteRecorderChannel = NoteRecorderChannel(binaryMessenger: controller.binaryMessenger)
     let channel = FlutterMethodChannel(
       name: "com.voquill.mobile/shared",
       binaryMessenger: controller.binaryMessenger
@@ -292,6 +295,7 @@ import UIKit
 
   override func applicationWillTerminate(_ application: UIApplication) {
     DictationService.shared.stopDictation()
+    _ = MeetingRecorder.shared.stop()
     super.applicationWillTerminate(application)
   }
 
@@ -314,6 +318,13 @@ import UIKit
       return true
     case "upgrade":
       channel?.invokeMethod("showPaywall", arguments: nil)
+      return true
+    case "note":
+      let noteId = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+        .queryItems?.first(where: { $0.name == "id" })?.value
+      if let noteId = noteId {
+        noteRecorderChannel?.deliver(action: "open", noteId: noteId)
+      }
       return true
     default:
       return false
