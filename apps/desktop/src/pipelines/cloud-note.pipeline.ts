@@ -479,7 +479,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
           case "busy":
             // Queued behind the account's other notes; clears on its own.
             this.deps.setActivity(noteId, { kind: "server-busy" });
-            await this.deps.sleep(BUSY_WAIT_MS);
+            await this.deps.sleep(
+              error instanceof NotesApiError && error.retryAfterSeconds
+                ? Math.min(error.retryAfterSeconds * 1000, MAX_BACKOFF_MS)
+                : BUSY_WAIT_MS,
+            );
             continue;
           default:
             throw error;
