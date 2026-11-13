@@ -486,7 +486,7 @@ export const getTranscribeAudioRepo = (
     } else {
       // Never fall back to another provider with the user's audio.
       repo = new UnsupportedTranscribeAudioRepo(prefs.provider);
-      prefs.warnings.push(
+      warnings.push(
         `${prefs.provider} does not support transcription; choose a transcription provider.`,
       );
     }
