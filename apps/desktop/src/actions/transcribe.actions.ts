@@ -14,7 +14,10 @@ import {
 import { getAppState, produceAppState } from "../store";
 import { PostProcessingMode, TranscriptionMode } from "../types/ai.types";
 import { AudioSamples } from "../types/audio.types";
-import { StopRecordingResponse } from "../types/transcription-session.types";
+import {
+  StopRecordingResponse,
+  TranscriptionSessionResult,
+} from "../types/transcription-session.types";
 import {
   extractJsonFromMarkdown,
   unwrapNestedLlmResponse,
@@ -299,6 +302,8 @@ export const postProcessTranscript = async ({
   };
 };
 
+export const FAILED_TRANSCRIPT_PLACEHOLDER = "[Transcription Failed]";
+
 export type StoreTranscriptionInput = {
   audio: StopRecordingResponse;
   rawTranscript: string | null;
@@ -404,7 +409,7 @@ export const storeTranscription = async (
     id: transcriptionId,
     transcript: !transcriptionFailed
       ? (input.transcript ?? "")
-      : "[Transcription Failed]",
+      : FAILED_TRANSCRIPT_PLACEHOLDER,
     createdAt: dayjs().toISOString(),
     createdByUserId: getMyEffectiveUserId(state),
     isDeleted: false,
@@ -478,4 +483,33 @@ export const storeTranscription = async (
   }
 
   return { transcription: storedTranscription, wordCount: wordsAdded };
+};
+
+export type FailedTranscriptionStorage = "saved" | "incognito" | "unsaved";
+
+/**
+ * Persists a dictation whose audio could not be transcribed as a failed
+ * History entry with its audio, so it can be retried from History.
+ */
+export const storeFailedTranscription = async (
+  audio: StopRecordingResponse,
+  result: TranscriptionSessionResult,
+): Promise<FailedTranscriptionStorage> => {
+  if (getAppState().userPrefs?.incognitoModeEnabled) {
+    return "incognito";
+  }
+
+  const { transcription } = await storeTranscription({
+    audio,
+    rawTranscript: null,
+    sanitizedTranscript: null,
+    transcript: null,
+    transcriptionMetadata: result.metadata,
+    postProcessMetadata: {},
+    warnings: dedup([
+      ...result.warnings,
+      result.failureReason ?? "Transcription failed",
+    ]),
+  });
+  return transcription?.audio ? "saved" : "unsaved";
 };

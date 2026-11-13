@@ -24,6 +24,8 @@ export type HandleTranscriptParams = {
   audio: StopRecordingResponse;
   transcriptionMetadata: TranscribeAudioMetadata;
   transcriptionWarnings: string[];
+  /** The stream failed and this transcript was re-transcribed from the recording. */
+  transcriptionRecovered: boolean;
 };
 
 export type HandleTranscriptResult = {

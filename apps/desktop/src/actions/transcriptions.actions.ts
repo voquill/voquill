@@ -1,12 +1,17 @@
 import { Transcription } from "@voquill/types";
-import { getRec } from "@voquill/utilities";
+import { countWords, getRec } from "@voquill/utilities";
 import { getTranscriptionRepo } from "../repos";
 import { getAppState, produceAppState } from "../store";
 import {
   applyReplacements,
   applySymbolConversions,
 } from "../utils/string.utils";
-import { postProcessTranscript, transcribeAudio } from "./transcribe.actions";
+import {
+  FAILED_TRANSCRIPT_PLACEHOLDER,
+  postProcessTranscript,
+  transcribeAudio,
+} from "./transcribe.actions";
+import { addWordsToCurrentUser } from "./user.actions";
 
 export const openTranscriptionDetailsDialog = (transcriptionId: string) => {
   produceAppState((draft) => {
@@ -129,4 +134,11 @@ export const retranscribeTranscription = async ({
   produceAppState((draft) => {
     draft.transcriptionById[transcriptionId] = updated;
   });
+
+  // A failed dictation never counted its words, so its first successful retry does.
+  if (transcription.transcript === FAILED_TRANSCRIPT_PLACEHOLDER) {
+    await addWordsToCurrentUser(countWords(finalTranscript)).catch((error) =>
+      console.error("Failed to update usage metrics", error),
+    );
+  }
 };

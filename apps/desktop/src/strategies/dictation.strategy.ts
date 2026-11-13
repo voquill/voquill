@@ -162,6 +162,48 @@ export class DictationStrategy extends BaseStrategy {
     };
   }
 
+  private async handleRecoveredStreamedTranscript(
+    args: HandleTranscriptParams,
+  ): Promise<HandleTranscriptResult> {
+    const sanitizedTranscript = this.sanitizeTranscript(args.rawTranscript);
+    const postProcessWarnings: string[] = [];
+
+    await this.pasteQueue;
+
+    if (sanitizedTranscript) {
+      getLogger().warning(
+        `Live output was interrupted after ${this.streamedSegmentCount} segments; copying recovered transcript to clipboard`,
+      );
+      postProcessWarnings.push(
+        "Live output was interrupted; the full recovered transcript was copied to the clipboard",
+      );
+      try {
+        await invoke<void>("copy_to_clipboard", { text: sanitizedTranscript });
+        await showToast({
+          message: getIntl().formatMessage({
+            defaultMessage:
+              "Connection dropped mid-dictation. Full transcript copied to clipboard.",
+          }),
+          toastType: "info",
+          duration: 6_000,
+        });
+      } catch (error) {
+        getLogger().error(`Failed to copy recovered transcript: ${error}`);
+        showErrorSnackbar(error);
+      }
+    }
+
+    return {
+      shouldContinue: false,
+      transcript: sanitizedTranscript,
+      sanitizedTranscript,
+      postProcessMetadata: {},
+      postProcessWarnings,
+      remoteStatus: null,
+      remoteDeviceId: null,
+    };
+  }
+
   private async handleFinalBulkTranscript(
     args: HandleTranscriptParams,
   ): Promise<HandleTranscriptResult> {
@@ -179,14 +221,24 @@ export class DictationStrategy extends BaseStrategy {
           transcript = args.processedTranscript;
           postProcessMetadata = args.serverPostProcessMetadata ?? {};
         } else {
-          const result = await postProcessTranscript({
-            rawTranscript: sanitizedTranscript,
-            toneId: args.toneId,
-          });
+          try {
+            const result = await postProcessTranscript({
+              rawTranscript: sanitizedTranscript,
+              toneId: args.toneId,
+            });
 
-          transcript = result.transcript;
-          postProcessMetadata = result.metadata;
-          postProcessWarnings = result.warnings;
+            transcript = result.transcript;
+            postProcessMetadata = result.metadata;
+            postProcessWarnings = result.warnings;
+          } catch (error) {
+            getLogger().error(
+              `Post-processing failed, using unprocessed transcript: ${error}`,
+            );
+            transcript = sanitizedTranscript;
+            postProcessWarnings.push(
+              `Post-processing failed, used unprocessed transcript: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
         }
       }
 
@@ -247,11 +299,13 @@ export class DictationStrategy extends BaseStrategy {
   async handleTranscript(
     args: HandleTranscriptParams,
   ): Promise<HandleTranscriptResult> {
-    if (this.hasStreamedSegments) {
-      return this.handleFinalStreamedTranscript(args);
-    } else {
+    if (!this.hasStreamedSegments) {
       return this.handleFinalBulkTranscript(args);
     }
+    if (args.transcriptionRecovered) {
+      return this.handleRecoveredStreamedTranscript(args);
+    }
+    return this.handleFinalStreamedTranscript(args);
   }
 
   async cleanup(): Promise<void> {

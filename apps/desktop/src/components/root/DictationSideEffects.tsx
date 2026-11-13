@@ -23,7 +23,10 @@ import {
   resolveToolPermission,
   setToolAlwaysAllow,
 } from "../../actions/tool.actions";
-import { storeTranscription } from "../../actions/transcribe.actions";
+import {
+  storeFailedTranscription,
+  storeTranscription,
+} from "../../actions/transcribe.actions";
 import { recordStreak } from "../../actions/user.actions";
 import {
   useHotkeyFire,
@@ -44,6 +47,7 @@ import type { OverlayResolvePermissionPayload } from "../../types/overlay.types"
 import {
   StopRecordingResponse,
   TranscriptionSession,
+  TranscriptionSessionResult,
 } from "../../types/transcription-session.types";
 import {
   ActivationController,
@@ -272,6 +276,41 @@ export const DictationSideEffects = () => {
     ],
   );
 
+  const saveFailedTranscription = useCallback(
+    async (
+      strategy: BaseStrategy,
+      audio: StopRecordingResponse,
+      result: TranscriptionSessionResult,
+    ): Promise<string> => {
+      getLogger().error(
+        `Transcription failed after recovery: ${result.failureReason}`,
+      );
+      if (!strategy.shouldStoreTranscript()) {
+        return intl.formatMessage({
+          defaultMessage: "Couldn't transcribe your recording.",
+        });
+      }
+
+      const storage = await storeFailedTranscription(audio, result);
+      if (storage === "saved") {
+        return intl.formatMessage({
+          defaultMessage:
+            "Couldn't transcribe your dictation. Your audio is saved in History, where you can retry it.",
+        });
+      }
+      if (storage === "incognito") {
+        return intl.formatMessage({
+          defaultMessage:
+            "Couldn't transcribe your dictation. It was not saved because incognito mode is on.",
+        });
+      }
+      return intl.formatMessage({
+        defaultMessage: "Couldn't transcribe your dictation.",
+      });
+    },
+    [intl],
+  );
+
   const stopRecordingRaw = useCallback(async (): Promise<RawStopResp> => {
     getLogger().info("Stopping recording");
     clearRecordingTimers();
@@ -346,14 +385,8 @@ export const DictationSideEffects = () => {
     });
     const rawTranscript = transcribeResult?.rawTranscript;
     getLogger().verbose(
-      `Transcription result: rawTranscript=${rawTranscript ? `${rawTranscript.length} chars` : "empty"}, toneId=${toneId ?? "none"}, app=${appTarget?.name ?? "unknown"}`,
+      `Transcription result: rawTranscript=${rawTranscript ? `${rawTranscript.length} chars` : "empty"}, recovered=${!!transcribeResult?.recovered}, failure=${transcribeResult?.failureReason ?? "none"}, toneId=${toneId ?? "none"}, app=${appTarget?.name ?? "unknown"}`,
     );
-    if (!rawTranscript) {
-      getLogger().warning("stopRecordingRaw: no rawTranscript from finalize");
-      return {
-        shouldContinue: false,
-      };
-    }
 
     const session = sessionRef.current;
     const strategy = strategyRef.current;
@@ -361,6 +394,24 @@ export const DictationSideEffects = () => {
       getLogger().warning(
         `stopRecordingRaw: refs cleared (session=${!!session}, strategy=${!!strategy})`,
       );
+      return {
+        shouldContinue: false,
+      };
+    }
+
+    if (transcribeResult?.failureReason) {
+      return {
+        shouldContinue: false,
+        abortMessage: await saveFailedTranscription(
+          strategy,
+          audio,
+          transcribeResult,
+        ),
+      };
+    }
+
+    if (!rawTranscript) {
+      getLogger().warning("stopRecordingRaw: no rawTranscript from finalize");
       return {
         shouldContinue: false,
       };
@@ -382,6 +433,7 @@ export const DictationSideEffects = () => {
       audio,
       transcriptionMetadata: transcribeResult.metadata,
       transcriptionWarnings: transcribeResult.warnings,
+      transcriptionRecovered: transcribeResult.recovered ?? false,
     });
 
     const transcript = result.transcript;
@@ -411,7 +463,7 @@ export const DictationSideEffects = () => {
     return {
       shouldContinue: result.shouldContinue,
     };
-  }, [restoreSystemVolume]);
+  }, [restoreSystemVolume, saveFailedTranscription]);
 
   const stopRecording = useCallback(async () => {
     if (isStoppingRef.current) {
