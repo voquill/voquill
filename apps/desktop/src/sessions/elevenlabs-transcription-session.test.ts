@@ -94,16 +94,21 @@ describe("ElevenLabsTranscriptionSession", () => {
     await expect(result).resolves.toMatchObject({ rawTranscript: "done" });
   });
 
-  it("completes when everything was already committed and nothing more arrives", async () => {
+  it("recovers instead of truncating when the final commit is never acknowledged", async () => {
     const { session, socket } = await startOpenSession();
-    socket.receive({ message_type: "partial_transcript", text: "hi" });
-    socket.receive({ message_type: "committed_transcript", text: "hi" });
+    socket.receive({ message_type: "partial_transcript", text: "first" });
+    socket.receive({ message_type: "committed_transcript", text: "First." });
+    // Half-open connection: the second sentence's audio drains into the OS
+    // buffer but nothing ever comes back.
+    emitAudioChunk(AUDIO.samples);
 
     const result = session.finalize(AUDIO);
     await vi.advanceTimersByTimeAsync(6_000);
 
-    await expect(result).resolves.toMatchObject({ rawTranscript: "hi" });
-    expect((await result).failureReason).toBeUndefined();
+    await expect(result).resolves.toMatchObject({
+      rawTranscript: null,
+      failureReason: "ElevenLabs did not finish within 6s",
+    });
   });
 
   it("completes at once when ElevenLabs reports there was nothing left to commit", async () => {
@@ -196,13 +201,39 @@ describe("ElevenLabsTranscriptionSession", () => {
 
   it("reports a failure on a provider error message", async () => {
     const { session, socket } = await startOpenSession();
-    socket.receive({
-      message_type: "quota_exceeded_error",
-      error: "No credits",
-    });
+    socket.receive({ message_type: "quota_exceeded", error: "No credits" });
 
     await expect(session.finalize(AUDIO)).resolves.toMatchObject({
-      failureReason: "ElevenLabs quota_exceeded_error: No credits",
+      failureReason: "ElevenLabs quota_exceeded: No credits",
     });
+  });
+
+  it.each([
+    "rate_limited",
+    "session_time_limit_exceeded",
+    "resource_exhausted",
+    "commit_throttled",
+    "auth_error",
+  ])(
+    "fails at once on %s instead of waiting for the timeout",
+    async (messageType) => {
+      const { session, socket } = await startOpenSession();
+      socket.receive({ message_type: messageType, error: "nope" });
+
+      await expect(session.finalize(AUDIO)).resolves.toMatchObject({
+        failureReason: `ElevenLabs ${messageType}: nope`,
+      });
+    },
+  );
+
+  it("ignores non-fatal notices", async () => {
+    const { session, socket } = await startOpenSession();
+    socket.receive({ message_type: "warning", message: "logging" });
+
+    const result = session.finalize(AUDIO);
+    await flushMicrotasks();
+    socket.receive({ message_type: "committed_transcript", text: "ok" });
+
+    await expect(result).resolves.toMatchObject({ rawTranscript: "ok" });
   });
 });

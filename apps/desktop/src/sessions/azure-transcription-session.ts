@@ -51,14 +51,14 @@ export class AzureTranscriptionSession extends PushStreamTranscriptionSession<Az
   ): Promise<TranscriptionSessionResult> {
     const canceledBefore = stream.getError();
     if (canceledBefore) {
-      return this.failure(`Azure recognition canceled: ${canceledBefore}`);
+      return this.failure(`Azure streaming failed: ${canceledBefore}`);
     }
 
     const startedAt = Date.now();
     const transcript = await stream.finalize();
     const canceledDuring = stream.getError();
     if (canceledDuring) {
-      return this.failure(`Azure recognition canceled: ${canceledDuring}`);
+      return this.failure(`Azure streaming failed: ${canceledDuring}`);
     }
 
     return {

@@ -6,6 +6,7 @@ import type {
   TranscriptionSession,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
+import { DictationRun } from "./dictation-runner";
 import { finishDictation } from "./dictation.actions";
 
 const mocks = vi.hoisted(() => ({
@@ -74,16 +75,14 @@ const failed: TranscriptionSessionResult = {
 const run = (
   session: TranscriptionSession,
   strategy: BaseStrategy,
-  isCurrent = () => true,
+  dictation = new DictationRun(session, strategy),
 ) =>
   finishDictation({
-    session,
-    strategy,
+    run: dictation,
     audio: AUDIO,
     toneId: null,
     a11yInfo: null,
     appTarget: null,
-    isCurrent,
   });
 
 describe("finishDictation", () => {
@@ -107,6 +106,9 @@ describe("finishDictation", () => {
     await expect(run(session, strategy)).resolves.toEqual({
       shouldContinue: false,
     });
+    expect(strategy.handleTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
 
     expect(strategy.handleTranscript).toHaveBeenCalledTimes(1);
     expect(strategy.handleTranscript).toHaveBeenCalledWith(
@@ -130,8 +132,9 @@ describe("finishDictation", () => {
     expect(strategy.handleTranscript).not.toHaveBeenCalled();
     expect(outcome).toEqual({
       shouldContinue: false,
-      abortMessage:
-        "Couldn't transcribe your dictation. Your audio is saved in History, where you can retry it.",
+      notice: {
+        body: "Couldn't transcribe your dictation. Your audio is saved in History, where you can retry it.",
+      },
     });
   });
 
@@ -143,7 +146,7 @@ describe("finishDictation", () => {
       makeStrategy(),
     );
 
-    expect(outcome.abortMessage).toBe(
+    expect(outcome.notice?.body).toBe(
       "Couldn't transcribe your dictation. It was not saved because incognito mode is on.",
     );
   });
@@ -157,23 +160,81 @@ describe("finishDictation", () => {
     );
 
     expect(mocks.storeFailedTranscription).not.toHaveBeenCalled();
-    expect(outcome.abortMessage).toBe("Couldn't transcribe your recording.");
+    expect(outcome.notice?.body).toBe("Couldn't transcribe your dictation.");
   });
 
   it("discards the result and stores nothing when cancelled during recovery", async () => {
-    let current = true;
+    const strategy = makeStrategy();
+    let dictation: DictationRun | null = null;
     const session = makeSession(async () => {
-      current = false;
+      dictation?.end();
       return { ...failed, failureReason: "Cancelled" };
     });
-    const strategy = makeStrategy();
+    dictation = new DictationRun(session, strategy);
 
-    const outcome = await run(session, strategy, () => current);
+    const outcome = await run(session, strategy, dictation);
 
-    expect(outcome).toEqual({ shouldContinue: false, superseded: true });
+    expect(outcome).toEqual({ shouldContinue: false });
     expect(mocks.storeFailedTranscription).not.toHaveBeenCalled();
     expect(mocks.storeTranscription).not.toHaveBeenCalled();
     expect(strategy.handleTranscript).not.toHaveBeenCalled();
+  });
+
+  it("stores nothing when cancelled during post-processing", async () => {
+    const strategy = makeStrategy();
+    const session = makeSession(async () => ({
+      rawTranscript: "hello",
+      metadata: {},
+      warnings: [],
+    }));
+    const dictation = new DictationRun(session, strategy);
+    strategy.handleTranscript.mockImplementation(async () => {
+      dictation.end();
+      return {
+        shouldContinue: false,
+        transcript: "Hello.",
+        sanitizedTranscript: "hello",
+        postProcessMetadata: {},
+        postProcessWarnings: [],
+      };
+    });
+
+    const outcome = await run(session, strategy, dictation);
+
+    expect(outcome).toEqual({ shouldContinue: false });
+    expect(mocks.storeTranscription).not.toHaveBeenCalled();
+    expect(mocks.refreshMember).not.toHaveBeenCalled();
+  });
+
+  it("names the real reason and keeps the audio when the word quota is used up", async () => {
+    const outcome = await run(
+      makeSession(async () => ({
+        ...failed,
+        failureReason: "Server error QUOTA_EXCEEDED: none left",
+        failureCode: "quota_exceeded",
+      })),
+      makeStrategy(),
+    );
+
+    expect(mocks.storeFailedTranscription).toHaveBeenCalledTimes(1);
+    expect(outcome.notice).toEqual({
+      title: "Word limit reached",
+      body: "You've used all your free words for today. Your audio is saved in History, where you can retry it.",
+      action: "upgrade",
+    });
+  });
+
+  it("asks the user to sign in when authentication failed", async () => {
+    const outcome = await run(
+      makeSession(async () => ({
+        ...failed,
+        failureCode: "auth_failed",
+      })),
+      makeStrategy(),
+    );
+
+    expect(outcome.notice?.action).toBe("surface_window");
+    expect(outcome.notice?.body).toContain("Sign in again");
   });
 
   it("treats silence as nothing to deliver, not a failure", async () => {

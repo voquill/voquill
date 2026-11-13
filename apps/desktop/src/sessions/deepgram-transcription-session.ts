@@ -44,12 +44,13 @@ export class DeepgramTranscriptionSession extends WebSocketTranscriptionSession 
         this.finalTranscript += (this.finalTranscript ? " " : "") + transcript;
         this.partialTranscript = "";
         this.emitInterim(transcript);
-        if (message.speech_final) {
-          this.complete();
-        }
       } else if (transcript) {
         this.partialTranscript = transcript;
       }
+    } else if (message.type === "Metadata") {
+      // After CloseStream, Deepgram sends its remaining results, then this
+      // summary, then closes: the only positive signal that nothing follows.
+      this.complete();
     } else if (message.type === "Error" || message.error) {
       this.fail(
         `Deepgram error: ${message.description ?? message.message ?? message.error ?? "unknown"}`,
@@ -61,8 +62,10 @@ export class DeepgramTranscriptionSession extends WebSocketTranscriptionSession 
     this.send(JSON.stringify({ type: "CloseStream" }));
   }
 
+  // Deepgram documents no bound for flushing after CloseStream; past this the
+  // dictation is recovered from the recording rather than cut short.
   protected getFinalizeTimeoutMs(): number {
-    return 3_000;
+    return 5_000;
   }
 
   protected buildResult() {

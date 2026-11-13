@@ -2,6 +2,7 @@ import type { TranscribeAudioMetadata } from "../actions/transcribe.actions";
 import {
   InterimResultCallback,
   StopRecordingResponse,
+  TranscriptionFailureCode,
   TranscriptionSession,
   TranscriptionSessionFinalizeOptions,
   TranscriptionSessionResult,
@@ -67,6 +68,7 @@ export abstract class WebSocketTranscriptionSession implements TranscriptionSess
   private ws: WebSocket | null = null;
   private relay: AudioChunkRelay | null = null;
   private startPromise: Promise<void> | null = null;
+  private finalizePromise: Promise<TranscriptionSessionResult> | null = null;
   private resolveReady: (() => void) | null = null;
   private isReady = false;
   private isDone = false;
@@ -99,8 +101,15 @@ export abstract class WebSocketTranscriptionSession implements TranscriptionSess
     await this.startPromise;
   }
 
-  async finalize(
+  finalize(
     _audio: StopRecordingResponse,
+    options?: TranscriptionSessionFinalizeOptions,
+  ): Promise<TranscriptionSessionResult> {
+    this.finalizePromise ??= this.runFinalize(options);
+    return this.finalizePromise;
+  }
+
+  private async runFinalize(
     options?: TranscriptionSessionFinalizeOptions,
   ): Promise<TranscriptionSessionResult> {
     if (!this.startPromise) {
@@ -195,7 +204,10 @@ export abstract class WebSocketTranscriptionSession implements TranscriptionSess
     });
   }
 
-  protected fail(reason: string): TranscriptionSessionResult {
+  protected fail(
+    reason: string,
+    code?: TranscriptionFailureCode,
+  ): TranscriptionSessionResult {
     if (!this.isDone) {
       this.failureReason = reason;
       getLogger().warning(
@@ -206,6 +218,7 @@ export abstract class WebSocketTranscriptionSession implements TranscriptionSess
         metadata: this.metadata,
         warnings: [],
         failureReason: reason,
+        ...(code ? { failureCode: code } : {}),
       });
     }
     return this.settledResult();
@@ -310,10 +323,14 @@ export abstract class WebSocketTranscriptionSession implements TranscriptionSess
       this.fail("Connection lost during recording");
       return;
     }
-    const transformed = this.transformAudio(samples);
-    this.pendingChunks.push(transformed);
-    this.pendingSampleCount += transformed.length;
-    this.flushPending(false);
+    try {
+      const transformed = this.transformAudio(samples);
+      this.pendingChunks.push(transformed);
+      this.pendingSampleCount += transformed.length;
+      this.flushPending(false);
+    } catch (error) {
+      this.fail(`Failed to send audio: ${toErrorMessage(error)}`);
+    }
   }
 
   /** Hook for providers that need resampling before chunking. */

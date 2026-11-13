@@ -6,14 +6,19 @@ export const NEW_SERVER_URL: string =
 export const getNewServerWebSocketUrl = (path: string): string =>
   NEW_SERVER_URL.replace(/^http/, "ws") + path;
 
-export async function getNewServerIdToken(
-  forceRefresh = false,
-): Promise<string> {
+export class NotAuthenticatedError extends Error {
+  constructor() {
+    super("Not authenticated");
+    this.name = "NotAuthenticatedError";
+  }
+}
+
+export async function getNewServerIdToken(): Promise<string> {
   const user = getEffectiveAuth().currentUser;
   if (!user) {
-    throw new Error("Not authenticated");
+    throw new NotAuthenticatedError();
   }
-  return await user.getIdToken(forceRefresh);
+  return await user.getIdToken();
 }
 
 /**

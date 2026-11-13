@@ -50,6 +50,7 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
   private readonly options: TranscriptionRecoveryOptions;
   private readonly lifetime = new AbortController();
   private startFailureReason: string | null = null;
+  private finalizePromise: Promise<TranscriptionSessionResult> | null = null;
 
   constructor(
     private readonly inner: TranscriptionSession | null,
@@ -69,7 +70,15 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
     }
   }
 
-  async finalize(
+  finalize(
+    audio: StopRecordingResponse,
+    options?: TranscriptionSessionFinalizeOptions,
+  ): Promise<TranscriptionSessionResult> {
+    this.finalizePromise ??= this.runFinalize(audio, options);
+    return this.finalizePromise;
+  }
+
+  private async runFinalize(
     audio: StopRecordingResponse,
     options?: TranscriptionSessionFinalizeOptions,
   ): Promise<TranscriptionSessionResult> {
@@ -83,6 +92,13 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
 
     const streamed = await this.finalizeInner(this.inner, audio, options);
     if (!streamed.failureReason || this.lifetime.signal.aborted) {
+      return streamed;
+    }
+    if (streamed.failureCode) {
+      getLogger().warning(
+        `[${this.name}] not recovering (${streamed.failureCode}): ${streamed.failureReason}`,
+      );
+      this.inner.cleanup();
       return streamed;
     }
 

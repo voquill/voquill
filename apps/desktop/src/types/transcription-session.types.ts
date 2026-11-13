@@ -8,6 +8,8 @@ export type StopRecordingResponse = {
   sampleRate?: number;
 };
 
+export type TranscriptionFailureCode = "quota_exceeded" | "auth_failed";
+
 export type TranscriptionSessionResult = {
   rawTranscript: string | null;
   processedTranscript?: string | null;
@@ -20,6 +22,8 @@ export type TranscriptionSessionResult = {
    * recovery; after recovery it means the audio could not be transcribed.
    */
   failureReason?: string | null;
+  /** Set for failures that retrying cannot fix; recovery is skipped and the user is told why. */
+  failureCode?: TranscriptionFailureCode | null;
   /** True when the transcript came from re-transcribing the recorded audio. */
   recovered?: boolean;
 };

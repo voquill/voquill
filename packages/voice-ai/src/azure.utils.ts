@@ -291,7 +291,11 @@ export type AzureStreamingSession = {
   writeAudioChunk: (chunk: Float32Array) => void;
   finalize: () => Promise<string>;
   cleanup: () => void;
-  /** Details of the error that canceled recognition, or null if none occurred. */
+  /**
+   * Why the transcript may be incomplete: the error that canceled
+   * recognition, or finalize giving up before the service reached the end of
+   * the audio. Null when recognition completed.
+   */
   getError: () => string | null;
 };
 
@@ -302,6 +306,9 @@ export type CreateAzureStreamingSessionArgs = {
   language?: string;
   prompt?: string;
 };
+
+const AZURE_FINALIZE_TIMEOUT_MS = 5_000;
+const AZURE_STOP_GRACE_MS = 2_000;
 
 export const createAzureStreamingSession = async ({
   subscriptionKey,
@@ -355,11 +362,14 @@ export const createAzureStreamingSession = async ({
       }
     };
 
+    let onRecognitionEnded: (() => void) | null = null;
+
     recognizer.canceled = (_s, e) => {
       console.error("[Azure Streaming] Recognition canceled:", e.errorDetails);
       if (e.reason === sdk.CancellationReason.Error) {
         console.error("[Azure Streaming] Error code:", e.errorCode);
         canceledError = e.errorDetails || `Azure error code ${e.errorCode}`;
+        onRecognitionEnded?.();
       }
     };
 
@@ -369,6 +379,7 @@ export const createAzureStreamingSession = async ({
 
     recognizer.sessionStopped = () => {
       console.log("[Azure Streaming] Session stopped");
+      onRecognitionEnded?.();
     };
 
     recognizer.startContinuousRecognitionAsync(
@@ -403,28 +414,36 @@ export const createAzureStreamingSession = async ({
             isFinalized = true;
             console.log("[Azure Streaming] Finalizing session...");
 
-            pushStream.close();
-
-            const timeout = setTimeout(() => {
-              console.log("[Azure Streaming] Timeout reached, finalizing with transcript length:", fullTranscript.length);
-              recognizer.close();
-              resolveFinalize(fullTranscript);
-            }, 2000);
-
-            recognizer.stopContinuousRecognitionAsync(
-              () => {
-                clearTimeout(timeout);
-                console.log("[Azure Streaming] Recognition stopped, final transcript length:", fullTranscript.length);
+            // Closing the push stream lets the service finish the audio it
+            // still holds; sessionStopped fires once it reaches the end.
+            // Stopping right away (or giving up on a timeout) would drop the
+            // last phrase, so a timeout is reported through getError().
+            let settled = false;
+            const settle = () => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timeout);
+              onRecognitionEnded = null;
+              const finish = () => {
+                clearTimeout(stopGuard);
                 recognizer.close();
                 resolveFinalize(fullTranscript);
-              },
-              (error) => {
-                clearTimeout(timeout);
+              };
+              // The text is final once recognition ended; don't let a stop
+              // call that never calls back hold the result.
+              const stopGuard = setTimeout(finish, AZURE_STOP_GRACE_MS);
+              recognizer.stopContinuousRecognitionAsync(finish, (error) => {
                 console.error("[Azure Streaming] Error stopping recognition:", error);
-                recognizer.close();
-                resolveFinalize(fullTranscript);
-              }
-            );
+                finish();
+              });
+            };
+            const timeout = setTimeout(() => {
+              canceledError ??= `Azure did not finish recognizing within ${AZURE_FINALIZE_TIMEOUT_MS / 1000}s`;
+              settle();
+            }, AZURE_FINALIZE_TIMEOUT_MS);
+            onRecognitionEnded = settle;
+
+            pushStream.close();
           });
         };
 

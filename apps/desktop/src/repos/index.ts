@@ -404,6 +404,8 @@ export type TranscribeAudioRepoOutput = {
 export const getTranscribeAudioRepo = (
   prefs: TranscriptionPrefs = getTranscriptionPrefs(getAppState()),
 ): TranscribeAudioRepoOutput => {
+  // Prefs captured for a dictation are reused per attempt; never mutate them.
+  const warnings = [...prefs.warnings];
   if (prefs.mode === "cloud") {
     let repo: BaseTranscribeAudioRepo;
     if (getIsEnterpriseEnabled()) {
@@ -414,7 +416,7 @@ export const getTranscribeAudioRepo = (
     return {
       repo,
       apiKeyId: null,
-      warnings: prefs.warnings,
+      warnings,
     };
   } else if (prefs.mode === "api") {
     let repo: BaseTranscribeAudioRepo;
@@ -456,7 +458,7 @@ export const getTranscribeAudioRepo = (
       const model =
         prefs.transcriptionModel || "Systran/faster-whisper-large-v3";
       if (!model) {
-        prefs.warnings.push("No model configured for Speaches transcription.");
+        warnings.push("No model configured for Speaches transcription.");
       }
       repo = new SpeachesTranscribeAudioRepo(
         baseUrl,
@@ -492,14 +494,14 @@ export const getTranscribeAudioRepo = (
     return {
       repo,
       apiKeyId: prefs.apiKeyId,
-      warnings: prefs.warnings,
+      warnings,
     };
   }
 
   return {
     repo: new LocalTranscribeAudioRepo(),
     apiKeyId: null,
-    warnings: prefs.warnings,
+    warnings,
   };
 };
 

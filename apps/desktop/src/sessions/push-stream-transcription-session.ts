@@ -39,6 +39,7 @@ export abstract class PushStreamTranscriptionSession<
   private stream: S | null = null;
   private relay: AudioChunkRelay | null = null;
   private startPromise: Promise<void> | null = null;
+  private finalizePromise: Promise<TranscriptionSessionResult> | null = null;
   private readonly lifetime = new AbortController();
 
   supportsStreaming(): boolean {
@@ -52,9 +53,12 @@ export abstract class PushStreamTranscriptionSession<
     await this.startPromise;
   }
 
-  async finalize(
-    _audio: StopRecordingResponse,
-  ): Promise<TranscriptionSessionResult> {
+  finalize(_audio: StopRecordingResponse): Promise<TranscriptionSessionResult> {
+    this.finalizePromise ??= this.runFinalize();
+    return this.finalizePromise;
+  }
+
+  private async runFinalize(): Promise<TranscriptionSessionResult> {
     await this.startPromise;
     const stream = this.stream;
     this.relay?.stop();

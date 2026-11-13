@@ -1,9 +1,13 @@
 import { getAppState } from "../store";
-import { TranscriptionSessionFinalizeOptions } from "../types/transcription-session.types";
+import type {
+  TranscriptionFailureCode,
+  TranscriptionSessionFinalizeOptions,
+} from "../types/transcription-session.types";
 import { getLogger } from "../utils/log.utils";
 import {
   getNewServerIdToken,
   getNewServerWebSocketUrl,
+  NotAuthenticatedError,
 } from "../utils/new-server.utils";
 import {
   buildPostProcessingPrompt,
@@ -17,6 +21,14 @@ import {
 } from "../utils/user.utils";
 import { toErrorMessage } from "./streaming-session.utils";
 import { WebSocketTranscriptionSession } from "./websocket-transcription-session";
+
+// Retrying the same account cannot fix these, so recovery is skipped and the
+// user is told why (the audio is still kept as a failed History entry).
+const NON_RETRYABLE_ERROR_CODES: Record<string, TranscriptionFailureCode> = {
+  QUOTA_EXCEEDED: "quota_exceeded",
+  AUTH_FAILED: "auth_failed",
+  AUTH_REQUIRED: "auth_failed",
+};
 
 const FINALIZE_TIMEOUT_MS = 15_000;
 const FINALIZE_WITH_PROMPT_TIMEOUT_MS = 30_000;
@@ -94,7 +106,10 @@ export class NewServerTranscriptionSession extends WebSocketTranscriptionSession
       const idToken = await getNewServerIdToken();
       this.send(JSON.stringify({ type: "auth", idToken }));
     } catch (error) {
-      this.fail(`Authentication failed: ${toErrorMessage(error)}`);
+      this.fail(
+        `Authentication failed: ${toErrorMessage(error)}`,
+        error instanceof NotAuthenticatedError ? "auth_failed" : undefined,
+      );
     }
   }
 
@@ -106,7 +121,10 @@ export class NewServerTranscriptionSession extends WebSocketTranscriptionSession
     const message = JSON.parse(String(data));
     switch (message.type) {
       case "error":
-        this.fail(`Server error ${message.code}: ${message.message}`);
+        this.fail(
+          `Server error ${message.code}: ${message.message}`,
+          NON_RETRYABLE_ERROR_CODES[message.code],
+        );
         return;
       case "authenticated":
         this.send(

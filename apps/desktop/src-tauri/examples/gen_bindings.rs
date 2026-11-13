@@ -46,6 +46,7 @@ fn main() {
         transcription_update,
         transcription_audio_load,
         purge_stale_transcription_audio,
+        transcription_audio_entries,
         export_transcription,
         export_diagnostics,
         term_create,

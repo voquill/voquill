@@ -339,4 +339,19 @@ describe("RecoverableTranscriptionSession", () => {
       });
     });
   });
+
+  it("returns the in-flight result when finalize is called twice", async () => {
+    const inner = makeInner(async () => failedResult("dropped"));
+    const transcribe = vi.fn(async () => transcribeResult("once"));
+    const session = new RecoverableTranscriptionSession(inner, { transcribe });
+
+    const [first, second] = await Promise.all([
+      session.finalize(AUDIO),
+      session.finalize(AUDIO),
+    ]);
+
+    expect(first).toBe(second);
+    expect(inner.finalize).toHaveBeenCalledTimes(1);
+    expect(transcribe).toHaveBeenCalledTimes(1);
+  });
 });
