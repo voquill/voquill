@@ -216,6 +216,26 @@ class _NoteGone implements Exception {
 LocalNote _requireLocal(NotesServices services, String id) =>
     _localOf(services, id) ?? (throw const _NoteGone());
 
+void _setReachable(NotesServices services, bool isReachable) {
+  if (_notesOf(services)?.isOffline != isReachable) return;
+  _produce(services, (notes) => notes.isOffline = !isReachable);
+}
+
+/// Remembers Ask's daily limit so every Ask box says when it comes back.
+void noteAskFailed(NotesApiException error) {
+  final services = _services;
+  if (services == null || error.code != 'ask_limit_exceeded') return;
+  final resetsAt = error.details?['resetsAt'] as String?;
+  final retryAfter = error.retryAfterSeconds;
+  final availableAt =
+      resetsAt ??
+      DateTime.now()
+          .add(Duration(seconds: retryAfter ?? 3600))
+          .toUtc()
+          .toIso8601String();
+  _produce(services, (notes) => notes.askAvailableAt = availableAt);
+}
+
 /// A plan upgrade only helps free members (pro limits are the ceiling).
 bool canUpgradeFor(NoteError? error) =>
     isQuotaError(error) &&
@@ -245,21 +265,22 @@ Future<void> initializeNotesForUser(String uid) async {
     _logger.w('Could not exclude notes from backups', e);
   }
   if (generation != _initGeneration) return;
-  await initializeNotes(
-    NotesServices(
-      api: NotesApi(
-        baseUrl: Flavor.current.apiBaseUrl,
-        getIdToken: ({bool forceRefresh = false}) async {
-          final user = FirebaseAuth.instance.currentUser;
-          if (user == null || user.uid != uid) return null;
-          return user.getIdToken(forceRefresh);
-        },
-      ),
-      store: LocalNoteStore(root),
-      recorder: _noteRecorder,
+  late final NotesServices services;
+  services = NotesServices(
+    api: NotesApi(
+      baseUrl: Flavor.current.apiBaseUrl,
+      getIdToken: ({bool forceRefresh = false}) async {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user == null || user.uid != uid) return null;
+        return user.getIdToken(forceRefresh);
+      },
+      onReachabilityChanged: (isReachable) =>
+          _setReachable(services, isReachable),
     ),
-    generation: generation,
+    store: LocalNoteStore(root),
+    recorder: _noteRecorder,
   );
+  await initializeNotes(services, generation: generation);
 }
 
 Future<void> initializeNotes(NotesServices services, {int? generation}) async {

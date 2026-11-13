@@ -9,6 +9,8 @@ import 'package:app/widgets/notes/notes_page.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'test_theme.dart';
+
 const _recording = LocalNote(
   id: 'rec',
   title: 'Standup',
@@ -70,15 +72,17 @@ void main() {
     );
 
     Future<void> show(Widget child) async {
-      await tester.pumpWidget(StoreScope(child: MaterialApp(home: child)));
+      await tester.pumpWidget(StoreScope(child: MaterialApp(theme: testTheme(), home: child)));
       await tester.pump();
     }
 
     await show(const NotesPage());
     expect(find.text('Standup'), findsOneWidget);
-    expect(find.text('Paused'), findsOneWidget);
+    expect(find.text('Recording now'), findsOneWidget);
+    expect(find.text('Paused · '), findsOneWidget);
     expect(find.text('Roadmap review'), findsOneWidget);
-    expect(find.text('Back to meeting'), findsOneWidget);
+    expect(find.byTooltip('Back to the meeting'), findsOneWidget);
+    expect(find.text('Ask your notes'), findsOneWidget);
     expect(
       tester.getTopLeft(find.text('Standup')).dy,
       lessThan(tester.getTopLeft(find.text('Roadmap review')).dy),
@@ -86,14 +90,17 @@ void main() {
 
     await show(const NotePage(noteId: 'rec'));
     expect(find.text('1:05'), findsOneWidget);
-    expect(find.byTooltip('Resume'), findsOneWidget);
-    expect(find.byTooltip('Stop'), findsOneWidget);
+    expect(find.byTooltip('Resume recording'), findsOneWidget);
+    expect(find.byTooltip('Stop and write notes'), findsOneWidget);
     expect(find.text('My notes'), findsOneWidget);
+    expect(find.text('Ask works once this meeting is processed.'), findsOneWidget);
 
     await show(const NotePage(noteId: 'ready'));
     expect(find.text('Decisions'), findsOneWidget);
+    expect(find.text('Copy notes'), findsOneWidget);
     await tester.tap(find.text('Transcript'));
     await tester.pumpAndSettle();
+    expect(find.text('Copy transcript'), findsOneWidget);
     expect(find.text('Speaker 1 · 0:00'), findsOneWidget);
     expect(find.text('Hello team'), findsOneWidget);
     expect(find.textContaining("couldn't be transcribed"), findsOneWidget);

@@ -34,6 +34,12 @@ class NotesState with EquatableMixin {
   /// A start/pause/resume/stop is in flight; recording controls wait.
   final bool isRecorderBusy;
 
+  /// The last request could not reach the server.
+  final bool isOffline;
+
+  /// Ask's daily limit was reached; it works again at this ISO time.
+  final String? askAvailableAt;
+
   /// Latest known server copy of each note.
   final Map<String, Note> noteById;
 
@@ -53,6 +59,8 @@ class NotesState with EquatableMixin {
     this.listStatus = ActionStatus.idle,
     this.loadMoreStatus = ActionStatus.idle,
     this.isRecorderBusy = false,
+    this.isOffline = false,
+    this.askAvailableAt,
     this.noteById = const {},
     this.serverNoteIds = const [],
     this.nextCursor,
@@ -71,6 +79,8 @@ class NotesState with EquatableMixin {
     listStatus,
     loadMoreStatus,
     isRecorderBusy,
+    isOffline,
+    askAvailableAt,
     noteById,
     serverNoteIds,
     nextCursor,

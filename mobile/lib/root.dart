@@ -97,6 +97,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       checkPermissions();
       syncAllNotes();
+      refreshNotes();
     }
   }
 

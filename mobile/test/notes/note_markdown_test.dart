@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'test_theme.dart';
+
 void main() {
   final launched = <String>[];
 
@@ -23,6 +25,7 @@ void main() {
   Future<void> pump(WidgetTester tester, String markdown) {
     return tester.pumpWidget(
       MaterialApp(
+        theme: testTheme(),
         home: Scaffold(body: NoteMarkdown(data: markdown)),
       ),
     );

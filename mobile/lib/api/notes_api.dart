@@ -114,14 +114,19 @@ class NotesApi {
   NotesApi({
     required this.baseUrl,
     required this.getIdToken,
+    this.onReachabilityChanged,
     http.Client? client,
   }) : _client = client ?? http.Client();
 
   final String baseUrl;
   final Future<String?> Function({bool forceRefresh}) getIdToken;
+
+  /// Told after every request whether the server could be reached.
+  final void Function(bool isReachable)? onReachabilityChanged;
   final http.Client _client;
 
   static const _requestTimeout = Duration(seconds: 30);
+
   /// An 8 MiB chunk at 0.5 Mbit/s takes ~2.3 min; a request suspended with
   /// the app is abandoned after this and resumed from the session's offset.
   static const _chunkTimeout = Duration(minutes: 3);
@@ -457,19 +462,26 @@ class NotesApi {
   }) async {
     try {
       final future = run();
-      return await (timeout == null ? future : future.timeout(timeout));
+      final result = await (timeout == null ? future : future.timeout(timeout));
+      onReachabilityChanged?.call(true);
+      return result;
     } on NotesApiException {
       rethrow;
     } on SocketException catch (e) {
-      throw NotesApiException.network(e.message);
+      throw _unreachable(e.message);
     } on HttpException catch (e) {
-      throw NotesApiException.network(e.message);
+      throw _unreachable(e.message);
     } on http.ClientException catch (e) {
-      throw NotesApiException.network(e.message);
+      throw _unreachable(e.message);
     } on TimeoutException {
-      throw const NotesApiException.network('The request timed out.');
+      throw _unreachable('The request timed out.');
     } on HandshakeException catch (e) {
-      throw NotesApiException.network(e.message);
+      throw _unreachable(e.message);
     }
+  }
+
+  NotesApiException _unreachable(String message) {
+    onReachabilityChanged?.call(false);
+    return NotesApiException.network(message);
   }
 }

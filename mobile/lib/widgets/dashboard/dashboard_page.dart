@@ -97,7 +97,8 @@ class _DashboardPageState extends State<DashboardPage> {
       bottomNavigationBar: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const ActiveNoteBanner(),
+          // The Notes tab pins the recording itself.
+          if (_pages[_selectedIndex] is! NotesPage) const ActiveNoteBanner(),
           NavigationBar(
             selectedIndex: _selectedIndex,
             onDestinationSelected: (index) {

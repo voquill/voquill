@@ -3,7 +3,7 @@ import 'package:app/utils/note_utils.dart';
 import 'package:app/utils/theme_utils.dart';
 import 'package:app/widgets/common/app_animated_size.dart';
 import 'package:app/widgets/notes/note_elapsed_text.dart';
-import 'package:app/widgets/notes/note_state_label.dart';
+import 'package:app/widgets/notes/note_state_text.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 

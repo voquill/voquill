@@ -160,11 +160,15 @@ const _genericNoteError = 'Something went wrong while processing this note.';
 
 /// "at 4:40 PM" today, "on Nov 24 at 4:40 PM" later; from an ISO time or a
 /// number of seconds in [details].
-String _when(Map<String, dynamic>? details, List<String> timeKeys) {
+String _when(
+  Map<String, dynamic>? details,
+  List<String> timeKeys, {
+  DateTime? now,
+}) {
   for (final key in timeKeys) {
     final at = DateTime.tryParse(details?[key] as String? ?? '')?.toLocal();
     if (at == null) continue;
-    final now = DateTime.now();
+    now ??= DateTime.now();
     final time = DateFormat.jm().format(at);
     final isToday =
         at.year == now.year && at.month == now.month && at.day == now.day;
@@ -191,7 +195,8 @@ String _describeAudioQuota(Map<String, dynamic>? d) {
     return 'This is longer than your $allowance of meeting audio per 30 days. '
         'Split it into shorter notes.';
   }
-  final base = "You've used your $allowance of meeting audio for the last 30 days.";
+  final base =
+      "You've used your $allowance of meeting audio for the last 30 days.";
   if (d?['availableAt'] != null) {
     return '$base This fits again ${_when(d, const ['availableAt'])}.';
   }
@@ -224,7 +229,7 @@ _noteErrorMessages = {
       'Your account is still being set up. Try again in a moment.',
   'transcription_failed': (_) =>
       'The recording could not be transcribed right now.',
-  'unsupported_audio': (_) => 'Part of the recording could not be read.',
+  'unsupported_audio': (_) => 'The audio could not be read.',
   'audio_missing': (_) =>
       'The server no longer has this audio. Retry to upload it again.',
   'generation_failed': (_) => 'The notes could not be written right now.',
@@ -312,3 +317,129 @@ String transcriptText(List<NoteSegment> segments) => transcriptLines(segments)
       (line) => line.label.isEmpty ? line.text : '${line.label}\n${line.text}',
     )
     .join('\n\n');
+
+/// One row of the grouped notes list: a day header or a note.
+sealed class NoteListEntry {
+  const NoteListEntry();
+}
+
+class NoteDayHeader extends NoteListEntry {
+  final String label;
+  const NoteDayHeader(this.label);
+}
+
+class NoteRow extends NoteListEntry {
+  final NoteView view;
+
+  /// Position inside its day's card, for rounded corners and dividers.
+  final bool isFirstInDay;
+  final bool isLastInDay;
+
+  const NoteRow(
+    this.view, {
+    required this.isFirstInDay,
+    required this.isLastInDay,
+  });
+}
+
+DateTime _day(DateTime local) => DateTime(local.year, local.month, local.day);
+
+/// "Today", "Yesterday", "Tue, Nov 10", or "Nov 10, 2025" in another year.
+/// Days are local calendar days, so a note made at 23:59 and one made at
+/// 00:01 land under different headers.
+String noteDayLabel(DateTime createdAt, DateTime now) {
+  final day = _day(createdAt.toLocal());
+  final today = _day(now.toLocal());
+  final days = DateTime.utc(
+    today.year,
+    today.month,
+    today.day,
+  ).difference(DateTime.utc(day.year, day.month, day.day)).inDays;
+  if (days == 0) return 'Today';
+  if (days == 1) return 'Yesterday';
+  if (day.year == today.year) return DateFormat('EEE, MMM d').format(day);
+  return DateFormat('MMM d, y').format(day);
+}
+
+/// Groups [views] (already newest first) under day headers. Notes being
+/// recorded are expected to be shown separately, pinned on top.
+List<NoteListEntry> groupNotesByDay(List<NoteView> views, DateTime now) {
+  final entries = <NoteListEntry>[];
+  for (var i = 0; i < views.length; i++) {
+    final view = views[i];
+    final label = noteDayLabel(view.createdAt, now);
+    final isFirst =
+        i == 0 || noteDayLabel(views[i - 1].createdAt, now) != label;
+    final isLast =
+        i == views.length - 1 ||
+        noteDayLabel(views[i + 1].createdAt, now) != label;
+    if (isFirst) entries.add(NoteDayHeader(label));
+    entries.add(NoteRow(view, isFirstInDay: isFirst, isLastInDay: isLast));
+  }
+  return entries;
+}
+
+/// "45 min", "1 h 5 min", "Under a minute"; for lists and chips.
+String formatNoteLength(int ms) {
+  final minutes = (ms / Duration.millisecondsPerMinute).round();
+  if (minutes < 1) return 'Under a minute';
+  if (minutes < 60) return '$minutes min';
+  final hours = minutes ~/ 60;
+  final rest = minutes % 60;
+  return rest == 0 ? '$hours h' : '$hours h $rest min';
+}
+
+String formatNoteTime(DateTime createdAt) =>
+    DateFormat.jm().format(createdAt.toLocal());
+
+/// Why the Ask box is disabled right now, or null when it works. [noteId]
+/// scopes it to one note; null asks across all notes.
+String? askUnavailableReason(
+  NotesState notes, {
+  String? noteId,
+  required DateTime now,
+}) {
+  final availableAt = DateTime.tryParse(notes.askAvailableAt ?? '');
+  if (availableAt != null && availableAt.isAfter(now)) {
+    return "You've reached today's Ask limit. It resets "
+        '${_when({'resetsAt': notes.askAvailableAt}, const ['resetsAt'], now: now)}.';
+  }
+  if (notes.isOffline) return "You're offline. Ask needs a connection.";
+  if (noteId != null) {
+    final view = buildNoteView(notes, noteId);
+    if (view != null && !view.canAsk) {
+      return view.state.isCapturing
+          ? 'Ask works once this meeting is processed.'
+          : 'Ask works once the notes are ready.';
+    }
+  }
+  return null;
+}
+
+/// The list's second line for a note that is not being recorded (those
+/// show a live timer instead): length, then state when it needs attention.
+String noteStatusLine(NoteView view) {
+  final ms = view.durationMs(DateTime.now());
+  final isImport =
+      (view.local?.source ?? view.server?.source) == NoteSource.imported;
+  final length = isImport
+      ? 'Imported transcript'
+      : ms > 0
+      ? formatNoteLength(ms)
+      : null;
+  final progress = view.uploadProgress;
+  final state = switch (view.state) {
+    NoteDisplayState.recording => 'Recording',
+    NoteDisplayState.paused => 'Paused',
+    NoteDisplayState.waitingForConnection => 'Waiting for connection',
+    NoteDisplayState.queued => 'Queued',
+    NoteDisplayState.uploading =>
+      progress == null ? 'Uploading' : 'Uploading ${(progress * 100).round()}%',
+    NoteDisplayState.processing => 'Writing notes',
+    NoteDisplayState.failed => "Couldn't process",
+    NoteDisplayState.draft => 'Not processed',
+    NoteDisplayState.ready =>
+      view.failedSegmentError == null ? null : "Part couldn't be transcribed",
+  };
+  return [?length, ?state].join(' · ');
+}
