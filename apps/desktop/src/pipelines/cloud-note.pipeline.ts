@@ -417,9 +417,15 @@ export class CloudNotePipeline extends BaseNotePipeline {
         return;
       }
       if (error instanceof NotesApiError && error.code === "note_deleted") {
-        // Deleted on another device: the contract says to treat it as deleted here.
-        await this.deps.store.deleteNote(noteId, { deleteAudio: true });
-        return;
+        // Deleted on another device. Drop this copy, unless it holds audio
+        // the server never got: then keep it (as failed) and say so.
+        const hasUnsentAudio = this.deps.store
+          .getSegments(noteId)
+          .some((segment) => segment.audioPath !== null);
+        if (!hasUnsentAudio) {
+          await this.deps.store.deleteNote(noteId, { deleteAudio: false });
+          return;
+        }
       }
       const noteError = toNoteError(error);
       getLogger().error(`Cloud note processing stopped (${noteError.code})`);

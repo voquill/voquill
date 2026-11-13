@@ -61,7 +61,8 @@ const messages = defineMessages({
   },
   deletedTitle: { defaultMessage: "This note was deleted on another device" },
   deletedBody: {
-    defaultMessage: "It can't be sent to Voquill cloud again.",
+    defaultMessage:
+      "Its recording is kept here because it was never uploaded. Delete this note once you no longer need the audio.",
   },
   unavailableTitle: {
     defaultMessage: "Voquill Notes is unavailable right now",

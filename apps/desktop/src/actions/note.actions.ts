@@ -816,7 +816,8 @@ export const askNotes = async (question: string): Promise<void> => {
           message.sources = event.sources;
         } else if (event.type === "done") {
           message.sources = event.sources;
-          message.content = event.answer || message.content;
+          // The final answer is authoritative; streamed blocks were a preview.
+          message.content = event.answer;
         } else if (event.type === "delta") {
           message.content += event.text;
         } else {

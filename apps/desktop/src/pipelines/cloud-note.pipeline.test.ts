@@ -1000,8 +1000,8 @@ describe("CloudNotePipeline third contract revision", () => {
     expect(harness.store.getSegments("note")[1].status).toBe("transcribed");
   });
 
-  it("treats a note deleted on another device as deleted here", async () => {
-    const harness = createHarness();
+  it("drops a copy deleted on another device when it holds no unsent audio", async () => {
+    const harness = createHarness({ segments: [] });
     harness.server.failNext(
       "putNote",
       new NotesApiError(409, "note_deleted", "deleted"),
@@ -1009,5 +1009,62 @@ describe("CloudNotePipeline third contract revision", () => {
     await harness.pipeline.process("note");
     expect(harness.store.getNote("note")).toBeNull();
     expect(harness.server.calls.filter((c) => c === "processNote")).toEqual([]);
+  });
+});
+
+describe("CloudNotePipeline note deleted elsewhere", () => {
+  it("keeps unsent audio and explains why", async () => {
+    const harness = createHarness();
+    harness.server.failNext(
+      "putNote",
+      new NotesApiError(409, "note_deleted", "deleted"),
+    );
+    await harness.pipeline.process("note");
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("failed");
+    expect(note.error?.code).toBe("note_deleted");
+    expect(harness.store.getSegments("note").every((s) => s.audioPath)).toBe(
+      true,
+    );
+    expect(harness.store.log.some((e) => e.startsWith("delete-audio"))).toBe(
+      false,
+    );
+  });
+
+  it("refuses a generation-only retry during the cooldown without looping", async () => {
+    const harness = createHarness({
+      note: localNote({
+        status: "failed",
+        error: { code: "generation_failed", message: "" },
+      }),
+    });
+    await harness.server.putNote("note", {
+      title: "t",
+      titleSource: "default",
+      personalNotes: "",
+      createdAt: NOW,
+    });
+    await harness.store.updateNote("note", (note) => {
+      note.status = "pending";
+      note.cloud!.onServer = true;
+    });
+    harness.store.segments.set("note", []);
+    harness.server.failNext(
+      "processNote",
+      new NotesApiError(429, "regenerate_cooldown", "wait", {
+        retryAfterSeconds: 90,
+        availableAt: "2999-01-01T00:00:00.000Z",
+      }),
+    );
+    await harness.pipeline.process("note");
+    const note = harness.store.getNote("note")!;
+    expect(note.status).toBe("failed");
+    expect(note.error).toMatchObject({
+      code: "regenerate_cooldown",
+      details: { availableAt: "2999-01-01T00:00:00.000Z" },
+    });
+    expect(
+      harness.server.calls.filter((c) => c === "processNote"),
+    ).toHaveLength(1);
   });
 });
