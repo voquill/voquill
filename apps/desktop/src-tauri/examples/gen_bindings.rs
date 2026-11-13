@@ -120,6 +120,8 @@ fn main() {
         note_deletion_remove,
         meeting_capture_start,
         meeting_capture_stop,
+        meeting_capture_roll,
+        meeting_audio_unreferenced,
         meeting_capture_status,
         meeting_audio_repair,
         meeting_audio_envelope,

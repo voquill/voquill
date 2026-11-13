@@ -349,6 +349,8 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::note_deletion_remove,
             crate::commands::meeting_capture_start,
             crate::commands::meeting_capture_stop,
+            crate::commands::meeting_capture_roll,
+            crate::commands::meeting_audio_unreferenced,
             crate::commands::meeting_capture_status,
             crate::commands::meeting_audio_repair,
             crate::commands::meeting_audio_envelope,

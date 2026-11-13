@@ -85,6 +85,39 @@ pub fn delete_note_audio(app: &tauri::AppHandle, note_id: &str) -> io::Result<()
     }
 }
 
+/// A segment file on disk, identified by its directory and file names.
+pub struct SegmentFile {
+    pub note_id: String,
+    pub segment_id: String,
+    pub path: PathBuf,
+}
+
+/// Every `<noteId>/<segmentId>.wav` under the meeting audio directory.
+pub fn list_segment_files(app: &tauri::AppHandle) -> io::Result<Vec<SegmentFile>> {
+    let mut files = Vec::new();
+    for note_dir in fs::read_dir(meeting_audio_dir(app)?)? {
+        let note_dir = note_dir?;
+        if !note_dir.file_type()?.is_dir() {
+            continue;
+        }
+        let note_id = note_dir.file_name().to_string_lossy().to_string();
+        for entry in fs::read_dir(note_dir.path())? {
+            let path = entry?.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("wav") {
+                continue;
+            }
+            if let Some(segment_id) = path.file_stem().and_then(|stem| stem.to_str()) {
+                files.push(SegmentFile {
+                    note_id: note_id.clone(),
+                    segment_id: segment_id.to_string(),
+                    path: path.clone(),
+                });
+            }
+        }
+    }
+    Ok(files)
+}
+
 pub fn delete_all_meeting_audio(app: &tauri::AppHandle) -> io::Result<()> {
     let dir = meeting_audio_dir(app)?;
     fs::remove_dir_all(&dir)
@@ -175,6 +208,19 @@ impl SegmentWriter {
         Ok(Self {
             file,
             samples_written: 0,
+            last_sync: Instant::now(),
+        })
+    }
+
+    /// Continues an existing segment file after the audio it already holds
+    /// (repairing it first if it was interrupted).
+    pub fn open_append(path: &Path) -> io::Result<Self> {
+        let samples_written = repair_segment(path)?;
+        let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+        file.seek(SeekFrom::End(0))?;
+        Ok(Self {
+            file,
+            samples_written,
             last_sync: Instant::now(),
         })
     }
@@ -390,6 +436,21 @@ mod tests {
         writer.append(&[4]).unwrap();
         assert_eq!(writer.finish().unwrap(), 4);
         assert_eq!(read_with_hound(&path), vec![1, -2, 3, 4]);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn append_continues_after_the_existing_samples() {
+        let path = temp_path("append");
+        let mut writer = SegmentWriter::create(&path).unwrap();
+        writer.append(&[1, 2]).unwrap();
+        drop(writer);
+
+        let mut appending = SegmentWriter::open_append(&path).unwrap();
+        assert_eq!(appending.samples_written(), 2);
+        appending.append(&[3]).unwrap();
+        assert_eq!(appending.finish().unwrap(), 3);
+        assert_eq!(read_with_hound(&path), vec![1, 2, 3]);
         fs::remove_file(path).unwrap();
     }
 

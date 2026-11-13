@@ -38,6 +38,8 @@ pub struct ResumableUploadArgs {
     /// The session URL; it is a credential and is never logged.
     pub url: String,
     pub headers: Vec<UploadHeader>,
+    /// Stop after sending about this many bytes in this call (whole chunks).
+    pub max_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -45,6 +47,8 @@ pub struct ResumableUploadArgs {
 pub enum UploadOutcomeKind {
     /// The session has every byte.
     Complete,
+    /// This call sent its `max_bytes`; call again to continue.
+    Partial,
     /// The session is gone (404/410): request a new one and start over.
     Expired,
     /// A network error, 429 or 5xx: query and resume later.
@@ -263,6 +267,7 @@ pub fn run_upload<F: Fn(u64) + Send + Sync + 'static>(
     url: &str,
     headers: &[UploadHeader],
     chunk_bytes: u64,
+    max_bytes: Option<u64>,
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> io::Result<ResumableUploadOutcome> {
@@ -282,8 +287,18 @@ pub fn run_upload<F: Fn(u64) + Send + Sync + 'static>(
         other => return Ok(reply_outcome(other, 0, total)),
     };
     on_progress(offset);
+    let started_at = offset;
 
     while offset < total {
+        if max_bytes.is_some_and(|max| offset - started_at >= max) {
+            return Ok(outcome(
+                UploadOutcomeKind::Partial,
+                offset,
+                total,
+                None,
+                None,
+            ));
+        }
         if cancel.load(Ordering::SeqCst) {
             return Ok(cancelled(offset));
         }
@@ -469,7 +484,17 @@ mod tests {
             name: "Content-Type".to_string(),
             value: "audio/wav".to_string(),
         }];
-        run_upload(&client, path, url, &headers, CHUNK, cancel, on_progress).unwrap()
+        run_upload(
+            &client,
+            path,
+            url,
+            &headers,
+            CHUNK,
+            None,
+            cancel,
+            on_progress,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -544,6 +569,43 @@ mod tests {
 
         assert_eq!(result.outcome, UploadOutcomeKind::Cancelled);
         assert!(fake.stored.lock().unwrap().len() < (CHUNK * 4) as usize);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn stops_after_max_bytes_and_continues_on_the_next_call() {
+        let (path, bytes) = temp_file("partial", (CHUNK * 3) as usize);
+        let fake = session(None);
+        let url = serve(Arc::clone(&fake));
+        let client = build_client().unwrap();
+
+        let first = run_upload(
+            &client,
+            &path,
+            &url,
+            &[],
+            CHUNK,
+            Some(CHUNK),
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(first.outcome, UploadOutcomeKind::Partial);
+        assert_eq!(first.uploaded_bytes, CHUNK);
+
+        let second = run_upload(
+            &client,
+            &path,
+            &url,
+            &[],
+            CHUNK,
+            None,
+            Arc::new(AtomicBool::new(false)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(second.outcome, UploadOutcomeKind::Complete);
+        assert_eq!(*fake.stored.lock().unwrap(), bytes);
         std::fs::remove_file(path).unwrap();
     }
 

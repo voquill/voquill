@@ -2422,21 +2422,26 @@ pub async fn note_list(
         .map_err(|err| err.to_string())
 }
 
-/// Deletes the note's rows and every audio file recorded for it.
+/// Deletes the note's rows. With `delete_audio` (the user deleted the note)
+/// every audio file recorded for it goes too; otherwise audio files stay on
+/// disk and are offered for recovery at the next launch.
 #[tauri::command]
 #[specta::specta]
 pub async fn note_delete(
     app: AppHandle,
     id: String,
+    delete_audio: bool,
     database: State<'_, crate::state::OptionKeyDatabase>,
 ) -> Result<(), String> {
-    let note_id = id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        crate::system::meeting_audio::delete_note_audio(&app, &note_id)
-    })
-    .await
-    .map_err(|err| err.to_string())?
-    .map_err(|err| err.to_string())?;
+    if delete_audio {
+        let note_id = id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::system::meeting_audio::delete_note_audio(&app, &note_id)
+        })
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
+    }
 
     crate::db::note_queries::delete_note(database.pool(), &id)
         .await
@@ -2535,6 +2540,8 @@ pub async fn note_deletion_remove(
 pub struct MeetingCaptureStartArgs {
     pub note_id: String,
     pub segment_id: String,
+    /// Continue the existing file of this segment instead of creating it.
+    pub append: bool,
     pub preferred_microphone: Option<String>,
 }
 
@@ -2555,11 +2562,100 @@ pub async fn meeting_capture_start(
             args.note_id,
             args.segment_id,
             audio_path,
+            args.append,
             args.preferred_microphone,
         )
     })
     .await
     .map_err(|err| err.to_string())?
+}
+
+/// Continues the running meeting capture in a new segment, with no gap.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_capture_roll(
+    app: AppHandle,
+    capture: State<'_, Arc<crate::system::meeting_capture::MeetingCapture>>,
+    note_id: String,
+    segment_id: String,
+) -> Result<crate::system::meeting_capture::MeetingCaptureRolled, String> {
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || {
+        let audio_path = crate::system::meeting_audio::segment_path(&app, &note_id, &segment_id)
+            .map_err(|err| err.to_string())?;
+        capture.roll(segment_id, audio_path)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UnreferencedMeetingAudio {
+    pub note_id: String,
+    pub segment_id: String,
+    pub audio_path: String,
+    pub duration_ms: u64,
+    /// A note with this id exists (for any account).
+    pub note_exists: bool,
+}
+
+/// Meeting audio files on disk that no segment row references, repaired.
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_unreferenced(
+    app: AppHandle,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<UnreferencedMeetingAudio>, String> {
+    let pool = database.pool();
+    let referenced: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
+        "SELECT audio_path FROM note_segments WHERE audio_path IS NOT NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .map_err(|err| err.to_string())?
+    .into_iter()
+    .collect();
+    let note_ids: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT id FROM notes")
+            .fetch_all(&pool)
+            .await
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .collect();
+    let capturing = app
+        .try_state::<Arc<crate::system::meeting_capture::MeetingCapture>>()
+        .and_then(|capture| capture.status())
+        .map(|status| status.audio_path);
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut found = Vec::new();
+        for file in crate::system::meeting_audio::list_segment_files(&app)? {
+            let audio_path = file.path.to_string_lossy().to_string();
+            if referenced.contains(&audio_path) || capturing.as_deref() == Some(audio_path.as_str())
+            {
+                continue;
+            }
+            let samples = match crate::system::meeting_audio::repair_segment(&file.path) {
+                Ok(samples) => samples,
+                Err(err) => {
+                    log::warn!("Skipping unreadable meeting audio file: {err}");
+                    continue;
+                }
+            };
+            found.push(UnreferencedMeetingAudio {
+                note_exists: note_ids.contains(&file.note_id),
+                note_id: file.note_id,
+                segment_id: file.segment_id,
+                audio_path,
+                duration_ms: crate::system::meeting_audio::samples_to_ms(samples),
+            });
+        }
+        Ok::<_, std::io::Error>(found)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -2690,6 +2786,7 @@ pub async fn resumable_upload(
                         &args.url,
                         &args.headers,
                         UPLOAD_CHUNK_BYTES,
+                        args.max_bytes,
                         cancel,
                         move |uploaded_bytes| {
                             let payload = ResumableUploadProgress {

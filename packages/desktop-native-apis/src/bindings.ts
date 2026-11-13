@@ -826,11 +826,13 @@ async noteList(cloudOwnerUserId: string | null) : Promise<Result<Note[], string>
 }
 },
 /**
- * Deletes the note's rows and every audio file recorded for it.
+ * Deletes the note's rows. With `delete_audio` (the user deleted the note)
+ * every audio file recorded for it goes too; otherwise audio files stay on
+ * disk and are offered for recovery at the next launch.
  */
-async noteDelete(id: string) : Promise<Result<null, string>> {
+async noteDelete(id: string, deleteAudio: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("note_delete", { id }) };
+    return { status: "ok", data: await TAURI_INVOKE("note_delete", { id, deleteAudio }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -903,6 +905,28 @@ async meetingCaptureStart(args: MeetingCaptureStartArgs) : Promise<Result<Meetin
 async meetingCaptureStop() : Promise<Result<MeetingCaptureStopped | null, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("meeting_capture_stop") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Continues the running meeting capture in a new segment, with no gap.
+ */
+async meetingCaptureRoll(noteId: string, segmentId: string) : Promise<Result<MeetingCaptureRolled, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_roll", { noteId, segmentId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Meeting audio files on disk that no segment row references, repaired.
+ */
+async meetingAudioUnreferenced() : Promise<Result<UnreferencedMeetingAudio[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_unreferenced") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1055,6 +1079,18 @@ export type AppProcessMatch = { pid: number; exePath: string | null; appName: st
 export type AppTarget = { id: string; name: string; createdAt: string; toneId: string | null; iconPath: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AppTargetUpsertArgs = { id: string; name: string; toneId?: string | null; iconPath?: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AudioClip = "start_recording_clip" | "stop_recording_clip" | "alert_linux_clip" | "alert_macos_clip" | "alert_windows_10_clip" | "alert_windows_11_clip"
+/**
+ * Why a capture stopped receiving audio. Everything captured so far is on disk.
+ */
+export type CaptureInterruption = 
+/**
+ * The device stopped delivering audio (unplugged, stream died).
+ */
+"no-audio" | 
+/**
+ * Audio could not be written (disk full, permissions).
+ */
+"write-failed"
 export type CompositorBinding = { actionName: string; keys: string[] }
 export type CreateFloatingWindowArgs = { url: string; title: string | null; width: number | null; height: number | null; minWidth: number | null; minHeight: number | null; x: number | null; y: number | null; decorations: boolean | null; transparent: boolean | null; resizable: boolean | null; focused: boolean | null }
 export type CurrentAppInfoResponse = { appName: string; iconBase64: string }
@@ -1137,13 +1173,21 @@ wroteFile: boolean;
  * it picks up the bridge. Always true when `wrote_file` is true.
  */
 restartRequired: boolean }
-export type MeetingCaptureStartArgs = { noteId: string; segmentId: string; preferredMicrophone: string | null }
-export type MeetingCaptureStatus = { noteId: string; segmentId: string; audioPath: string; durationMs: number; level: number; 
+export type MeetingCaptureRolled = { finished: MeetingCaptureStopped; status: MeetingCaptureStatus }
+export type MeetingCaptureStartArgs = { noteId: string; segmentId: string; 
 /**
- * Audio stopped arriving (device unplugged, stream died, disk error).
- * Everything captured so far is on disk.
+ * Continue the existing file of this segment instead of creating it.
  */
-interrupted: boolean }
+append: boolean; preferredMicrophone: string | null }
+export type MeetingCaptureStatus = { noteId: string; segmentId: string; audioPath: string; 
+/**
+ * The whole segment file, including audio it had before this capture.
+ */
+durationMs: number; 
+/**
+ * What the segment file held when this capture started appending to it.
+ */
+initialDurationMs: number; level: number; interruption: CaptureInterruption | null }
 export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
 export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
@@ -1182,7 +1226,11 @@ uploadId: string; filePath: string;
 /**
  * The session URL; it is a credential and is never logged.
  */
-url: string; headers: UploadHeader[] }
+url: string; headers: UploadHeader[]; 
+/**
+ * Stop after sending about this many bytes in this call (whole chunks).
+ */
+maxBytes: number | null }
 export type ResumableUploadOutcome = { outcome: UploadOutcomeKind; uploadedBytes: number; totalBytes: number; status: number | null; message: string | null }
 /**
  * Reads `enterprise.json` from the app config directory. Returns `None` if the file does not exist.
@@ -1208,12 +1256,21 @@ export type TranscriptionAudioSnapshot = { filePath: string; durationMs: number 
  * set. The status line is always disabled.
  */
 export type TrayMeetingMenu = { startLabel: string | null; statusLabel: string | null; stopLabel: string | null }
+export type UnreferencedMeetingAudio = { noteId: string; segmentId: string; audioPath: string; durationMs: number; 
+/**
+ * A note with this id exists (for any account).
+ */
+noteExists: boolean }
 export type UploadHeader = { name: string; value: string }
 export type UploadOutcomeKind = 
 /**
  * The session has every byte.
  */
 "complete" | 
+/**
+ * This call sent its `max_bytes`; call again to continue.
+ */
+"partial" | 
 /**
  * The session is gone (404/410): request a new one and start over.
  */
