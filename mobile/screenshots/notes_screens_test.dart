@@ -260,10 +260,7 @@ void main() {
       setNotes(_listState());
       await shot('list', const NotesPage());
       setNotes(_listState(recording: true));
-      await shot(
-        'list-recording',
-        const NotesPage(),
-      );
+      await shot('list-recording', const NotesPage());
       await shot(
         'banner-on-other-tabs',
         const Scaffold(
@@ -336,6 +333,19 @@ void main() {
         ),
       );
       await shot('note-recording', const NotePage(noteId: 'rec'));
+      setNotes(
+        _noteState(
+          _local(
+            'rec',
+            'Weekly sync with design',
+            _today(17, 2),
+            LocalNotePhase.recording,
+            startedAt: _iso(_now),
+          ),
+          isSilent: true,
+        ),
+      );
+      await shot('note-recording-silent', const NotePage(noteId: 'rec'));
       setNotes(
         _noteState(
           _local(
@@ -612,10 +622,16 @@ void main() {
   });
 }
 
-NotesState _noteState(LocalNote local, {NoteSyncStatus? sync}) => NotesState(
+NotesState _noteState(
+  LocalNote local, {
+  NoteSyncStatus? sync,
+  bool isSilent = false,
+}) => NotesState(
   isInitialized: true,
   localNoteById: {local.id: local},
   syncById: {local.id: ?sync},
+  recorderNoteId: local.isCapturing ? local.id : null,
+  isRecorderSilent: isSilent,
 );
 
 extension on NotesState {
