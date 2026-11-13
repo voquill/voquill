@@ -115,17 +115,17 @@ const messages = defineMessages({
   interruptedTitle: { defaultMessage: "Recording stopped unexpectedly" },
   interruptedBody: {
     defaultMessage:
-      "The microphone stopped delivering audio or Voquill closed. Everything recorded until then is saved. Resume to keep recording, or Stop to write the notes.",
+      "The microphone stopped delivering audio or Voquill closed. Everything recorded until then is saved. Resume to keep recording, or Finish to write the notes.",
   },
   writeFailedTitle: { defaultMessage: "Recording stopped: disk error" },
   writeFailedBody: {
     defaultMessage:
-      "Voquill couldn't save more audio, for example because the disk is full. Everything recorded until then is saved. Free up space, then Resume or Stop.",
+      "Voquill couldn't save more audio, for example because the disk is full. Everything recorded until then is saved. Free up space, then Resume or Finish.",
   },
   lengthLimitTitle: { defaultMessage: "This meeting reached its length limit" },
   lengthLimitBody: {
     defaultMessage:
-      "A note can hold up to 8 hours of recording. Everything recorded is saved: Stop to write the notes, then start a new note to keep recording.",
+      "A note can hold up to 8 hours of recording. Everything recorded is saved: Finish to write the notes, then start a new note to keep recording.",
   },
   dictationWordsTitle: {
     defaultMessage: "Not enough Voquill words for this meeting",

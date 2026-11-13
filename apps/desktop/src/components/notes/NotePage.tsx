@@ -440,7 +440,17 @@ const NoteProblem = ({
         <FormattedMessage defaultMessage="Your recording is safe on this device." />
       )}
       {hasActions && (
-        <Stack direction="row" spacing={1} sx={{ mt: 1, ml: -0.75 }}>
+        <Stack
+          direction="row"
+          spacing={1}
+          useFlexGap
+          flexWrap="wrap"
+          sx={{
+            mt: 1,
+            ml: -0.75,
+            "& .MuiButton-root": { whiteSpace: "nowrap" },
+          }}
+        >
           {showRetry && (
             <Button color="inherit" size="small" onClick={onRetry}>
               <FormattedMessage defaultMessage="Retry" />
