@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const tauriFetch = vi.hoisted(() => vi.fn());
+
+vi.mock("@tauri-apps/plugin-http", () => ({ fetch: tauriFetch }));
 import { INITIAL_APP_STATE } from "../state/app.state";
 import { setAppState } from "../store";
 import { getTranscribeAudioRepo } from ".";
 import {
+  AssemblyAITranscribeAudioRepo,
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
   TranscribeAudioOutput,
@@ -350,5 +355,105 @@ describe("DeepgramTranscribeAudioRepo", () => {
 
     expect(repo).toBeInstanceOf(DeepgramTranscribeAudioRepo);
     expect(apiKeyId).toBe("deepgram-key");
+  });
+});
+
+describe("AssemblyAITranscribeAudioRepo", () => {
+  const jsonResponse = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200 });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    tauriFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uploads the audio, then polls until the transcript is complete", async () => {
+    tauriFetch
+      .mockResolvedValueOnce(jsonResponse({ upload_url: "https://cdn/a.wav" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "t1", status: "queued" }))
+      .mockResolvedValueOnce(jsonResponse({ id: "t1", status: "processing" }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "t1", status: "completed", text: "Hello there." }),
+      );
+    const repo = new AssemblyAITranscribeAudioRepo("aai-key");
+
+    const pending = repo.transcribeAudio({
+      samples: createSamples(1, 16000),
+      sampleRate: 16000,
+      language: "en",
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await pending;
+
+    expect(result.text).toBe("Hello there.");
+    const [uploadUrl, uploadInit] = tauriFetch.mock.calls[0];
+    expect(uploadUrl).toBe("https://api.assemblyai.com/v2/upload");
+    expect(uploadInit.headers).toMatchObject({ authorization: "aai-key" });
+    expect(JSON.parse(tauriFetch.mock.calls[1][1].body)).toEqual({
+      audio_url: "https://cdn/a.wav",
+      language_code: "en",
+    });
+    expect(tauriFetch.mock.calls[3][0]).toBe(
+      "https://api.assemblyai.com/v2/transcript/t1",
+    );
+  });
+
+  it("requests language detection for automatic language", async () => {
+    tauriFetch
+      .mockResolvedValueOnce(jsonResponse({ upload_url: "https://cdn/a.wav" }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "t1", status: "completed", text: "Hola." }),
+      );
+    const repo = new AssemblyAITranscribeAudioRepo("aai-key");
+
+    await repo.transcribeAudio({
+      samples: createSamples(1, 16000),
+      sampleRate: 16000,
+      language: "auto",
+    });
+
+    expect(JSON.parse(tauriFetch.mock.calls[1][1].body)).toEqual({
+      audio_url: "https://cdn/a.wav",
+      language_detection: true,
+    });
+  });
+
+  it("throws when AssemblyAI reports a transcription error", async () => {
+    tauriFetch
+      .mockResolvedValueOnce(jsonResponse({ upload_url: "https://cdn/a.wav" }))
+      .mockResolvedValueOnce(
+        jsonResponse({ id: "t1", status: "error", error: "Audio too short" }),
+      );
+    const repo = new AssemblyAITranscribeAudioRepo("aai-key");
+
+    await expect(
+      repo.transcribeAudio({
+        samples: createSamples(1, 16000),
+        sampleRate: 16000,
+      }),
+    ).rejects.toThrow("AssemblyAI transcription failed: Audio too short");
+  });
+
+  it("is selected for AssemblyAI API transcription preferences", () => {
+    const state = structuredClone(INITIAL_APP_STATE);
+    state.settings.aiTranscription.mode = "api";
+    state.settings.aiTranscription.selectedApiKeyId = "aai-key";
+    state.apiKeyById["aai-key"] = {
+      id: "aai-key",
+      name: "AssemblyAI",
+      provider: "assemblyai",
+      createdAt: "2026-06-03T00:00:00.000Z",
+      keyFull: "aai-secret",
+      transcriptionModel: null,
+    };
+    setAppState(state, true);
+
+    const { repo } = getTranscribeAudioRepo();
+
+    expect(repo).toBeInstanceOf(AssemblyAITranscribeAudioRepo);
   });
 });

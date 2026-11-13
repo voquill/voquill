@@ -1,6 +1,7 @@
 import { invokeHandler } from "@voquill/functions";
 import { Nullable } from "@voquill/types";
-import { batchAsync } from "@voquill/utilities";
+import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
+import { batchAsync, delayed } from "@voquill/utilities";
 import {
   aldeaTranscribeAudio,
   azureTranscribeAudio,
@@ -23,7 +24,6 @@ import {
   ensureFloat32Array,
   normalizeSamples,
 } from "../utils/audio.utils";
-import { getEffectiveAuth } from "../utils/auth.utils";
 import { invokeEnterprise } from "../utils/enterprise.utils";
 import { getLocalTranscriptionSidecarManager } from "../sidecars";
 import {
@@ -32,12 +32,17 @@ import {
   type LocalWhisperModel,
   normalizeLocalWhisperModel,
 } from "../utils/local-transcription.utils";
+import { AUTO_LANGUAGE } from "../utils/language.utils";
 import { getLogger } from "../utils/log.utils";
-import { NEW_SERVER_URL } from "../utils/new-server.utils";
+import {
+  getNewServerIdToken,
+  getNewServerWebSocketUrl,
+} from "../utils/new-server.utils";
 import { openaiCompatibleTranscribeAudio } from "../utils/openai-compatible-transcribe.utils";
 import { collectDictionaryEntries } from "../utils/prompt.utils";
 import { speachesTranscribeAudio } from "../utils/speaches.utils";
 import {
+  getTranscriptionTimeoutMs,
   mergeTranscriptions,
   splitAudioTranscription,
 } from "../utils/transcribe.utils";
@@ -451,6 +456,110 @@ export class ElevenLabsTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   }
 }
 
+const ASSEMBLYAI_API_URL = "https://api.assemblyai.com/v2";
+const ASSEMBLYAI_POLL_INTERVAL_MS = 1_000;
+
+type AssemblyAITranscriptResponse = {
+  id: string;
+  status: "queued" | "processing" | "completed" | "error";
+  text?: string | null;
+  error?: string;
+};
+
+export class AssemblyAITranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  private apiKey: string;
+
+  constructor(apiKey: string) {
+    super();
+    this.apiKey = apiKey;
+  }
+
+  protected getSegmentDurationSec(): number {
+    return 600;
+  }
+
+  protected getOverlapDurationSec(): number {
+    return 5;
+  }
+
+  protected getBatchChunkCount(): number {
+    return 2;
+  }
+
+  private async request<T>(path: string, init: RequestInit): Promise<T> {
+    const response = await tauriFetch(`${ASSEMBLYAI_API_URL}${path}`, {
+      ...init,
+      headers: { authorization: this.apiKey, ...init.headers },
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => "");
+      throw new Error(
+        `AssemblyAI ${path} failed: ${response.status} ${detail}`,
+      );
+    }
+    return (await response.json()) as T;
+  }
+
+  protected async transcribeSegment(
+    input: TranscribeSegmentInput,
+  ): Promise<TranscribeAudioOutput> {
+    const deadline =
+      Date.now() +
+      getTranscriptionTimeoutMs(
+        (input.samples.length / input.sampleRate) * 1000,
+      );
+
+    const { upload_url } = await this.request<{ upload_url: string }>(
+      "/upload",
+      {
+        method: "POST",
+        headers: { "content-type": "application/octet-stream" },
+        body: buildWaveFile(input.samples, input.sampleRate),
+      },
+    );
+
+    const language =
+      input.language && input.language !== AUTO_LANGUAGE
+        ? { language_code: input.language }
+        : { language_detection: true };
+    let transcript = await this.request<AssemblyAITranscriptResponse>(
+      "/transcript",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ audio_url: upload_url, ...language }),
+      },
+    );
+
+    while (
+      transcript.status === "queued" ||
+      transcript.status === "processing"
+    ) {
+      if (Date.now() > deadline) {
+        throw new Error("AssemblyAI transcription timed out");
+      }
+      await delayed(ASSEMBLYAI_POLL_INTERVAL_MS);
+      transcript = await this.request<AssemblyAITranscriptResponse>(
+        `/transcript/${transcript.id}`,
+        { method: "GET" },
+      );
+    }
+
+    if (transcript.status === "error") {
+      throw new Error(`AssemblyAI transcription failed: ${transcript.error}`);
+    }
+
+    return {
+      text: transcript.text ?? "",
+      metadata: {
+        inferenceDevice: "API • AssemblyAI",
+        modelSize: null,
+        transcriptionMode: "api",
+      },
+    };
+  }
+}
+
 export class DeepgramTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   private apiKey: string;
   private model: string;
@@ -792,7 +901,10 @@ export class NewServerTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   protected async transcribeSegment(
     input: TranscribeSegmentInput,
   ): Promise<TranscribeAudioOutput> {
-    const wsUrl = NEW_SERVER_URL.replace(/^http/, "ws") + "/v1/transcribe-raw";
+    const wsUrl = getNewServerWebSocketUrl("/v1/transcribe-raw");
+    const timeoutMs = getTranscriptionTimeoutMs(
+      (input.samples.length / input.sampleRate) * 1000,
+    );
 
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(wsUrl);
@@ -808,19 +920,23 @@ export class NewServerTranscribeAudioRepo extends BaseTranscribeAudioRepo {
       ) => {
         if (resolved) return;
         resolved = true;
+        clearTimeout(timeout);
         (fn as (v: unknown) => void)(value);
       };
 
+      const timeout = setTimeout(() => {
+        settle(
+          reject,
+          new Error(
+            `Transcription timed out after ${Math.round(timeoutMs / 1000)}s`,
+          ),
+        );
+        cleanup();
+      }, timeoutMs);
+
       ws.onopen = async () => {
         try {
-          const auth = getEffectiveAuth();
-          const user = auth.currentUser;
-          if (!user) {
-            settle(reject, new Error("Not authenticated"));
-            cleanup();
-            return;
-          }
-          const idToken = await user.getIdToken();
+          const idToken = await getNewServerIdToken();
           ws.send(JSON.stringify({ type: "auth", idToken }));
         } catch (err) {
           settle(reject, err instanceof Error ? err : new Error(String(err)));

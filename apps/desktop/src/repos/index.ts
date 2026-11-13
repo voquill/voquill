@@ -99,6 +99,7 @@ import {
 import { ToolRepo } from "./tool.repo";
 import {
   AldeaTranscribeAudioRepo,
+  AssemblyAITranscribeAudioRepo,
   AzureTranscribeAudioRepo,
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
@@ -459,6 +460,8 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
       );
     } else if (prefs.provider === "elevenlabs") {
       repo = new ElevenLabsTranscribeAudioRepo(prefs.apiKeyValue);
+    } else if (prefs.provider === "assemblyai") {
+      repo = new AssemblyAITranscribeAudioRepo(prefs.apiKeyValue);
     } else if (prefs.provider === "deepgram") {
       repo = new DeepgramTranscribeAudioRepo(
         prefs.apiKeyValue,

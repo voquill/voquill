@@ -265,3 +265,13 @@ export const splitAudioTranscription = (args: {
 
   return segments;
 };
+
+const TRANSCRIPTION_TIMEOUT_BASE_MS = 20_000;
+const TRANSCRIPTION_TIMEOUT_PER_AUDIO_MS = 0.25;
+
+/** Upper bound for one network transcription request of the given audio length. */
+export const getTranscriptionTimeoutMs = (audioDurationMs: number): number =>
+  Math.round(
+    TRANSCRIPTION_TIMEOUT_BASE_MS +
+      audioDurationMs * TRANSCRIPTION_TIMEOUT_PER_AUDIO_MS,
+  );
