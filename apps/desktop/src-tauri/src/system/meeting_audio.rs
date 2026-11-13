@@ -347,20 +347,39 @@ pub fn segment_envelope(path: &Path, window_ms: u64) -> io::Result<Vec<f32>> {
 /// Converts mono f32 audio at the device rate to 16 kHz i16 with a
 /// windowed-sinc (Hann) low-pass at 0.45 × the lower of the two rates, so
 /// speech keeps its full band and content above 8 kHz does not alias.
-/// Streaming: each output waits for `half_width` input samples of lookahead;
-/// `flush` emits the rest at the end of a capture.
+///
+/// The filter is precomputed as a polyphase table when the converter is
+/// built: one kernel per fractional output position (one for 48 kHz, 160 for
+/// 44.1 kHz). Rates with more distinct positions than `MAX_RESAMPLER_PHASES`
+/// use the nearest of that many. Processing then only multiplies and adds,
+/// and never allocates: input history lives in a fixed ring. Each output
+/// waits for `half_width` input samples of lookahead; `flush` emits the rest
+/// at the end of a capture. 16 kHz input passes straight through.
 pub struct Downsampler {
-    /// Input samples per output sample.
-    step: f64,
-    /// Cutoff in cycles per input sample.
-    cutoff: f64,
-    /// Kernel half-width in input samples.
+    input_rate: u64,
+    passthrough: bool,
     half_width: usize,
-    /// Input history; `history[0]` is input sample `base`.
-    history: std::collections::VecDeque<f64>,
-    base: u64,
+    taps: usize,
+    phases: u64,
+    /// `phases × taps` normalized weights; phase `p` is at offset `p × taps`.
+    kernels: Vec<f32>,
+    /// The last `ring.len()` input samples; sample `i` lives at `i % len`.
+    ring: Vec<f32>,
+    first_sample: f32,
     consumed: u64,
     produced: u64,
+}
+
+/// Kernel width in cycles of the cutoff: wide enough for a steep transition.
+const RESAMPLER_ZERO_CROSSINGS: f64 = 16.0;
+/// Bounds the table for unusual rates (at most 1/1024 of a sample off).
+const MAX_RESAMPLER_PHASES: u64 = 1_024;
+
+fn greatest_common_divisor(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 fn to_i16(value: f64) -> i16 {
@@ -368,78 +387,124 @@ fn to_i16(value: f64) -> i16 {
     (value.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16
 }
 
-/// Kernel width in cycles of the cutoff: wide enough for a steep transition.
-const RESAMPLER_ZERO_CROSSINGS: f64 = 16.0;
-
 impl Downsampler {
     pub fn new(input_rate: u32) -> Self {
-        let step = input_rate.max(1) as f64 / MEETING_SAMPLE_RATE as f64;
+        let input_rate = u64::from(input_rate.max(1));
+        let output_rate = u64::from(MEETING_SAMPLE_RATE);
+        let step = input_rate as f64 / output_rate as f64;
         let cutoff = 0.45 * (1.0 / step).min(1.0);
+        let half_width = (RESAMPLER_ZERO_CROSSINGS / (2.0 * cutoff)).ceil() as usize;
+        let taps = 2 * half_width + 1;
+        let phases = (output_rate / greatest_common_divisor(input_rate, output_rate))
+            .min(MAX_RESAMPLER_PHASES);
+        let passthrough = input_rate == output_rate;
+
+        let mut kernels = Vec::new();
+        if !passthrough {
+            kernels.reserve_exact(phases as usize * taps);
+            for phase in 0..phases {
+                let fraction = phase as f64 / phases as f64;
+                let start = kernels.len();
+                for tap in 0..taps {
+                    let distance = fraction - (tap as f64 - half_width as f64);
+                    let x = 2.0 * cutoff * distance;
+                    let sinc = if x.abs() < 1e-9 {
+                        1.0
+                    } else {
+                        (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+                    };
+                    let window = if distance.abs() <= half_width as f64 + 1.0 {
+                        0.5 + 0.5
+                            * (std::f64::consts::PI * distance / (half_width as f64 + 1.0)).cos()
+                    } else {
+                        0.0
+                    };
+                    kernels.push((sinc * window) as f32);
+                }
+                let sum: f32 = kernels[start..].iter().sum();
+                if sum.abs() > 1e-12 {
+                    kernels[start..]
+                        .iter_mut()
+                        .for_each(|weight| *weight /= sum);
+                }
+            }
+        }
+
         Self {
-            step,
-            cutoff,
-            half_width: (RESAMPLER_ZERO_CROSSINGS / (2.0 * cutoff)).ceil() as usize,
-            history: std::collections::VecDeque::new(),
-            base: 0,
+            input_rate,
+            passthrough,
+            half_width,
+            taps,
+            phases,
+            kernels,
+            // Room for one kernel's span plus the input of one output step.
+            ring: vec![0.0; (taps + step.ceil() as usize + 2).next_power_of_two()],
+            first_sample: 0.0,
             consumed: 0,
             produced: 0,
         }
     }
 
-    fn sample_at(&self, index: i64) -> f64 {
-        // Before the first sample, hold it (no click at the start).
-        let offset = (index - self.base as i64).max(0) as usize;
-        self.history
-            .get(offset)
-            .or_else(|| self.history.back())
-            .copied()
-            .unwrap_or(0.0)
+    /// Input sample `index`, holding the first one before the start and the
+    /// last one past the end (for `flush`).
+    fn sample_at(&self, index: i64) -> f32 {
+        if index < 0 {
+            return self.first_sample;
+        }
+        let index = (index as u64).min(self.consumed.saturating_sub(1));
+        self.ring[(index % self.ring.len() as u64) as usize]
+    }
+
+    /// Where output `produced` sits: the input sample at or before it, and
+    /// which precomputed phase covers the fraction.
+    fn position(&self) -> (i64, usize) {
+        let output_rate = u64::from(MEETING_SAMPLE_RATE);
+        let numerator = self.produced * self.input_rate;
+        let mut whole = numerator / output_rate;
+        let remainder = numerator % output_rate;
+        let mut phase = (remainder * self.phases + output_rate / 2) / output_rate;
+        if phase == self.phases {
+            whole += 1;
+            phase = 0;
+        }
+        (whole as i64, phase as usize)
     }
 
     fn emit(&mut self, output: &mut Vec<i16>) {
-        let center = self.produced as f64 * self.step;
-        let half = self.half_width as f64;
-        let first = (center - half).ceil() as i64;
-        let last = (center + half).floor() as i64;
-        let (mut sum, mut weights) = (0.0, 0.0);
-        for index in first..=last {
-            let distance = center - index as f64;
-            let x = 2.0 * self.cutoff * distance;
-            let sinc = if x.abs() < 1e-9 {
-                1.0
-            } else {
-                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
-            };
-            let window = 0.5 + 0.5 * (std::f64::consts::PI * distance / (half + 1.0)).cos();
-            let weight = sinc * window;
-            sum += weight * self.sample_at(index);
-            weights += weight;
+        let (whole, phase) = self.position();
+        let kernel = &self.kernels[phase * self.taps..(phase + 1) * self.taps];
+        let first = whole - self.half_width as i64;
+        let mut sum = 0.0f32;
+        for (tap, weight) in kernel.iter().enumerate() {
+            sum += weight * self.sample_at(first + tap as i64);
         }
-        let value = if weights.abs() > 1e-12 { sum / weights } else { 0.0 };
-        output.push(to_i16(value));
+        output.push(to_i16(f64::from(sum)));
         self.produced += 1;
-        // Keep only what later outputs still read.
-        let keep_from = (self.produced as f64 * self.step - half).floor().max(0.0) as u64;
-        while self.base < keep_from && self.history.len() > 1 {
-            self.history.pop_front();
-            self.base += 1;
-        }
+    }
+
+    /// The output position is at or before the last input sample.
+    fn has_input_for_next(&self) -> bool {
+        (self.produced * self.input_rate) < self.consumed * u64::from(MEETING_SAMPLE_RATE)
     }
 
     pub fn process(&mut self, input: &[f32], output: &mut Vec<i16>) {
-        if self.step == 1.0 {
-            // Already 16 kHz: nothing to filter, and no lookahead delay.
-            output.extend(input.iter().map(|&sample| to_i16(sample as f64)));
+        if self.passthrough {
+            output.extend(input.iter().map(|&sample| to_i16(f64::from(sample))));
             return;
         }
+        let ring_len = self.ring.len() as u64;
         for &sample in input {
-            self.history
-                .push_back(if sample.is_finite() { sample as f64 } else { 0.0 });
+            let sample = if sample.is_finite() { sample } else { 0.0 };
+            if self.consumed == 0 {
+                self.first_sample = sample;
+            }
+            self.ring[(self.consumed % ring_len) as usize] = sample;
             self.consumed += 1;
-            while (self.produced as f64 * self.step) < self.consumed as f64
-                && (self.produced as f64 * self.step + self.half_width as f64).floor()
-                    < self.consumed as f64
-            {
+            while self.has_input_for_next() {
+                let (whole, _) = self.position();
+                if whole + self.half_width as i64 >= self.consumed as i64 {
+                    break;
+                }
                 self.emit(output);
             }
         }
@@ -447,7 +512,10 @@ impl Downsampler {
 
     /// The outputs still waiting for lookahead, at the end of the input.
     pub fn flush(&mut self, output: &mut Vec<i16>) {
-        while (self.produced as f64 * self.step) < self.consumed as f64 {
+        if self.passthrough {
+            return;
+        }
+        while self.has_input_for_next() {
             self.emit(output);
         }
     }
@@ -594,7 +662,9 @@ mod tests {
 
     #[test]
     fn downsampler_produces_16k_from_common_rates() {
-        for rate in [48_000u32, 44_100, 16_000, 8_000] {
+        for rate in [
+            48_000u32, 44_100, 96_000, 32_000, 22_050, 16_000, 8_000, 47_999,
+        ] {
             let mut downsampler = Downsampler::new(rate);
             let mut output = Vec::new();
             let input = vec![0.5f32; rate as usize / 10];
@@ -613,13 +683,18 @@ mod tests {
 
     fn sine(rate: u32, hz: f64, seconds: f64) -> Vec<f32> {
         (0..(rate as f64 * seconds) as usize)
-            .map(|i| (0.8 * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin()) as f32)
+            .map(|i| {
+                (0.8 * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin()) as f32
+            })
             .collect()
     }
 
     fn rms_i16(samples: &[i16]) -> f64 {
         let middle = &samples[samples.len() / 4..samples.len() * 3 / 4];
-        (middle.iter().map(|v| (*v as f64 / i16::MAX as f64).powi(2)).sum::<f64>()
+        (middle
+            .iter()
+            .map(|v| (*v as f64 / i16::MAX as f64).powi(2))
+            .sum::<f64>()
             / middle.len() as f64)
             .sqrt()
     }
@@ -628,22 +703,91 @@ mod tests {
     fn downsampler_keeps_speech_and_removes_what_would_alias() {
         let input_rms = 0.8 / 2f64.sqrt();
         for rate in [48_000u32, 44_100] {
-            for (hz, min_gain, max_gain) in [(300.0, 0.97, 1.03), (3_000.0, 0.97, 1.03), (6_000.0, 0.9, 1.05)] {
+            for (hz, min_gain, max_gain) in [
+                (300.0, 0.97, 1.03),
+                (3_000.0, 0.97, 1.03),
+                (6_000.0, 0.9, 1.05),
+            ] {
                 let mut downsampler = Downsampler::new(rate);
                 let mut output = Vec::new();
                 for chunk in sine(rate, hz, 0.5).chunks(480) {
                     downsampler.process(chunk, &mut output);
                 }
                 let gain = rms_i16(&output) / input_rms;
-                assert!(gain > min_gain && gain < max_gain, "{rate} Hz input, {hz} Hz: gain {gain}");
+                assert!(
+                    gain > min_gain && gain < max_gain,
+                    "{rate} Hz input, {hz} Hz: gain {gain}"
+                );
             }
             for hz in [9_000.0, 12_000.0, 20_000.0] {
                 let mut downsampler = Downsampler::new(rate);
                 let mut output = Vec::new();
                 downsampler.process(&sine(rate, hz, 0.5), &mut output);
                 let gain = rms_i16(&output) / input_rms;
-                assert!(gain < 0.03, "{rate} Hz input, {hz} Hz leaked with gain {gain}");
+                assert!(
+                    gain < 0.03,
+                    "{rate} Hz input, {hz} Hz leaked with gain {gain}"
+                );
             }
+        }
+    }
+
+    #[test]
+    fn downsampler_odd_rates_use_a_bounded_table_and_still_filter() {
+        let rate = 47_999;
+        let downsampler = Downsampler::new(rate);
+        assert_eq!(downsampler.phases, MAX_RESAMPLER_PHASES);
+        let input_rms = 0.8 / 2f64.sqrt();
+        for (hz, expect_pass) in [(1_000.0, true), (12_000.0, false)] {
+            let mut downsampler = Downsampler::new(rate);
+            let mut output = Vec::new();
+            downsampler.process(&sine(rate, hz, 0.5), &mut output);
+            let gain = rms_i16(&output) / input_rms;
+            if expect_pass {
+                assert!((gain - 1.0).abs() < 0.03, "{hz} Hz gain {gain}");
+            } else {
+                assert!(gain < 0.03, "{hz} Hz leaked with gain {gain}");
+            }
+        }
+    }
+
+    #[test]
+    fn downsampler_keeps_its_buffers_fixed_while_processing() {
+        for rate in [48_000u32, 44_100] {
+            let mut downsampler = Downsampler::new(rate);
+            let ring = (downsampler.ring.len(), downsampler.ring.capacity());
+            let kernels = downsampler.kernels.capacity();
+            let mut output = Vec::with_capacity(4_096);
+            for chunk in sine(rate, 440.0, 2.0).chunks(rate as usize / 10) {
+                output.clear();
+                downsampler.process(chunk, &mut output);
+            }
+            assert_eq!((downsampler.ring.len(), downsampler.ring.capacity()), ring);
+            assert_eq!(downsampler.kernels.capacity(), kernels);
+            assert_eq!(output.capacity(), 4_096, "the caller's buffer is reused");
+        }
+    }
+
+    /// Cost of resampling one second of audio, as a meeting does for hours:
+    /// `cargo test --release --lib resampler_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn resampler_cost_per_second_of_audio() {
+        const SECONDS: usize = 120;
+        for rate in [48_000u32, 44_100] {
+            let input = sine(rate, 440.0, 1.0);
+            let chunk = rate as usize / 10;
+            let mut downsampler = Downsampler::new(rate);
+            let mut output = Vec::with_capacity(4_096);
+            let started = std::time::Instant::now();
+            for _ in 0..SECONDS {
+                for piece in input.chunks(chunk) {
+                    output.clear();
+                    downsampler.process(piece, &mut output);
+                }
+            }
+            let per_second = started.elapsed().as_secs_f64() * 1_000.0 / SECONDS as f64;
+            println!("resampler {rate} Hz -> 16 kHz: {per_second:.3} ms per second of audio");
         }
     }
 
