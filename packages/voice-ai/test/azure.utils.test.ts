@@ -104,3 +104,60 @@ describe("azureTranscribeRecording", () => {
     ).rejects.toThrow("Azure recognition failed: Connection was closed");
   });
 });
+
+describe("createAzureStreamingSession finalize", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.resetModules();
+    vi.doUnmock("microsoft-cognitiveservices-speech-sdk");
+  });
+
+  const start = async (onStreamClosed: (recognizer: never) => void) => {
+    const recognizers: { emit: (h: string, e: unknown) => void }[] = [];
+    const sdk = mockSpeechSdk(() => {});
+    sdk.pushStream.close.mockImplementation(() =>
+      onStreamClosed(recognizers[0] as never),
+    );
+    const { createAzureStreamingSession } = await import("../src/azure.utils");
+    const session = await createAzureStreamingSession({
+      subscriptionKey: "key",
+      region: "eastus",
+      sampleRate: 16_000,
+      language: "en",
+    });
+    recognizers.push(sdk.recognizers[0] as never);
+    return { session, recognizer: sdk.recognizers[0] };
+  };
+
+  it("waits for the service to reach the end of the audio before stopping", async () => {
+    const { session, recognizer } = await start((r: never) => {
+      const rec = r as unknown as {
+        emit: (h: string, e: unknown) => void;
+        stopContinuousRecognitionAsync: ReturnType<typeof vi.fn>;
+      };
+      expect(rec.stopContinuousRecognitionAsync).not.toHaveBeenCalled();
+      rec.emit("recognized", phrase("Last phrase."));
+      rec.emit("sessionStopped", {});
+    });
+    recognizer.emit("recognized", phrase("First phrase."));
+
+    await expect(session.finalize()).resolves.toBe(
+      "First phrase. Last phrase.",
+    );
+    expect(session.getError()).toBeNull();
+  });
+
+  it("reports a timeout through getError instead of passing partial text off as complete", async () => {
+    vi.useFakeTimers();
+    const { session, recognizer } = await start(() => {});
+    recognizer.emit("recognized", phrase("First phrase."));
+
+    const result = session.finalize();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(result).resolves.toBe("First phrase.");
+    expect(session.getError()).toBe(
+      "Azure did not finish recognizing within 5s",
+    );
+  });
+});

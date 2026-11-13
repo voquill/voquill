@@ -126,7 +126,7 @@ describe("AzureTranscriptionSession", () => {
 
     expect(azure.finalize).not.toHaveBeenCalled();
     expect(result.failureReason).toBe(
-      "Azure recognition canceled: WebSocket disconnected",
+      "Azure streaming failed: WebSocket disconnected",
     );
   });
 
@@ -143,7 +143,7 @@ describe("AzureTranscriptionSession", () => {
     const result = await session.finalize(AUDIO);
     expect(result.rawTranscript).toBeNull();
     expect(result.failureReason).toBe(
-      "Azure recognition canceled: Service timeout",
+      "Azure streaming failed: Service timeout",
     );
   });
 
