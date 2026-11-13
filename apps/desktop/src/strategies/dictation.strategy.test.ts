@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   postProcessTranscript: vi.fn(),
   showToast: vi.fn(),
   realtimeOutputEnabled: false,
+  remoteTargetDeviceId: null as string | null,
 }));
 
 vi.mock(import("@tauri-apps/api/core"), async (importOriginal) => ({
@@ -46,7 +47,11 @@ vi.mock(import("../utils/tone.utils"), async (importOriginal) => {
 vi.mock(import("../utils/user.utils"), async (importOriginal) => ({
   ...(await importOriginal()),
   getMyUserPreferences: () =>
-    ({ realtimeOutputEnabled: mocks.realtimeOutputEnabled }) as never,
+    ({
+      realtimeOutputEnabled: mocks.realtimeOutputEnabled,
+      remoteOutputEnabled: !!mocks.remoteTargetDeviceId,
+      remoteTargetDeviceId: mocks.remoteTargetDeviceId,
+    }) as never,
 }));
 
 const params = (
@@ -71,6 +76,7 @@ describe("DictationStrategy.handleTranscript", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.realtimeOutputEnabled = false;
+    mocks.remoteTargetDeviceId = null;
     mocks.invoke.mockResolvedValue(undefined);
     mocks.routeTranscriptOutput.mockResolvedValue({
       delivered: true,
@@ -139,5 +145,31 @@ describe("DictationStrategy.handleTranscript", () => {
     });
     expect(mocks.showToast).toHaveBeenCalledTimes(1);
     expect(result.transcript).toBe("hello there world");
+  });
+
+  it("sends a recovered transcript to the paired device when remote output is on", async () => {
+    mocks.realtimeOutputEnabled = true;
+    mocks.remoteTargetDeviceId = "laptop";
+    mocks.routeTranscriptOutput.mockResolvedValue({
+      delivered: true,
+      remote: true,
+    });
+    const strategy = new DictationStrategy();
+    strategy.handleInterimSegment("hello there");
+
+    const result = await strategy.handleTranscript(
+      params({ transcriptionRecovered: true }),
+    );
+
+    expect(routedTexts()).toEqual(["hello there ", "hello there world "]);
+    expect(mocks.invoke).not.toHaveBeenCalledWith(
+      "copy_to_clipboard",
+      expect.anything(),
+    );
+    expect(result).toMatchObject({
+      transcript: "hello there world",
+      remoteStatus: "sent",
+      remoteDeviceId: "laptop",
+    });
   });
 });

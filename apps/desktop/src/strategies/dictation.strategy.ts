@@ -162,33 +162,60 @@ export class DictationStrategy extends BaseStrategy {
     };
   }
 
+  /**
+   * Live segments were already delivered before the stream broke, so the full
+   * recovered transcript is handed over separately instead of being pasted on
+   * top of them: to the paired device when remote output is on, otherwise to
+   * the clipboard.
+   */
   private async handleRecoveredStreamedTranscript(
     args: HandleTranscriptParams,
   ): Promise<HandleTranscriptResult> {
     const sanitizedTranscript = this.sanitizeTranscript(args.rawTranscript);
     const postProcessWarnings: string[] = [];
+    const remoteDeviceId = this.getActiveRemoteTargetDeviceId();
+    let remoteStatus: "sent" | null = null;
 
     await this.pasteQueue;
 
     if (sanitizedTranscript) {
       getLogger().warning(
-        `Live output was interrupted after ${this.streamedSegmentCount} segments; copying recovered transcript to clipboard`,
-      );
-      postProcessWarnings.push(
-        "Live output was interrupted; the full recovered transcript was copied to the clipboard",
+        `Live output was interrupted after ${this.streamedSegmentCount} segments; delivering recovered transcript ${remoteDeviceId ? "to paired device" : "to clipboard"}`,
       );
       try {
-        await invoke<void>("copy_to_clipboard", { text: sanitizedTranscript });
+        if (remoteDeviceId) {
+          const result = await routeTranscriptOutput({
+            text: sanitizedTranscript.trim() + " ",
+            mode: "dictation",
+            currentAppId: args.currentApp?.id ?? null,
+          });
+          remoteStatus = result.remote && result.delivered ? "sent" : null;
+          postProcessWarnings.push(
+            "Live output was interrupted; the full recovered transcript was sent to the paired device",
+          );
+        } else {
+          await invoke<void>("copy_to_clipboard", {
+            text: sanitizedTranscript,
+          });
+          postProcessWarnings.push(
+            "Live output was interrupted; the full recovered transcript was copied to the clipboard",
+          );
+        }
         await showToast({
-          message: getIntl().formatMessage({
-            defaultMessage:
-              "Connection dropped mid-dictation. Full transcript copied to clipboard.",
-          }),
+          message: remoteDeviceId
+            ? getIntl().formatMessage({
+                defaultMessage:
+                  "Connection dropped mid-dictation. Full transcript sent to your paired device.",
+              })
+            : getIntl().formatMessage({
+                defaultMessage:
+                  "Connection dropped mid-dictation. Full transcript copied to clipboard.",
+              }),
           toastType: "info",
           duration: 6_000,
         });
       } catch (error) {
-        getLogger().error(`Failed to copy recovered transcript: ${error}`);
+        getLogger().error(`Failed to deliver recovered transcript: ${error}`);
         showErrorSnackbar(error);
       }
     }
@@ -199,8 +226,8 @@ export class DictationStrategy extends BaseStrategy {
       sanitizedTranscript,
       postProcessMetadata: {},
       postProcessWarnings,
-      remoteStatus: null,
-      remoteDeviceId: null,
+      remoteStatus,
+      remoteDeviceId: remoteStatus ? remoteDeviceId : null,
     };
   }
 
