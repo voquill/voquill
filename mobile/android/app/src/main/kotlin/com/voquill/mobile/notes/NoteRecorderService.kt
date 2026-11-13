@@ -29,7 +29,18 @@ class NoteRecorderService : Service() {
         // Always reach the foreground first: a service started with
         // startForegroundService must call startForeground even when it is
         // about to stop, or the app crashes.
-        startInForeground()
+        try {
+            startInForeground()
+        } catch (e: Exception) {
+            // Android 15 refuses data sync once its daily allowance is used
+            // up (and 14+ refuses some types from the background).
+            Log.w(TAG, "Could not enter the foreground", e)
+            if (!NoteRecorder.isActive) {
+                NoteRecorder.clearSyncActive()
+                stopSelf()
+                return START_NOT_STICKY
+            }
+        }
         isRunning = true
         if (intent?.action == ACTION_TOGGLE_PAUSE) NoteRecorder.toggleFromNotification(this)
         if (!NoteRecorder.isActive && !NoteRecorder.isSyncActive) stopSelfCompat()

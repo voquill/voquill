@@ -37,6 +37,8 @@ object NoteRecorder {
     private const val SAMPLES_PER_FRAME = 1024
     private const val BIT_RATE = 32000
     const val MIN_FREE_BYTES = 20L * 1024 * 1024
+    private const val SILENCE_PEAK = 4
+    private const val SILENCE_AFTER_MS = 20_000L
 
     /** Notified on the main thread when the recorder changes state by itself. */
     var onStateChanged: ((Map<String, Any>) -> Unit)? = null
@@ -63,6 +65,7 @@ object NoteRecorder {
         var sessionFrames = 0L
         var isPaused = false
         var isStopping = false
+        var isSilent = false
         var thread: Thread? = null
     }
 
@@ -91,19 +94,13 @@ object NoteRecorder {
         val file = File(path)
         if (freeBytes(file.parent ?: path) < MIN_FREE_BYTES) throw LowStorageException()
 
-        val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val record = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            maxOf(minBuffer, SAMPLES_PER_FRAME * 2 * 8),
-        )
-        if (record.state != AudioRecord.STATE_INITIALIZED) {
+        val record = openAudioRecord()
+        val codec = try {
+            createEncoder()
+        } catch (e: Exception) {
             record.release()
-            throw IllegalStateException("The microphone could not be opened")
+            throw e
         }
-        val codec = createEncoder()
         val output = try {
             FileOutputStream(file)
         } catch (e: IOException) {
@@ -135,6 +132,7 @@ object NoteRecorder {
     fun pause(context: Context): Map<String, Any>? {
         synchronized(lock) {
             session?.isPaused = true
+            session?.isSilent = false
             lock.notifyAll()
         }
         NoteRecorderService.update(context)
@@ -175,6 +173,7 @@ object NoteRecorder {
             "segmentId" to session.segmentId,
             "isPaused" to session.isPaused,
             "segmentElapsedMs" to framesToMs(session.segmentFrames),
+            "isSilent" to session.isSilent,
         )
         if (reason != null) map["reason"] = reason
         return map
@@ -190,6 +189,11 @@ object NoteRecorder {
         NoteRecorderService.update(context)
     }
 
+    /** The service could not stay in the foreground for uploads. */
+    fun clearSyncActive() {
+        isSyncActive = false
+    }
+
     /** Pause/resume from the notification; Dart hears about it afterwards. */
     fun toggleFromNotification(context: Context) {
         try {
@@ -198,6 +202,45 @@ object NoteRecorder {
             Log.w(TAG, "Toggle from notification failed", e)
         }
         state("user")?.let { onStateChanged?.invoke(it) }
+    }
+
+    /** Two seconds of buffer, so a busy encoder thread never drops audio. */
+    private fun openAudioRecord(): AudioRecord {
+        val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+        @SuppressLint("MissingPermission")
+        val record = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            maxOf(minBuffer, SAMPLE_RATE * 2 * 2),
+        )
+        if (record.state != AudioRecord.STATE_INITIALIZED) {
+            record.release()
+            throw IllegalStateException("The microphone could not be opened")
+        }
+        return record
+    }
+
+    /**
+     * A read error (the audio server restarted, the route changed, dictation
+     * reconfigured the input) costs a fresh AudioRecord, not the meeting:
+     * try a few times with backoff, keeping the encoder and the file.
+     */
+    private fun reopenAudioRecord(session: Session): AudioRecord? {
+        for (delayMs in longArrayOf(100, 400, 1000, 2000)) {
+            if (synchronized(lock) { session.isStopping }) return null
+            Thread.sleep(delayMs)
+            try {
+                val record = openAudioRecord()
+                record.startRecording()
+                if (record.recordingState == AudioRecord.RECORDSTATE_RECORDING) return record
+                record.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Reopening the microphone failed", e)
+            }
+        }
+        return null
     }
 
     private fun framesToMs(frames: Long): Long = frames * SAMPLES_PER_FRAME * 1000 / SAMPLE_RATE
@@ -231,7 +274,10 @@ object NoteRecorder {
     }
 
     /** Capture thread: PCM → encoder → ADTS frames, with rollover and limits. */
-    private fun capture(context: Context, session: Session, record: AudioRecord, codec: MediaCodec) {
+    private fun capture(context: Context, session: Session, initialRecord: AudioRecord, codec: MediaCodec) {
+        android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_AUDIO)
+        var record = initialRecord
+        var silentMs = 0L
         val pcm = ByteArray(SAMPLES_PER_FRAME * 2)
         val info = MediaCodec.BufferInfo()
         var presentationUs = 0L
@@ -301,6 +347,7 @@ object NoteRecorder {
                 if (isPaused && isRecordActive) {
                     record.stop()
                     isRecordActive = false
+                    silentMs = 0
                     continue
                 }
                 if (!isPaused && !isRecordActive) {
@@ -310,11 +357,22 @@ object NoteRecorder {
 
                 val read = record.read(pcm, 0, pcm.size)
                 if (read < 0) {
-                    Log.w(TAG, "AudioRecord read failed: $read")
-                    endReason = "error"
-                    break
+                    Log.w(TAG, "AudioRecord read failed: $read; reopening")
+                    try {
+                        record.release()
+                    } catch (_: Exception) {}
+                    isRecordActive = false
+                    val replacement = reopenAudioRecord(session)
+                    if (replacement == null) {
+                        if (!synchronized(lock) { session.isStopping }) endReason = "error"
+                        break
+                    }
+                    record = replacement
+                    isRecordActive = true
+                    continue
                 }
                 if (read == 0) continue
+                silentMs = trackSilence(session, pcm, read, silentMs, ::emit)
                 // Never drop captured PCM: wait for an input buffer, draining
                 // output (which is what frees input buffers) meanwhile.
                 var input = codec.dequeueInputBuffer(10_000)
@@ -365,6 +423,36 @@ object NoteRecorder {
                 onStateChanged?.invoke(event)
             }
         }
+    }
+
+    /**
+     * Peak under -78 dBFS for [SILENCE_AFTER_MS] means the OS is feeding
+     * silence (a call, or another app holding the mic): report it once, and
+     * again when sound comes back.
+     */
+    private fun trackSilence(
+        session: Session,
+        pcm: ByteArray,
+        length: Int,
+        silentMs: Long,
+        emit: (String) -> Unit,
+    ): Long {
+        var peak = 0
+        var i = 0
+        while (i + 1 < length) {
+            val sample = (pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)
+            val magnitude = kotlin.math.abs(sample.toShort().toInt())
+            if (magnitude > peak) peak = magnitude
+            i += 2
+        }
+        val nextSilentMs = if (peak < SILENCE_PEAK) silentMs + length / 2 * 1000L / SAMPLE_RATE else 0L
+        val wasSilent = synchronized(lock) { session.isSilent }
+        val isSilent = nextSilentMs >= SILENCE_AFTER_MS
+        if (isSilent != wasSilent && (isSilent || nextSilentMs == 0L)) {
+            synchronized(lock) { session.isSilent = isSilent }
+            emit("silence")
+        }
+        return nextSilentMs
     }
 
     /** Sends end-of-stream so the last buffered audio reaches the file. */
