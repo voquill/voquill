@@ -100,13 +100,13 @@ class NotesApi {
   static const _requestTimeout = Duration(seconds: 30);
   static const _chunkTimeout = Duration(minutes: 5);
 
-  Future<NotesPage> listNotes({int limit = 50, String? cursor}) async {
+  Future<NoteListPage> listNotes({int limit = 50, String? cursor}) async {
     final json = await _send(
       'GET',
       '/v1/notes',
       query: {'limit': '$limit', 'cursor': ?cursor},
     );
-    return NotesPage.fromJson(json);
+    return NoteListPage.fromJson(json);
   }
 
   Future<Note> getNote(String id) async {

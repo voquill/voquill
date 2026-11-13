@@ -7,6 +7,7 @@ import 'package:app/actions/snackbar_actions.dart';
 import 'package:app/api/local_note_store.dart';
 import 'package:app/api/note_recorder_api.dart';
 import 'package:app/api/notes_api.dart';
+import 'package:app/flavor.dart';
 import 'package:app/model/common_model.dart';
 import 'package:app/model/local_note_model.dart';
 import 'package:app/model/note_model.dart';
@@ -17,6 +18,9 @@ import 'package:app/utils/adts_utils.dart';
 import 'package:app/utils/log_utils.dart';
 import 'package:app/utils/note_lifecycle_utils.dart';
 import 'package:app/utils/note_utils.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
 
@@ -166,6 +170,27 @@ void _storeServerNote(NotesStateDraft notes, Note note) {
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
+
+final _noteRecorder = NoteRecorder();
+
+/// Starts Notes for the signed-in user; each user's local notes live in
+/// their own directory so nothing uploads under another account.
+Future<void> initializeNotesForUser(String uid) async {
+  final support = await getApplicationSupportDirectory();
+  await initializeNotes(
+    NotesServices(
+      api: NotesApi(
+        baseUrl: Flavor.current.apiBaseUrl,
+        getIdToken: ({bool forceRefresh = false}) async => FirebaseAuth
+            .instance
+            .currentUser
+            ?.getIdToken(forceRefresh),
+      ),
+      store: LocalNoteStore(Directory(p.join(support.path, 'notes', uid))),
+      recorder: _noteRecorder,
+    ),
+  );
+}
 
 Future<void> initializeNotes(NotesServices services) async {
   await disposeNotes();
@@ -982,7 +1007,11 @@ void _scheduleRetry() {
 Future<void> syncAllNotes() async {
   if (_services == null) return;
   _retryTimer?.cancel();
+  final services = _services!;
   await _flushPendingDeletes();
+  for (final note in _notes.localNoteById.values.toList()) {
+    if (note.isCapturing) await _createOnServer(services, note.id);
+  }
   await _flushPendingEdits();
   final ids = _notes.localNoteById.values
       .where((n) => localNoteNeedsSync(n.phase))

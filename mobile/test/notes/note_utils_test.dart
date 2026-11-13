@@ -120,4 +120,54 @@ void main() {
     expect(formatNoteDuration(65000), '1:05');
     expect(formatNoteDuration(3723000), '1:02:03');
   });
+
+  test('transcript lines offset utterances by earlier segments', () {
+    const segments = [
+      NoteSegment(
+        id: 'b',
+        index: 1,
+        kind: NoteSegmentKind.audio,
+        status: NoteSegmentStatus.transcribed,
+        durationMs: 1000,
+        createdAt: '2026-01-01T00:00:00Z',
+        transcript: NoteTranscript(
+          text: 'x',
+          utterances: [
+            NoteUtterance(
+              startMs: 5000,
+              endMs: 6000,
+              speaker: 1,
+              text: 'Later',
+            ),
+          ],
+        ),
+      ),
+      NoteSegment(
+        id: 'a',
+        index: 0,
+        kind: NoteSegmentKind.audio,
+        status: NoteSegmentStatus.transcribed,
+        durationMs: 60000,
+        createdAt: '2026-01-01T00:00:00Z',
+        transcript: NoteTranscript(
+          text: 'x',
+          utterances: [
+            NoteUtterance(startMs: 0, endMs: 900, speaker: null, text: 'First'),
+          ],
+        ),
+      ),
+      NoteSegment(
+        id: 'c',
+        index: 2,
+        kind: NoteSegmentKind.audio,
+        status: NoteSegmentStatus.failed,
+        durationMs: 1000,
+        createdAt: '2026-01-01T00:00:00Z',
+      ),
+    ];
+    final lines = transcriptLines(segments);
+    expect(lines.map((l) => l.label), ['0:00', 'Speaker 2 · 1:05', '']);
+    expect(lines.last.isFailed, isTrue);
+    expect(transcriptText(segments), '0:00\nFirst\n\nSpeaker 2 · 1:05\nLater');
+  });
 }

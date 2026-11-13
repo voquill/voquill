@@ -48,6 +48,19 @@ enum Flavor {
 
   String get emulatorHost => Platform.isAndroid ? '10.0.2.2' : 'localhost';
 
+  /// The Voquill REST server (`core/server`), matching desktop's
+  /// `VITE_NEW_SERVER_URL` per environment.
+  String get apiBaseUrl {
+    switch (this) {
+      case Flavor.prod:
+        return 'https://api.voquill.com';
+      case Flavor.dev:
+        return 'https://api-dev.voquill.com';
+      case Flavor.emulators:
+        return 'http://$emulatorHost:6325';
+    }
+  }
+
   String get termsUrl => 'https://voquill.com/terms';
   String get privacyUrl => 'https://voquill.com/privacy';
 

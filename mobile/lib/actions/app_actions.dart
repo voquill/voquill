@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:app/actions/language_actions.dart';
+import 'package:app/actions/notes_actions.dart';
 import 'package:app/actions/permission_actions.dart';
 import 'package:app/actions/revenue_cat_actions.dart';
 import 'package:app/actions/styles_actions.dart';
@@ -43,10 +44,12 @@ StreamSubscription<User?> listenToAuthChanges() {
         });
         await loginRevenueCat(firebaseUser.uid);
         await refreshMainData();
+        unawaited(initializeNotesForUser(firebaseUser.uid));
       }
       syncKeyboardAuth();
     } else {
       if (currentAuth != null) {
+        await disposeNotes();
         await logoutRevenueCat();
         produceAppState((draft) {
           draft.auth = null;

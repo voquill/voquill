@@ -1,6 +1,8 @@
 import 'dart:async';
 
+import 'package:app/actions/notes_actions.dart';
 import 'package:app/actions/session_actions.dart';
+import 'package:app/actions/snackbar_actions.dart';
 import 'package:app/api/dictation_api.dart';
 import 'package:app/model/session_history_entry.dart';
 import 'package:app/state/remote_state.dart';
@@ -187,6 +189,10 @@ Future<void> startRemoteRecording(
 }) async {
   final state = getAppState();
   if (state.remote.session(sessionId).isRecording) return;
+  if (isMeetingRecording) {
+    showSnackbar('Pause your meeting to dictate to your computer.');
+    return;
+  }
 
   _mutateSession(sessionId, (s) {
     s.status = DictationPillStatus.recording;

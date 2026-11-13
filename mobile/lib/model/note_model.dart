@@ -219,15 +219,15 @@ class Note with EquatableMixin {
 }
 
 @JsonSerializable(explicitToJson: true)
-class NotesPage with EquatableMixin {
+class NoteListPage with EquatableMixin {
   final List<Note> notes;
   final String? nextCursor;
 
-  const NotesPage({required this.notes, this.nextCursor});
+  const NoteListPage({required this.notes, this.nextCursor});
 
-  factory NotesPage.fromJson(Map<String, dynamic> json) =>
-      _$NotesPageFromJson(json);
-  Map<String, dynamic> toJson() => _$NotesPageToJson(this);
+  factory NoteListPage.fromJson(Map<String, dynamic> json) =>
+      _$NoteListPageFromJson(json);
+  Map<String, dynamic> toJson() => _$NoteListPageToJson(this);
 
   @override
   List<Object?> get props => [notes, nextCursor];

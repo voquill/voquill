@@ -8,6 +8,7 @@ import 'package:app/widgets/remote/remote_dictation_page.dart';
 import 'package:app/widgets/styles/manage_styles_page.dart';
 import 'package:app/widgets/error/not_found_page.dart';
 import 'package:app/widgets/login/login_page.dart';
+import 'package:app/widgets/notes/note_page.dart';
 import 'package:app/widgets/onboarding/onboarding_page.dart';
 import 'package:app/widgets/setup/setup_page.dart';
 import 'package:app/widgets/splash/splash_page.dart';
@@ -80,6 +81,12 @@ GoRouter buildRouter({required Listenable? refreshListenable}) {
             path: 'danger-zone',
             builder: (context, state) => const DangerZonePage(),
             name: 'danger-zone',
+          ),
+          GoRoute(
+            path: 'notes/:noteId',
+            builder: (context, state) =>
+                NotePage(noteId: state.pathParameters['noteId']!),
+            name: 'note',
           ),
           GoRoute(
             path: 'remote-dictation/:sessionId',

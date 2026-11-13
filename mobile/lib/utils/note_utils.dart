@@ -179,3 +179,60 @@ String describeNoteError(NoteError? error) =>
 bool isQuotaError(NoteError? error) =>
     error?.code == 'word_quota_exceeded' ||
     error?.code == 'audio_quota_exceeded';
+
+class TranscriptLine {
+  final String label;
+  final String text;
+  final bool isFailed;
+
+  const TranscriptLine({
+    required this.label,
+    required this.text,
+    this.isFailed = false,
+  });
+}
+
+/// The note transcript in segment order. Utterance times are relative to
+/// their segment, so each segment is offset by the audio before it; speaker
+/// labels are per segment, as the server assigns them.
+List<TranscriptLine> transcriptLines(List<NoteSegment> segments) {
+  final sorted = [...segments]..sort((a, b) => a.index.compareTo(b.index));
+  final lines = <TranscriptLine>[];
+  var offsetMs = 0;
+  for (final segment in sorted) {
+    final transcript = segment.transcript;
+    if (segment.status == NoteSegmentStatus.failed) {
+      lines.add(
+        const TranscriptLine(
+          label: '',
+          text: "This part of the recording couldn't be transcribed.",
+          isFailed: true,
+        ),
+      );
+    } else if (transcript != null && transcript.utterances.isEmpty) {
+      if (transcript.text.trim().isNotEmpty) {
+        lines.add(TranscriptLine(label: '', text: transcript.text.trim()));
+      }
+    } else if (transcript != null) {
+      for (final utterance in transcript.utterances) {
+        final speaker = utterance.speaker;
+        final time = formatNoteDuration(offsetMs + utterance.startMs);
+        lines.add(
+          TranscriptLine(
+            label: speaker == null ? time : 'Speaker ${speaker + 1} · $time',
+            text: utterance.text,
+          ),
+        );
+      }
+    }
+    offsetMs += segment.durationMs;
+  }
+  return lines;
+}
+
+String transcriptText(List<NoteSegment> segments) => transcriptLines(segments)
+    .where((line) => !line.isFailed)
+    .map(
+      (line) => line.label.isEmpty ? line.text : '${line.label}\n${line.text}',
+    )
+    .join('\n\n');

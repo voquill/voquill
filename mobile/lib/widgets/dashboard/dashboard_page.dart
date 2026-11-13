@@ -5,6 +5,8 @@ import 'package:app/store/store.dart';
 import 'package:app/widgets/common/app_animated_shared_axis.dart';
 import 'package:app/widgets/dictionary/dictionary_page.dart';
 import 'package:app/widgets/home/home_page.dart';
+import 'package:app/widgets/notes/active_note_banner.dart';
+import 'package:app/widgets/notes/notes_page.dart';
 import 'package:app/widgets/settings/settings_page.dart';
 import 'package:app/widgets/styles/styles_page.dart';
 import 'package:firebase_database/firebase_database.dart';
@@ -79,6 +81,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
   static const _pages = <Widget>[
     HomePage(key: Key('home')),
+    NotesPage(key: Key('notes')),
     DictionaryPage(key: Key('dictionary')),
     StylesPage(key: Key('styles')),
     SettingsPage(key: Key('settings')),
@@ -91,34 +94,45 @@ class _DashboardPageState extends State<DashboardPage> {
         reverse: _previousIndex > _selectedIndex,
         child: _pages[_selectedIndex],
       ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _previousIndex = _selectedIndex;
-            _selectedIndex = index;
-          });
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home),
-            label: 'Home',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.book_outlined),
-            selectedIcon: Icon(Icons.book),
-            label: 'Dictionary',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.palette_outlined),
-            selectedIcon: Icon(Icons.palette),
-            label: 'Styles',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const ActiveNoteBanner(),
+          NavigationBar(
+            selectedIndex: _selectedIndex,
+            onDestinationSelected: (index) {
+              setState(() {
+                _previousIndex = _selectedIndex;
+                _selectedIndex = index;
+              });
+            },
+            destinations: const [
+              NavigationDestination(
+                icon: Icon(Icons.home_outlined),
+                selectedIcon: Icon(Icons.home),
+                label: 'Home',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.sticky_note_2_outlined),
+                selectedIcon: Icon(Icons.sticky_note_2),
+                label: 'Notes',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.book_outlined),
+                selectedIcon: Icon(Icons.book),
+                label: 'Dictionary',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.palette_outlined),
+                selectedIcon: Icon(Icons.palette),
+                label: 'Styles',
+              ),
+              NavigationDestination(
+                icon: Icon(Icons.settings_outlined),
+                selectedIcon: Icon(Icons.settings),
+                label: 'Settings',
+              ),
+            ],
           ),
         ],
       ),
