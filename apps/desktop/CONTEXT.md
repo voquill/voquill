@@ -21,3 +21,20 @@ _Avoid_: temporary language, hotkey language
 **Auto Mode**:
 The dictation language value `auto`, meaning the transcription engine detects the spoken language itself rather than being told. A selectable language value, not a separate setting.
 _Avoid_: auto-detect (as a noun), detection mode
+
+## Notes
+
+**Note**:
+A recorded meeting or an imported transcript, with its AI notes, the user's own notes ("My notes", `personalNotes`) and its transcript. Stored in SQLite whether it is `local` or (later) `cloud`; its storage is fixed when it is created.
+_Avoid_: meeting (for the record itself), conversation, chat
+
+**Segment**:
+One contiguous piece of a note's audio, one file on disk. Pausing, resuming and Resume on a ready note each start a new segment; the note transcript is its segments' transcripts in order.
+_Avoid_: chunk (a chunk is a slice of a segment sent to transcription)
+
+**Meeting capture**:
+The microphone recording that feeds a note's segments. Independent of the dictation recorder, so dictation keeps working while a meeting records.
+_Avoid_: recording (ambiguous with dictation)
+
+**Note pipeline**:
+Where a note's network-bound work runs once the user stops: transcription, AI notes and title, search and Ask. The local pipeline uses the user's transcription and post-processing modes.
