@@ -149,6 +149,15 @@ mod cpal_impl {
             })
         }
 
+        /// Hands over whatever is still buffered (the last <100 ms).
+        fn flush(&self) {
+            let chunk = match self.buffer.lock() {
+                Ok(mut buffer) if !buffer.is_empty() => std::mem::take(&mut *buffer),
+                _ => return,
+            };
+            (self.callback)(chunk);
+        }
+
         fn emit(&self, samples: &[f32]) {
             if samples.is_empty() {
                 return;
@@ -408,7 +417,16 @@ mod cpal_impl {
             };
             let size_bytes = samples.len() as u64 * std::mem::size_of::<f32>() as u64;
 
+            let chunk_emitter = recording._chunk_emitter.clone();
             drop(recording);
+            // Recorders that keep no samples (meeting capture) stream every
+            // sample through the chunk callback, so the tail must be handed
+            // over once the stream is gone. Dictation keeps its own buffer.
+            if !self.retain_samples {
+                if let Some(emitter) = chunk_emitter {
+                    emitter.flush();
+                }
+            }
 
             Ok(RecordingResult {
                 metrics: RecordingMetrics {

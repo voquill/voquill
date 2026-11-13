@@ -6,7 +6,14 @@ export const MEETING_CAPTURE_PROGRESS_EVENT = "meeting_capture_progress";
 export const RESUMABLE_UPLOAD_PROGRESS_EVENT = "resumable_upload_progress";
 export const MEETING_AUDIO_SAMPLE_RATE = 16_000;
 
-export type MeetingCaptureInterruption = "no-audio" | "write-failed";
+/**
+ * Why audio stopped arriving: the device stopped, the disk refused or
+ * stalled, or the device changed its format (the capture is restarted).
+ */
+export type MeetingCaptureInterruption =
+  | "no-audio"
+  | "write-failed"
+  | "device-changed";
 
 export type MeetingCaptureStatus = {
   noteId: string;
@@ -19,6 +26,8 @@ export type MeetingCaptureStatus = {
   level: number;
   /** Why audio stopped arriving; everything captured so far is on disk. */
   interruption: MeetingCaptureInterruption | null;
+  /** Only silence has arrived for a while (muted, blocked or wrong microphone). */
+  silent: boolean;
 };
 
 export type MeetingCaptureRolled = {

@@ -475,11 +475,23 @@ const RecordingPanel = ({ note }: { note: Note }) => {
   );
   const resumeNote = useResumeNote();
   const canResume = useCanResumeNote(note.id);
+  const silent = useAppStore(
+    (state) =>
+      state.notes.capture?.noteId === note.id && state.notes.capture.silent,
+  );
 
   return (
     <Stack spacing={1.5}>
       {note.error && !isCapturing && (
         <NoteProblem severity="warning" error={note.error} hasAudio />
+      )}
+      {silent && (
+        <Alert severity="warning" role="status">
+          <AlertTitle>
+            <FormattedMessage defaultMessage="No sound is reaching Voquill" />
+          </AlertTitle>
+          <FormattedMessage defaultMessage="Check that the right microphone is selected in Settings and that Voquill is allowed to use it. Recording continues." />
+        </Alert>
       )}
       <Stack
         direction="row"

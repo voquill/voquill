@@ -344,53 +344,111 @@ pub fn segment_envelope(path: &Path, window_ms: u64) -> io::Result<Vec<f32>> {
     Ok(envelope)
 }
 
-/// Converts mono f32 audio at the device rate to 16 kHz i16 by averaging the
-/// input samples that fall into each output sample's span (a box low-pass
-/// that keeps downsampling from aliasing badly), holding the last value when
-/// the device rate is below 16 kHz.
+/// Converts mono f32 audio at the device rate to 16 kHz i16 with a
+/// windowed-sinc (Hann) low-pass at 0.45 × the lower of the two rates, so
+/// speech keeps its full band and content above 8 kHz does not alias.
+/// Streaming: each output waits for `half_width` input samples of lookahead;
+/// `flush` emits the rest at the end of a capture.
 pub struct Downsampler {
+    /// Input samples per output sample.
     step: f64,
+    /// Cutoff in cycles per input sample.
+    cutoff: f64,
+    /// Kernel half-width in input samples.
+    half_width: usize,
+    /// Input history; `history[0]` is input sample `base`.
+    history: std::collections::VecDeque<f64>,
+    base: u64,
     consumed: u64,
     produced: u64,
-    sum: f64,
-    count: u32,
-    last: f64,
 }
+
+fn to_i16(value: f64) -> i16 {
+    let value = if value.is_finite() { value } else { 0.0 };
+    (value.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16
+}
+
+/// Kernel width in cycles of the cutoff: wide enough for a steep transition.
+const RESAMPLER_ZERO_CROSSINGS: f64 = 16.0;
 
 impl Downsampler {
     pub fn new(input_rate: u32) -> Self {
+        let step = input_rate.max(1) as f64 / MEETING_SAMPLE_RATE as f64;
+        let cutoff = 0.45 * (1.0 / step).min(1.0);
         Self {
-            step: input_rate.max(1) as f64 / MEETING_SAMPLE_RATE as f64,
+            step,
+            cutoff,
+            half_width: (RESAMPLER_ZERO_CROSSINGS / (2.0 * cutoff)).ceil() as usize,
+            history: std::collections::VecDeque::new(),
+            base: 0,
             consumed: 0,
             produced: 0,
-            sum: 0.0,
-            count: 0,
-            last: 0.0,
+        }
+    }
+
+    fn sample_at(&self, index: i64) -> f64 {
+        // Before the first sample, hold it (no click at the start).
+        let offset = (index - self.base as i64).max(0) as usize;
+        self.history
+            .get(offset)
+            .or_else(|| self.history.back())
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    fn emit(&mut self, output: &mut Vec<i16>) {
+        let center = self.produced as f64 * self.step;
+        let half = self.half_width as f64;
+        let first = (center - half).ceil() as i64;
+        let last = (center + half).floor() as i64;
+        let (mut sum, mut weights) = (0.0, 0.0);
+        for index in first..=last {
+            let distance = center - index as f64;
+            let x = 2.0 * self.cutoff * distance;
+            let sinc = if x.abs() < 1e-9 {
+                1.0
+            } else {
+                (std::f64::consts::PI * x).sin() / (std::f64::consts::PI * x)
+            };
+            let window = 0.5 + 0.5 * (std::f64::consts::PI * distance / (half + 1.0)).cos();
+            let weight = sinc * window;
+            sum += weight * self.sample_at(index);
+            weights += weight;
+        }
+        let value = if weights.abs() > 1e-12 { sum / weights } else { 0.0 };
+        output.push(to_i16(value));
+        self.produced += 1;
+        // Keep only what later outputs still read.
+        let keep_from = (self.produced as f64 * self.step - half).floor().max(0.0) as u64;
+        while self.base < keep_from && self.history.len() > 1 {
+            self.history.pop_front();
+            self.base += 1;
         }
     }
 
     pub fn process(&mut self, input: &[f32], output: &mut Vec<i16>) {
+        if self.step == 1.0 {
+            // Already 16 kHz: nothing to filter, and no lookahead delay.
+            output.extend(input.iter().map(|&sample| to_i16(sample as f64)));
+            return;
+        }
         for &sample in input {
-            let value = if sample.is_finite() {
-                sample as f64
-            } else {
-                0.0
-            };
-            self.sum += value;
-            self.count += 1;
+            self.history
+                .push_back(if sample.is_finite() { sample as f64 } else { 0.0 });
             self.consumed += 1;
-            while self.consumed as f64 >= (self.produced + 1) as f64 * self.step {
-                let average = if self.count > 0 {
-                    self.sum / self.count as f64
-                } else {
-                    self.last
-                };
-                output.push((average.clamp(-1.0, 1.0) * i16::MAX as f64).round() as i16);
-                self.last = average;
-                self.sum = 0.0;
-                self.count = 0;
-                self.produced += 1;
+            while (self.produced as f64 * self.step) < self.consumed as f64
+                && (self.produced as f64 * self.step + self.half_width as f64).floor()
+                    < self.consumed as f64
+            {
+                self.emit(output);
             }
+        }
+    }
+
+    /// The outputs still waiting for lookahead, at the end of the input.
+    pub fn flush(&mut self, output: &mut Vec<i16>) {
+        while (self.produced as f64 * self.step) < self.consumed as f64 {
+            self.emit(output);
         }
     }
 }
@@ -543,6 +601,7 @@ mod tests {
             for chunk in input.chunks(441) {
                 downsampler.process(chunk, &mut output);
             }
+            downsampler.flush(&mut output);
             assert!(
                 (output.len() as i64 - 1_600).abs() <= 1,
                 "rate {rate} produced {}",
@@ -552,16 +611,40 @@ mod tests {
         }
     }
 
+    fn sine(rate: u32, hz: f64, seconds: f64) -> Vec<f32> {
+        (0..(rate as f64 * seconds) as usize)
+            .map(|i| (0.8 * (2.0 * std::f64::consts::PI * hz * i as f64 / rate as f64).sin()) as f32)
+            .collect()
+    }
+
+    fn rms_i16(samples: &[i16]) -> f64 {
+        let middle = &samples[samples.len() / 4..samples.len() * 3 / 4];
+        (middle.iter().map(|v| (*v as f64 / i16::MAX as f64).powi(2)).sum::<f64>()
+            / middle.len() as f64)
+            .sqrt()
+    }
+
     #[test]
-    fn downsampler_averages_away_content_above_nyquist() {
-        let mut downsampler = Downsampler::new(48_000);
-        let mut output = Vec::new();
-        let alternating: Vec<f32> = (0..4_800)
-            .map(|i| if i % 2 == 0 { 0.9 } else { -0.9 })
-            .collect();
-        downsampler.process(&alternating, &mut output);
-        let peak = output.iter().map(|v| v.unsigned_abs()).max().unwrap();
-        assert!(peak <= i16::MAX as u16 / 3 + 1);
+    fn downsampler_keeps_speech_and_removes_what_would_alias() {
+        let input_rms = 0.8 / 2f64.sqrt();
+        for rate in [48_000u32, 44_100] {
+            for (hz, min_gain, max_gain) in [(300.0, 0.97, 1.03), (3_000.0, 0.97, 1.03), (6_000.0, 0.9, 1.05)] {
+                let mut downsampler = Downsampler::new(rate);
+                let mut output = Vec::new();
+                for chunk in sine(rate, hz, 0.5).chunks(480) {
+                    downsampler.process(chunk, &mut output);
+                }
+                let gain = rms_i16(&output) / input_rms;
+                assert!(gain > min_gain && gain < max_gain, "{rate} Hz input, {hz} Hz: gain {gain}");
+            }
+            for hz in [9_000.0, 12_000.0, 20_000.0] {
+                let mut downsampler = Downsampler::new(rate);
+                let mut output = Vec::new();
+                downsampler.process(&sine(rate, hz, 0.5), &mut output);
+                let gain = rms_i16(&output) / input_rms;
+                assert!(gain < 0.03, "{rate} Hz input, {hz} Hz leaked with gain {gain}");
+            }
+        }
     }
 
     #[test]

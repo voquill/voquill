@@ -89,6 +89,7 @@ vi.mock("../repos", () => ({
         initialDurationMs: existing,
         level: 0,
         interruption: null,
+        silent: false,
       };
       return fakes.nativeCapture;
     },
@@ -251,6 +252,7 @@ describe("initializeNotes", () => {
       initialDurationMs: 0,
       level: 0,
       interruption: null,
+      silent: false,
     };
     fakes.segments.set("live-0", storedSegment("live", 0, "recording", 0));
 
@@ -476,6 +478,28 @@ describe("unreferenced meeting audio", () => {
 });
 
 describe("recovered recordings and accounts", () => {
+  it("reopens the microphone in the same segment when the device changes its format", async () => {
+    const { noteId } = await startMeetingNote();
+    const capture = getAppState().notes.capture!;
+    handleMeetingCaptureProgress({
+      ...capture,
+      interruption: "device-changed",
+    });
+    await vi.waitFor(() =>
+      expect(getAppState().notes.capture?.initialDurationMs).toBe(42_000),
+    );
+    expect(getAppState().noteById[noteId].status).toBe("recording");
+    expect(getAppState().noteSegmentsByNoteId[noteId]).toHaveLength(1);
+
+    // The old capture's last event arrives late: it must not restart again.
+    handleMeetingCaptureProgress({
+      ...capture,
+      interruption: "device-changed",
+    });
+    await flushWrites();
+    expect(getAppState().notes.capture?.initialDurationMs).toBe(42_000);
+  });
+
   it("finishes an interrupted meeting when a new one starts, instead of blocking it", async () => {
     const first = await startMeetingNote();
     const capture = getAppState().notes.capture!;

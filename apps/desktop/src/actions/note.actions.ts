@@ -380,6 +380,34 @@ const haltMeetingNote = (
     });
   });
 
+/**
+ * The device changed its format mid-meeting (a call app or a Bluetooth
+ * headset switched it): reopen it at its new rate and keep recording into
+ * the same segment, so the recording stays true to time. If it cannot be
+ * reopened, the meeting pauses with its audio kept.
+ */
+const restartSegmentCapture = (noteId: string): Promise<void> =>
+  serializeCapture(async () => {
+    if (getAppState().notes.capture?.noteId !== noteId) {
+      return;
+    }
+    await stopSegmentCapture();
+    try {
+      await startSegmentCapture(noteId);
+    } catch (error) {
+      getLogger().error(`Could not reopen the microphone: ${error}`);
+      await noteStore.updateNote(noteId, (note) => {
+        if (canTransitionNote(note.status, "interrupt")) {
+          note.status = transitionNote(note.status, "interrupt");
+        }
+        note.error = {
+          code: CAPTURE_INTERRUPTED_ERROR_CODE,
+          message: "The microphone could not be reopened",
+        };
+      });
+    }
+  });
+
 let captureActionInFlight = false;
 
 const runCaptureAction = (task: () => Promise<void>) => {
@@ -398,13 +426,23 @@ const runCaptureAction = (task: () => Promise<void>) => {
 
 export const handleMeetingCaptureProgress = (status: MeetingCaptureStatus) => {
   const current = getAppState().notes.capture;
-  if (current?.segmentId !== status.segmentId) {
+  // Events of an earlier capture of the same segment (before a pause or a
+  // restart) carry its own starting point; they are stale.
+  if (
+    current?.segmentId !== status.segmentId ||
+    current.initialDurationMs !== status.initialDurationMs
+  ) {
     return;
   }
   produceAppState((draft) => {
     draft.notes.capture = status;
   });
   const noteId = status.noteId;
+
+  if (status.interruption === "device-changed") {
+    runCaptureAction(() => restartSegmentCapture(noteId));
+    return;
+  }
 
   if (status.interruption) {
     runCaptureAction(() =>

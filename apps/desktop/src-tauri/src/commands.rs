@@ -2671,10 +2671,15 @@ pub async fn meeting_capture_stop(
 
 #[tauri::command]
 #[specta::specta]
-pub fn meeting_capture_status(
+pub async fn meeting_capture_status(
     capture: State<'_, Arc<crate::system::meeting_capture::MeetingCapture>>,
-) -> Option<crate::system::meeting_capture::MeetingCaptureStatus> {
-    capture.status()
+) -> Result<Option<crate::system::meeting_capture::MeetingCaptureStatus>, String> {
+    // Off the main thread: the capture lock is held while a device opens or
+    // a segment switch is awaited.
+    let capture = Arc::clone(&capture);
+    tauri::async_runtime::spawn_blocking(move || capture.status())
+        .await
+        .map_err(|err| err.to_string())
 }
 
 /// Makes an interrupted segment file valid again and returns its duration.

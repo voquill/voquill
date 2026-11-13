@@ -932,8 +932,13 @@ async meetingAudioUnreferenced() : Promise<Result<UnreferencedMeetingAudio[], st
     else return { status: "error", error: e  as any };
 }
 },
-async meetingCaptureStatus() : Promise<MeetingCaptureStatus | null> {
-    return await TAURI_INVOKE("meeting_capture_status");
+async meetingCaptureStatus() : Promise<Result<MeetingCaptureStatus | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 },
 /**
  * Makes an interrupted segment file valid again and returns its duration.
@@ -1088,9 +1093,14 @@ export type CaptureInterruption =
  */
 "no-audio" | 
 /**
- * Audio could not be written (disk full, permissions).
+ * Audio could not be written (disk full, permissions, a stalled disk).
  */
-"write-failed"
+"write-failed" | 
+/**
+ * The device started delivering audio at another rate; the app
+ * restarts the capture so the recording stays true to time.
+ */
+"device-changed"
 export type CompositorBinding = { actionName: string; keys: string[] }
 export type CreateFloatingWindowArgs = { url: string; title: string | null; width: number | null; height: number | null; minWidth: number | null; minHeight: number | null; x: number | null; y: number | null; decorations: boolean | null; transparent: boolean | null; resizable: boolean | null; focused: boolean | null }
 export type CurrentAppInfoResponse = { appName: string; iconBase64: string }
@@ -1187,7 +1197,11 @@ durationMs: number;
 /**
  * What the segment file held when this capture started appending to it.
  */
-initialDurationMs: number; level: number; interruption: CaptureInterruption | null }
+initialDurationMs: number; level: number; interruption: CaptureInterruption | null; 
+/**
+ * Only silence has arrived for a while (muted, blocked or wrong microphone).
+ */
+silent: boolean }
 export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
 export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }

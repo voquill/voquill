@@ -15,6 +15,7 @@ const LEVEL_BIN_COUNT: usize = 12;
 const LEVEL_DISPATCH_INTERVAL: Duration = Duration::from_millis(48);
 const CHUNK_DISPATCH_INTERVAL: Duration = Duration::from_millis(100);
 const READ_CHUNK_FRAMES: usize = 1024;
+const PULSE_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PulseRecorder {
     inner: Arc<Mutex<Option<ActiveRecording>>>,
@@ -89,6 +90,7 @@ impl Recorder for PulseRecorder {
         let stop_signal = Arc::new(Mutex::new(false));
         let stop_signal_clone = Arc::clone(&stop_signal);
         let retain_samples = self.retain_samples;
+        let (opened, opened_result) = std::sync::mpsc::channel();
 
         let thread = std::thread::Builder::new()
             .name("pulse-recorder".into())
@@ -100,9 +102,23 @@ impl Recorder for PulseRecorder {
                     level_callback,
                     chunk_callback,
                     retain_samples,
+                    opened,
                 )
             })
             .map_err(|err| RecordingError::StreamBuild(err.to_string()))?;
+
+        // Starting succeeds only once the stream is open, so a missing or
+        // stopped PulseAudio is reported instead of a silent recording.
+        let open = opened_result
+            .recv_timeout(PULSE_OPEN_TIMEOUT)
+            .unwrap_or_else(|_| Err("PulseAudio did not open the stream in time".into()));
+        if let Err(message) = open {
+            if let Ok(mut flag) = stop_signal.lock() {
+                *flag = true;
+            }
+            let _ = thread.join();
+            return Err(Box::new(RecordingError::StreamBuild(message)));
+        }
 
         *guard = Some(ActiveRecording {
             stop_signal,
@@ -208,6 +224,7 @@ fn record_loop(
     level_callback: Option<LevelCallback>,
     chunk_callback: Option<ChunkCallback>,
     retain_samples: bool,
+    opened: std::sync::mpsc::Sender<Result<(), String>>,
 ) -> RecordingResult {
     let spec = pulse::sample::Spec {
         format: pulse::sample::Format::F32le,
@@ -242,9 +259,11 @@ fn record_loop(
         Ok(s) => s,
         Err(err) => {
             log::error!("failed to open PulseAudio recording stream: {err}");
+            let _ = opened.send(Err(err.to_string()));
             return empty_result();
         }
     };
+    let _ = opened.send(Ok(()));
 
     log::info!(
         "PulseAudio recording started (source: {})",

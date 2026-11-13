@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -24,6 +24,20 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const COMMIT_INTERVAL: Duration = Duration::from_secs(1);
 const SILENT_DEVICE_TIMEOUT: Duration = Duration::from_secs(3);
 const ROLL_TIMEOUT: Duration = Duration::from_secs(10);
+/// Chunks (about 100 ms each) queued for the writer. A disk that stalls
+/// longer than this fills the queue: the capture is marked write-failed
+/// (the app pauses it) instead of buffering without limit or dropping audio.
+const CHUNK_QUEUE_CAPACITY: usize = 300;
+/// Input below this level for this long is reported as "no audio detected"
+/// (a muted or permission-blocked microphone delivers digital silence).
+const SILENCE_LEVEL: f32 = 1e-4;
+const SILENCE_WARNING_AFTER: Duration = Duration::from_secs(15);
+/// The device's delivery rate is checked over this window; a rate this far
+/// from the stream's configured rate means the device changed its format
+/// underneath the stream (a call app or a Bluetooth headset switching it),
+/// which would otherwise shift the recording's pitch and duration.
+const RATE_CHECK_WINDOW: Duration = Duration::from_secs(5);
+const RATE_TOLERANCE: f64 = 0.05;
 
 /// Why a capture stopped receiving audio. Everything captured so far is on disk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, specta::Type)]
@@ -31,8 +45,11 @@ const ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum CaptureInterruption {
     /// The device stopped delivering audio (unplugged, stream died).
     NoAudio,
-    /// Audio could not be written (disk full, permissions).
+    /// Audio could not be written (disk full, permissions, a stalled disk).
     WriteFailed,
+    /// The device started delivering audio at another rate; the app
+    /// restarts the capture so the recording stays true to time.
+    DeviceChanged,
 }
 
 impl CaptureInterruption {
@@ -40,6 +57,7 @@ impl CaptureInterruption {
         match self {
             Self::NoAudio => 1,
             Self::WriteFailed => 2,
+            Self::DeviceChanged => 3,
         }
     }
 
@@ -47,6 +65,7 @@ impl CaptureInterruption {
         match code {
             1 => Some(Self::NoAudio),
             2 => Some(Self::WriteFailed),
+            3 => Some(Self::DeviceChanged),
             _ => None,
         }
     }
@@ -64,6 +83,8 @@ pub struct MeetingCaptureStatus {
     pub initial_duration_ms: u64,
     pub level: f32,
     pub interruption: Option<CaptureInterruption>,
+    /// Only silence has arrived for a while (muted, blocked or wrong microphone).
+    pub silent: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -93,8 +114,15 @@ struct CaptureShared {
     samples_written: AtomicU64,
     level_bits: AtomicU32,
     interruption: AtomicU32,
+    silent: AtomicBool,
     stop: AtomicBool,
+    /// The writer has finished; the progress monitor ends.
+    finished: AtomicBool,
+    /// The segment being written. Only the writer changes it (when it
+    /// switches files), so it always names the file audio is going to.
     target: Mutex<Option<SegmentTarget>>,
+    /// A segment switch waiting for the writer to pick it up.
+    roll: Mutex<Option<RollRequest>>,
 }
 
 impl CaptureShared {
@@ -131,6 +159,7 @@ impl CaptureShared {
             initial_duration_ms: samples_to_ms(initial_samples),
             level: f32::from_bits(self.level_bits.load(Ordering::Relaxed)),
             interruption: self.interruption(),
+            silent: self.silent.load(Ordering::Relaxed),
         }
     }
 }
@@ -138,14 +167,46 @@ impl CaptureShared {
 /// Swaps the writer thread onto a new segment file between two chunks.
 struct RollRequest {
     writer: SegmentWriter,
-    reply: Sender<std::io::Result<u64>>,
+    target: SegmentTarget,
+    /// The finished segment's sample count, sent once the switch happened.
+    reply: Sender<u64>,
 }
 
 struct ActiveCapture {
     note_id: String,
     shared: Arc<CaptureShared>,
-    rolls: Sender<RollRequest>,
     writer_thread: JoinHandle<std::io::Result<u64>>,
+    monitor_thread: JoinHandle<()>,
+}
+
+/// Hands a segment switch to the writer and waits for it. If the writer does
+/// not pick it up in time (a stalled disk), the request is withdrawn, so the
+/// capture stays on its current file and nothing refers to the new one.
+fn submit_roll(
+    shared: &CaptureShared,
+    request: RollRequest,
+    reply: &Receiver<u64>,
+    timeout: Duration,
+) -> Result<u64, String> {
+    *shared.roll.lock().unwrap_or_else(|p| p.into_inner()) = Some(request);
+    match reply.recv_timeout(timeout) {
+        Ok(samples) => Ok(samples),
+        Err(_) => {
+            let withdrawn = shared.roll.lock().unwrap_or_else(|p| p.into_inner()).take();
+            match withdrawn {
+                Some(request) => {
+                    let path = request.target.audio_path.clone();
+                    drop(request);
+                    let _ = crate::system::meeting_audio::delete_segment(&path);
+                    Err("The meeting capture did not switch segments".to_string())
+                }
+                // Picked up just as the wait ended: the switch happened.
+                None => reply
+                    .recv()
+                    .map_err(|_| "The meeting capture has stopped".to_string()),
+            }
+        }
+    }
 }
 
 fn open_writer(path: &Path, append: bool) -> std::io::Result<SegmentWriter> {
@@ -236,13 +297,9 @@ impl MeetingCapture {
         let writer = open_writer(&audio_path, append).map_err(|err| err.to_string())?;
         let initial_samples = writer.samples_written();
 
-        let (sender, receiver) = mpsc::channel::<Vec<f32>>();
-        let sender = Mutex::new(sender);
-        let chunk_callback: ChunkCallback = Arc::new(move |samples: Vec<f32>| {
-            if let Ok(sender) = sender.lock() {
-                let _ = sender.send(samples);
-            }
-        });
+        let shared = Arc::new(CaptureShared::default());
+        let (sender, receiver) = mpsc::sync_channel::<Vec<f32>>(CHUNK_QUEUE_CAPACITY);
+        let chunk_callback = queue_chunks(sender, Arc::clone(&shared));
 
         self.recorder
             .set_preferred_input_device(preferred_microphone);
@@ -258,7 +315,6 @@ impl MeetingCapture {
             .current_sample_rate()
             .unwrap_or(MEETING_SAMPLE_RATE);
 
-        let shared = Arc::new(CaptureShared::default());
         shared
             .samples_written
             .store(initial_samples, Ordering::SeqCst);
@@ -267,19 +323,25 @@ impl MeetingCapture {
             audio_path,
             initial_samples,
         });
-        let (rolls, roll_receiver) = mpsc::channel();
         let thread_shared = Arc::clone(&shared);
         let writer_thread = std::thread::Builder::new()
             .name("meeting-capture-writer".into())
+            .spawn(move || run_writer(writer, receiver, input_rate, &thread_shared))
+            .map_err(|err| {
+                let _ = self.recorder.stop();
+                err.to_string()
+            })?;
+        // Progress comes from its own thread, so a writer stuck on a stalled
+        // disk still reports (and the app can pause the capture).
+        let monitor_shared = Arc::clone(&shared);
+        let monitor_thread = std::thread::Builder::new()
+            .name("meeting-capture-progress".into())
             .spawn(move || {
-                run_writer(
-                    writer,
-                    receiver,
-                    roll_receiver,
-                    input_rate,
-                    &thread_shared,
-                    emit_progress,
-                )
+                while !monitor_shared.finished.load(Ordering::SeqCst) {
+                    emit_progress(&monitor_shared);
+                    std::thread::sleep(PROGRESS_INTERVAL);
+                }
+                emit_progress(&monitor_shared);
             })
             .map_err(|err| {
                 let _ = self.recorder.stop();
@@ -290,8 +352,8 @@ impl MeetingCapture {
         let capture = ActiveCapture {
             note_id,
             shared,
-            rolls,
             writer_thread,
+            monitor_thread,
         };
         let status = capture.shared.status(&capture.note_id);
         *active = Some(capture);
@@ -305,13 +367,21 @@ impl MeetingCapture {
         segment_id: String,
         audio_path: PathBuf,
     ) -> Result<MeetingCaptureRolled, String> {
+        self.roll_within(segment_id, audio_path, ROLL_TIMEOUT)
+    }
+
+    fn roll_within(
+        &self,
+        segment_id: String,
+        audio_path: PathBuf,
+        timeout: Duration,
+    ) -> Result<MeetingCaptureRolled, String> {
         let active = self.active();
         let capture = active
             .as_ref()
             .ok_or_else(|| "No meeting is being recorded".to_string())?;
 
         let writer = SegmentWriter::create(&audio_path).map_err(|err| err.to_string())?;
-        let (reply, finished) = mpsc::channel();
         let previous = {
             let target = capture
                 .shared
@@ -323,24 +393,21 @@ impl MeetingCapture {
                 .map(|t| (t.segment_id.clone(), t.audio_path.clone()))
                 .unwrap_or_default()
         };
-        capture
-            .rolls
-            .send(RollRequest { writer, reply })
-            .map_err(|_| "The meeting capture has stopped".to_string())?;
-        let samples = finished
-            .recv_timeout(ROLL_TIMEOUT)
-            .map_err(|_| "The meeting capture did not switch segments".to_string())?
-            .map_err(|err| err.to_string())?;
-
-        *capture
-            .shared
-            .target
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(SegmentTarget {
-            segment_id,
-            audio_path,
-            initial_samples: 0,
-        });
+        let (reply, finished) = mpsc::channel();
+        let samples = submit_roll(
+            &capture.shared,
+            RollRequest {
+                writer,
+                target: SegmentTarget {
+                    segment_id,
+                    audio_path,
+                    initial_samples: 0,
+                },
+                reply,
+            },
+            &finished,
+            timeout,
+        )?;
         Ok(MeetingCaptureRolled {
             finished: MeetingCaptureStopped {
                 note_id: capture.note_id.clone(),
@@ -357,10 +424,12 @@ impl MeetingCapture {
             return Ok(None);
         };
 
-        capture.shared.stop.store(true, Ordering::SeqCst);
+        // The recorder stops (and hands over what it buffered) before the
+        // writer is told to finish, so the last moments are kept.
         if let Err(err) = self.recorder.stop() {
             log::warn!("Meeting recorder stop reported: {err}");
         }
+        capture.shared.stop.store(true, Ordering::SeqCst);
 
         let samples = match capture.writer_thread.join() {
             Ok(Ok(samples)) => samples,
@@ -374,6 +443,7 @@ impl MeetingCapture {
             }
         };
 
+        let _ = capture.monitor_thread.join();
         log::info!("Meeting capture stopped ({} ms)", samples_to_ms(samples));
         let status = capture.shared.status(&capture.note_id);
         Ok(Some(MeetingCaptureStopped {
@@ -385,24 +455,76 @@ impl MeetingCapture {
     }
 }
 
+/// The audio callback's side of the queue: never blocks the device thread.
+fn queue_chunks(sender: SyncSender<Vec<f32>>, shared: Arc<CaptureShared>) -> ChunkCallback {
+    Arc::new(move |samples: Vec<f32>| {
+        if let Err(TrySendError::Full(_)) = sender.try_send(samples) {
+            shared.interrupt(CaptureInterruption::WriteFailed);
+        }
+    })
+}
+
+/// Measures how fast the device actually delivers samples.
+struct RateCheck {
+    expected: f64,
+    started: Option<Instant>,
+    delivered: u64,
+}
+
+impl RateCheck {
+    fn new(expected: u32) -> Self {
+        Self {
+            expected: expected as f64,
+            started: None,
+            delivered: 0,
+        }
+    }
+
+    /// Whether the delivery rate over the last window is off the configured rate.
+    fn changed(&mut self, samples: usize, now: Instant) -> bool {
+        let started = *self.started.get_or_insert(now);
+        let elapsed = now.duration_since(started);
+        if elapsed >= RATE_CHECK_WINDOW {
+            let measured = self.delivered as f64 / elapsed.as_secs_f64();
+            self.started = Some(now);
+            self.delivered = samples as u64;
+            return (measured - self.expected).abs() / self.expected > RATE_TOLERANCE;
+        }
+        self.delivered += samples as u64;
+        false
+    }
+}
+
 fn run_writer(
     mut writer: SegmentWriter,
     receiver: Receiver<Vec<f32>>,
-    rolls: Receiver<RollRequest>,
     input_rate: u32,
     shared: &CaptureShared,
-    emit_progress: impl Fn(&CaptureShared),
 ) -> std::io::Result<u64> {
     let mut downsampler = Downsampler::new(input_rate);
     let mut converted = Vec::new();
+    let mut rate_check = RateCheck::new(input_rate);
     let mut last_audio = Instant::now();
+    let mut silent_samples: u64 = 0;
+    let silence_warning_samples = SILENCE_WARNING_AFTER.as_secs() * u64::from(input_rate.max(1));
     let mut last_commit = Instant::now();
-    let mut last_progress = Instant::now();
 
     let mut write = |samples: &[f32], writer: &mut SegmentWriter| -> std::io::Result<()> {
-        shared
-            .level_bits
-            .store(rms_level(samples).to_bits(), Ordering::Relaxed);
+        let level = rms_level(samples);
+        shared.level_bits.store(level.to_bits(), Ordering::Relaxed);
+        if level < SILENCE_LEVEL {
+            silent_samples += samples.len() as u64;
+            if silent_samples >= silence_warning_samples {
+                shared.silent.store(true, Ordering::Relaxed);
+            }
+        } else {
+            silent_samples = 0;
+            shared.silent.store(false, Ordering::Relaxed);
+        }
+        if rate_check.changed(samples.len(), Instant::now()) {
+            log::warn!("Meeting input rate no longer matches {input_rate} Hz");
+            shared.interrupt(CaptureInterruption::DeviceChanged);
+        }
         converted.clear();
         downsampler.process(samples, &mut converted);
         writer.append(&converted)?;
@@ -413,14 +535,22 @@ fn run_writer(
     };
 
     let result = loop {
-        while let Ok(RollRequest {
+        let roll = shared.roll.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some(RollRequest {
             writer: next,
+            target,
             reply,
-        }) = rolls.try_recv()
+        }) = roll
         {
-            let finished = std::mem::replace(&mut writer, next).finish();
+            let finished_samples = writer.samples_written();
+            let finished = std::mem::replace(&mut writer, next);
+            *shared.target.lock().unwrap_or_else(|p| p.into_inner()) = Some(target);
             shared.samples_written.store(0, Ordering::SeqCst);
-            let _ = reply.send(finished);
+            let _ = reply.send(finished_samples);
+            if let Err(err) = finished.finish() {
+                // The audio is on disk; its header is repaired when read.
+                log::error!("Finishing a rolled meeting segment failed: {err}");
+            }
         }
 
         match receiver.recv_timeout(RECEIVE_TIMEOUT) {
@@ -434,7 +564,6 @@ fn run_writer(
             Err(RecvTimeoutError::Disconnected) => {
                 if !shared.stop.load(Ordering::SeqCst) {
                     shared.interrupt(CaptureInterruption::NoAudio);
-                    emit_progress(shared);
                 }
                 break Ok(());
             }
@@ -457,20 +586,20 @@ fn run_writer(
             }
             last_commit = Instant::now();
         }
-
-        if last_progress.elapsed() >= PROGRESS_INTERVAL {
-            emit_progress(shared);
-            last_progress = Instant::now();
-        }
     };
 
+    let result = result.and_then(|()| {
+        converted.clear();
+        downsampler.flush(&mut converted);
+        writer.append(&converted)
+    });
     if let Err(err) = &result {
         log::error!("Meeting capture write failed: {err}");
         shared.interrupt(CaptureInterruption::WriteFailed);
-        emit_progress(shared);
     }
-
-    writer.finish()
+    let finished = writer.finish();
+    shared.finished.store(true, Ordering::SeqCst);
+    finished
 }
 
 #[cfg(test)]
@@ -489,9 +618,6 @@ mod tests {
         path
     }
 
-    fn no_rolls() -> Receiver<RollRequest> {
-        mpsc::channel().1
-    }
 
     #[test]
     fn writer_marks_a_vanished_source_as_interrupted_and_keeps_audio() {
@@ -502,7 +628,7 @@ mod tests {
         drop(sender);
 
         let shared = CaptureShared::default();
-        let samples = run_writer(writer, receiver, no_rolls(), 48_000, &shared, |_| {}).unwrap();
+        let samples = run_writer(writer, receiver, 48_000, &shared).unwrap();
 
         assert_eq!(samples, 16_000);
         assert_eq!(shared.interruption(), Some(CaptureInterruption::NoAudio));
@@ -524,11 +650,88 @@ mod tests {
             sender.send(vec![0.1f32; 16_000]).unwrap();
         }
 
-        let samples = run_writer(writer, receiver, no_rolls(), 16_000, &shared, |_| {}).unwrap();
+        let samples = run_writer(writer, receiver, 16_000, &shared).unwrap();
 
         assert_eq!(samples, 48_000);
         assert_eq!(shared.interruption(), None);
         drop(sender);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_roll_the_writer_never_picks_up_is_withdrawn() {
+        let path = temp_path("withdrawn");
+        let shared = CaptureShared::default();
+        *shared.target.lock().unwrap() = Some(SegmentTarget {
+            segment_id: "a".into(),
+            audio_path: temp_path("current"),
+            initial_samples: 0,
+        });
+        let (reply, finished) = mpsc::channel();
+        let result = submit_roll(
+            &shared,
+            RollRequest {
+                writer: SegmentWriter::create(&path).unwrap(),
+                target: SegmentTarget {
+                    segment_id: "b".into(),
+                    audio_path: path.clone(),
+                    initial_samples: 0,
+                },
+                reply,
+            },
+            &finished,
+            Duration::from_millis(50),
+        );
+        assert!(result.is_err());
+        assert!(shared.roll.lock().unwrap().is_none());
+        assert_eq!(
+            shared.target.lock().unwrap().as_ref().unwrap().segment_id,
+            "a",
+            "the capture keeps tracking the file it writes"
+        );
+        assert!(!path.exists(), "the unused file is removed");
+    }
+
+    #[test]
+    fn a_full_queue_marks_the_capture_write_failed_instead_of_growing() {
+        let shared = Arc::new(CaptureShared::default());
+        let (sender, _receiver) = mpsc::sync_channel(2);
+        let callback = queue_chunks(sender, Arc::clone(&shared));
+        for _ in 0..3 {
+            callback(vec![0.1; 1_600]);
+        }
+        assert_eq!(shared.interruption(), Some(CaptureInterruption::WriteFailed));
+    }
+
+    #[test]
+    fn a_delivery_rate_off_the_configured_rate_is_a_device_change() {
+        let start = Instant::now();
+        let mut steady = RateCheck::new(48_000);
+        let mut switched = RateCheck::new(48_000);
+        let mut steady_changed = false;
+        let mut switched_changed = false;
+        for tick in 0..=60u64 {
+            let now = start + Duration::from_millis(tick * 100);
+            steady_changed |= steady.changed(4_800, now);
+            // A Bluetooth headset switching to 16 kHz.
+            switched_changed |= switched.changed(1_600, now);
+        }
+        assert!(!steady_changed);
+        assert!(switched_changed);
+    }
+
+    #[test]
+    fn sustained_digital_silence_is_reported() {
+        let path = temp_path("silent");
+        let writer = SegmentWriter::create(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        for _ in 0..160 {
+            sender.send(vec![0.0f32; 1_600]).unwrap();
+        }
+        drop(sender);
+        let shared = CaptureShared::default();
+        run_writer(writer, receiver, 16_000, &shared).unwrap();
+        assert!(shared.silent.load(Ordering::SeqCst));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -598,7 +801,10 @@ mod tests {
     fn wait_for(condition: impl Fn() -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !condition() {
-            assert!(Instant::now() < deadline, "timed out");
+            assert!(
+                Instant::now() < deadline,
+                "timed out after 5 s waiting for the capture"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -616,12 +822,10 @@ mod tests {
         let rolled = capture.roll("b".into(), second.clone()).unwrap();
         assert_eq!(rolled.finished.segment_id, "a");
         assert_eq!(rolled.status.segment_id, "b");
-        let stopped = loop {
-            if capture.status().unwrap().duration_ms + rolled.finished.duration_ms >= 10_000 {
-                break capture.stop().unwrap().unwrap();
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
+        wait_for(|| {
+            capture.status().unwrap().duration_ms + rolled.finished.duration_ms >= 10_000
+        });
+        let stopped = capture.stop().unwrap().unwrap();
 
         assert_eq!(stopped.segment_id, "b");
         let total = crate::system::meeting_audio::repair_segment(&first).unwrap()

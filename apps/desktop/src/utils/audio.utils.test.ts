@@ -35,6 +35,7 @@ describe("tryPlayAudioChime", () => {
           initialDurationMs: 0,
           level: 0,
           interruption: null,
+          silent: false,
         },
       },
     }));
