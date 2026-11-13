@@ -1245,6 +1245,10 @@ pub async fn clear_local_data(
             capture.stop()?;
         }
         crate::system::meeting_audio::delete_all_meeting_audio(&audio_app)
+            .map_err(|err| err.to_string())?;
+        // Dictation recordings too: their History rows are cleared below, and
+        // failed dictations' audio is otherwise kept until retried or deleted.
+        crate::system::audio_store::delete_all_transcription_audio(&audio_app)
             .map_err(|err| err.to_string())
     })
     .await

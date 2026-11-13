@@ -37,6 +37,12 @@ pub fn audio_dir(app: &tauri::AppHandle) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// Removes every stored dictation recording (local data is being cleared).
+pub fn delete_all_transcription_audio(app: &tauri::AppHandle) -> io::Result<()> {
+    let dir = audio_dir(app)?;
+    fs::remove_dir_all(&dir)
+}
+
 pub fn audio_path_for(app: &tauri::AppHandle, transcription_id: &str) -> io::Result<PathBuf> {
     let mut path = audio_dir(app)?;
     path.push(format!("{}.wav", sanitize_id(transcription_id)));
