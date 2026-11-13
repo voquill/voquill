@@ -5,6 +5,7 @@ import {
   HomeOutlined,
   PaletteOutlined,
   SettingsOutlined,
+  StickyNote2Outlined,
 } from "@mui/icons-material";
 import { Box, List, Stack } from "@mui/material";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -45,7 +46,16 @@ const navItems: NavItem[] = [
     path: "/dashboard/styling",
     icon: <PaletteOutlined />,
   },
+  {
+    label: <FormattedMessage defaultMessage="Notes" />,
+    path: "/dashboard/notes",
+    icon: <StickyNote2Outlined />,
+  },
 ];
+
+const isNavItemSelected = (pathname: string, path: string) =>
+  pathname === path ||
+  (path !== "/dashboard" && pathname.startsWith(`${path}/`));
 
 export type DashboardMenuProps = {
   onChoose?: () => void;
@@ -75,7 +85,7 @@ export const DashboardMenu = ({ onChoose }: DashboardMenuProps) => {
         <ListTile
           key={path}
           onClick={() => onChooseHandler(path)}
-          selected={location.pathname === path}
+          selected={isNavItemSelected(location.pathname, path)}
           leading={icon}
           title={label}
         />

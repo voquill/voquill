@@ -27,6 +27,7 @@ import {
   type MenuPopoverItem,
 } from "../common/MenuPopover";
 import { TrialCountdown } from "../common/TrialCountdown";
+import { MeetingIndicatorChip } from "../notes/MeetingIndicatorChip";
 import { maybeArrayElements } from "../settings/AIPostProcessingConfiguration";
 import { GpuMigrationDialog } from "./GpuMigrationDialog";
 import { SenderReceiverChip } from "./SenderReceiverChip";
@@ -196,6 +197,7 @@ export const AppHeader = () => {
         <LogoWithText />
       </Box>
       <SenderReceiverChip />
+      <MeetingIndicatorChip />
     </Stack>
   );
 

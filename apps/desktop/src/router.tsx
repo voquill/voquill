@@ -6,6 +6,8 @@ import DictionaryPage from "./components/dictionary/DictionaryPage.tsx";
 import EnterpriseRoutingPage from "./components/enterprise/EnterpriseRoutingPage.tsx";
 import HomePage from "./components/home/HomePage.tsx";
 import LoginPage from "./components/login/LoginPage.tsx";
+import NotePage from "./components/notes/NotePage.tsx";
+import NotesPage from "./components/notes/NotesPage.tsx";
 import OnboardingPage from "./components/onboarding/OnboardingPage.tsx";
 import ErrorBoundary from "./components/root/ErrorBoundary.tsx";
 import { AppHeader } from "./components/root/Header.tsx";
@@ -118,6 +120,14 @@ export const browserRouter = createBrowserRouter([
               {
                 path: "styling",
                 element: <StylingPage />,
+              },
+              {
+                path: "notes",
+                element: <NotesPage />,
+              },
+              {
+                path: "notes/:noteId",
+                element: <NotePage />,
               },
               {
                 path: "apps",
