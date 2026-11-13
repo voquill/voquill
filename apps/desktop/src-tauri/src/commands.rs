@@ -1455,13 +1455,52 @@ pub fn storage_get_download_url(app: AppHandle, path: String) -> Result<String, 
     repo.get_download_url(&path).map_err(|err| err.to_string())
 }
 
+#[derive(serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptionAudioEntry {
+    pub id: String,
+    pub transcript: String,
+    pub duration_ms: Option<i64>,
+}
+
+/// Transcriptions that still have stored audio, newest first.
+#[tauri::command]
+#[specta::specta]
+pub async fn transcription_audio_entries(
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<TranscriptionAudioEntry>, String> {
+    let rows = sqlx::query(
+        "SELECT id, transcript, audio_duration_ms
+         FROM transcriptions
+         WHERE audio_path IS NOT NULL
+         ORDER BY timestamp DESC",
+    )
+    .fetch_all(&database.pool())
+    .await
+    .map_err(|err| err.to_string())?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| TranscriptionAudioEntry {
+            id: row.get::<String, _>("id"),
+            transcript: row.get::<String, _>("transcript"),
+            duration_ms: row.get::<Option<i64>, _>("audio_duration_ms"),
+        })
+        .collect())
+}
+
+/// Deletes stored audio beyond the most recent entries. `keep_ids` are never
+/// purged and do not count towards the retained entries.
 #[tauri::command]
 #[specta::specta]
 pub async fn purge_stale_transcription_audio(
     app: AppHandle,
     database: State<'_, crate::state::OptionKeyDatabase>,
+    keep_ids: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
     let pool = database.pool();
+    let keep_ids: std::collections::HashSet<String> =
+        keep_ids.unwrap_or_default().into_iter().collect();
 
     let rows = sqlx::query(
         "SELECT id, audio_path
@@ -1475,6 +1514,7 @@ pub async fn purge_stale_transcription_audio(
 
     let stale_entries: Vec<(String, String)> = rows
         .into_iter()
+        .filter(|row| !keep_ids.contains(&row.get::<String, _>("id")))
         .skip(MAX_RETAINED_TRANSCRIPTION_AUDIO)
         .map(|row| {
             (
