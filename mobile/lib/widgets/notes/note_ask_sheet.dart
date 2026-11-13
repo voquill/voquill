@@ -115,11 +115,9 @@ class _NoteAskSheetState extends State<NoteAskSheet> {
                 return;
               }
               if (e is NotesApiException && e.isQuota) presentPaywall();
-              turn.error = e is NotesApiException && e.isNetwork
-                  ? "You're offline. Connect and try again."
-                  : e is NotesApiException && e.isQuota
-                  ? describeNoteError(e.toNoteError())
-                  : 'The answer could not be finished.';
+              turn.error = e is NotesApiException && e.code != 'ask_failed'
+              ? describeApiError(e)
+              : 'The answer could not be finished.';
             });
           },
           onDone: () => setState(() {

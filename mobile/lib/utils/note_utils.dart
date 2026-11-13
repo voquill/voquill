@@ -179,27 +179,38 @@ const _noteErrorMessages = {
   'note_too_long': 'A note can contain at most 8 hours of audio.',
   'too_many_segments': 'This note has too many recordings. Start a new note.',
   'client_error': 'Something went wrong on this device.',
+  'too_many_processing':
+      'Another note is being processed. This one starts as soon as it is done.',
+  'too_many_pending_uploads':
+      'Too many recordings are waiting to upload. They continue shortly.',
+  'segment_processing':
+      'This recording is being processed. Try again when it is done.',
+  'regenerate_cooldown': 'The notes were just regenerated.',
+  'ask_limit_exceeded': "You've reached today's limit for Ask.",
+  'transcript_unavailable':
+      'Ask becomes available once the meeting is processed.',
+  'notes_unavailable': 'Notes is temporarily unavailable. Try again later.',
 };
+
+/// Codes that a plan upgrade can resolve.
+const _upgradeErrorCodes = {'word_quota_exceeded', 'audio_quota_exceeded'};
 
 /// Plain-language explanation for a failed note or segment.
 String describeNoteError(NoteError? error) =>
     _noteErrorMessages[error?.code] ?? _genericNoteError;
 
-/// Plain-language text for a failed request the user just made.
+/// Plain-language text for a failed request the user just made, with when
+/// to try again if the server said so.
 String describeApiError(NotesApiException e) {
   if (e.isNetwork) return "You're offline. Try again when you're connected.";
-  if (e.code == 'regenerate_cooldown') {
-    final seconds = e.retryAfterSeconds;
-    return seconds == null
-        ? 'The notes were just regenerated. Try again in a few minutes.'
-        : 'The notes were just regenerated. Try again in ${(seconds / 60).ceil()} min.';
-  }
-  return describeNoteError(e.toNoteError());
+  final message = describeNoteError(e.toNoteError());
+  final seconds = e.retryAfterSeconds;
+  if (seconds == null) return message;
+  final wait = seconds < 90 ? '$seconds s' : '${(seconds / 60).ceil()} min';
+  return '$message Try again in $wait.';
 }
 
-bool isQuotaError(NoteError? error) =>
-    error?.code == 'word_quota_exceeded' ||
-    error?.code == 'audio_quota_exceeded';
+bool isQuotaError(NoteError? error) => _upgradeErrorCodes.contains(error?.code);
 
 class TranscriptLine {
   final String label;

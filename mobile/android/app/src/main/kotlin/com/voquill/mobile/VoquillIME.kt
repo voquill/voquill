@@ -382,9 +382,12 @@ class VoquillIME : InputMethodService() {
                     return
                 }
                 if (!startAudioCapture()) {
-                    // Android 9 and older cannot share the mic with a recording meeting.
+                    // Android 9 and older cannot share the mic with a recording
+                    // meeting; from Android 10 both capture at once.
+                    val isMicHeldByMeeting = NoteRecorder.isCapturing &&
+                        android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.Q
                     showPillError(
-                        if (NoteRecorder.isCapturing) "Pause your meeting to dictate"
+                        if (isMicHeldByMeeting) "Pause your meeting to dictate"
                         else "Microphone error — try again",
                     )
                     return

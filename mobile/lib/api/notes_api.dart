@@ -4,12 +4,12 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:app/model/note_model.dart';
+import 'package:app/utils/note_utils.dart';
 import 'package:app/utils/sse_utils.dart';
 import 'package:http/http.dart' as http;
 
 const noteAudioContentType = 'audio/aac';
 
-const _quotaErrorCodes = {'word_quota_exceeded', 'audio_quota_exceeded'};
 const _queuedErrorCodes = {'too_many_processing', 'too_many_pending_uploads'};
 const _uploadSessionExpiredCode = 'upload_session_expired';
 const _uploadRejectedCode = 'upload_rejected';
@@ -38,7 +38,7 @@ class NotesApiException implements Exception {
       details = null;
 
   bool get isNetwork => statusCode == null;
-  bool get isQuota => _quotaErrorCodes.contains(code);
+  bool get isQuota => isQuotaError(toNoteError());
   bool get isNoteNotFound => code == 'note_not_found';
 
   /// The session is gone (404/410) or refused the bytes (400: the size did
@@ -114,7 +114,9 @@ class NotesApi {
   final http.Client _client;
 
   static const _requestTimeout = Duration(seconds: 30);
-  static const _chunkTimeout = Duration(minutes: 5);
+  /// An 8 MiB chunk at 0.5 Mbit/s takes ~2.3 min; a request suspended with
+  /// the app is abandoned after this and resumed from the session's offset.
+  static const _chunkTimeout = Duration(minutes: 3);
 
   Future<NoteListPage> listNotes({int limit = 50, String? cursor}) async {
     final json = await _send(
