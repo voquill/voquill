@@ -7,6 +7,7 @@ import {
   NOTE_PROCESSING_STALE_MS,
   NOTE_SLOW_POLL_AFTER_MS,
   NOTE_SLOW_POLL_INTERVAL_MS,
+  NotesAccountChangedError,
   NotesApiError,
   NotesNetworkError,
   segmentNeedsReupload,
@@ -58,7 +59,8 @@ export type Connectivity = {
 export type CloudNotePipelineDeps = {
   store: NoteStore;
   repo: Pick<BaseNoteRepo, "searchNotes" | "addDeletion">;
-  api: CloudNoteApi;
+  /** The API as one account; its requests are refused once that account is not signed in. */
+  api: (ownerUserId: string) => CloudNoteApi;
   audio: Pick<
     MeetingAudioRepo,
     "getFileSize" | "uploadResumable" | "cancelUpload" | "deleteSegmentAudio"
@@ -71,12 +73,22 @@ export type CloudNotePipelineDeps = {
   setActivity(noteId: string, activity: NoteCloudActivity | null): void;
   /** Called after a note settled, so the list can refresh. */
   onSettled(noteId: string): void;
+  /**
+   * The note's screen is open. Only then is it polled with `GET /:id`;
+   * otherwise its status comes from the list refresh (docs/notes.md
+   * "Polling and staleness").
+   */
+  isNoteOpen(noteId: string): boolean;
   /** Resolves when no dictation is running, so background work never competes with it. */
   yieldToDictation(): Promise<void>;
 };
 
 /** The note was deleted, or its account signed out: stop without failing it. */
 class NoteUnavailableError extends Error {}
+
+const isQuietStop = (error: unknown) =>
+  error instanceof NoteUnavailableError ||
+  error instanceof NotesAccountChangedError;
 
 /** A failure the user has to act on; recorded on the note, never auto-retried. */
 class NoteBlockedError extends Error {
@@ -89,6 +101,8 @@ class NoteBlockedError extends Error {
 }
 
 const MAX_SERVER_RETRIES = 6;
+/** Shorter queries are searched on this device only (the contract's minimum). */
+const MIN_SERVER_QUERY_CHARS = 2;
 const BUSY_WAIT_MS = 30_000;
 /** Upload passes are this size so a dictation never waits behind a long upload. */
 const UPLOAD_PASS_BYTES = 8 * 1024 * 1024;
@@ -157,7 +171,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
     }
     this.assertOwned(noteId);
     await this.pushNote(noteId);
-    await this.request(noteId, () => this.deps.api.regenerateNote(noteId));
+    await this.request(noteId, () => this.api(noteId).regenerateNote(noteId));
     await this.deps.store.updateNote(noteId, (draft) => {
       draft.status = transitionNote(
         transitionNote(draft.status, "regenerate"),
@@ -195,7 +209,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
     try {
       await this.pushNote(noteId);
     } catch (error) {
-      if (!(error instanceof NoteUnavailableError)) {
+      if (!isQuietStop(error)) {
         getLogger().warning(
           `Saving note edits failed (${toNoteError(error).code})`,
         );
@@ -213,14 +227,14 @@ export class CloudNotePipeline extends BaseNotePipeline {
     try {
       this.assertOwned(noteId);
       await this.deps.store.loadSegments(noteId);
-      const server = await this.deps.api.getNote(noteId);
+      const server = await this.api(noteId).getNote(noteId);
       await this.applyServerNote(noteId, server);
       await this.releaseTranscribedAudio(noteId, server);
     } catch (error) {
       if (error instanceof NotesApiError && error.code === "note_not_found") {
         return;
       }
-      if (!(error instanceof NoteUnavailableError)) {
+      if (!isQuietStop(error)) {
         getLogger().warning(
           `Refreshing a cloud note failed (${toNoteError(error).code})`,
         );
@@ -289,7 +303,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
    * (an upload session creates a draft) cannot bring it back.
    */
   async deleteNote(noteId: string): Promise<void> {
-    const { store, api, repo, audio } = this.deps;
+    const { store, repo, audio } = this.deps;
     const note = store.getNote(noteId);
     for (const segment of store.getSegments(noteId)) {
       void audio.cancelUpload(segment.id).catch(() => undefined);
@@ -301,7 +315,10 @@ export class CloudNotePipeline extends BaseNotePipeline {
         ownerUserId,
         createdAt: this.deps.now(),
       });
-      await api.deleteNote(noteId).catch(() => undefined);
+      await this.deps
+        .api(ownerUserId)
+        .deleteNote(noteId)
+        .catch(() => undefined);
     }
     await store.deleteNote(noteId, { deleteAudio: true });
   }
@@ -327,14 +344,14 @@ export class CloudNotePipeline extends BaseNotePipeline {
   /** Gives up on a segment whose audio is lost; the rest of the note stays. */
   async dropSegment(noteId: string, segmentId: string): Promise<void> {
     this.assertOwned(noteId);
-    const { store, api, audio } = this.deps;
+    const { store, audio } = this.deps;
     const segment = store.getSegments(noteId).find((s) => s.id === segmentId);
     if (!segment || segment.status === "transcribed") {
       return;
     }
     await this.request(noteId, async () => {
       try {
-        await api.deleteSegment(noteId, segmentId);
+        await this.api(noteId).deleteSegment(noteId, segmentId);
       } catch (error) {
         if (!(error instanceof NotesApiError && error.status === 404)) {
           throw error;
@@ -353,12 +370,17 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   async search(query: string): Promise<NoteSearchResult[]> {
-    const { repo, api, connectivity } = this.deps;
+    const { repo, connectivity } = this.deps;
     const ownerUserId = this.deps.getCloudNotesUserId();
     const [local, remote] = await Promise.all([
       searchLocalNotes(repo, query, ownerUserId),
-      ownerUserId && connectivity.isOnline() && query.trim()
-        ? api.search(query).catch(() => [])
+      ownerUserId &&
+      connectivity.isOnline() &&
+      query.trim().length >= MIN_SERVER_QUERY_CHARS
+        ? this.deps
+            .api(ownerUserId)
+            .search(query)
+            .catch(() => [])
         : Promise.resolve([]),
     ]);
     const remoteResults: NoteSearchResult[] = [];
@@ -384,7 +406,8 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   async *ask(input: NoteAskInput): AsyncGenerator<NoteAskEvent> {
-    if (!this.deps.getCloudNotesUserId()) {
+    const ownerUserId = this.deps.getCloudNotesUserId();
+    if (!ownerUserId) {
       yield { type: "error", message: "signed_out" };
       return;
     }
@@ -393,7 +416,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
       return;
     }
     try {
-      yield* this.deps.api.ask(input);
+      yield* this.deps.api(ownerUserId).ask(input);
     } catch (error) {
       const noteError = toNoteError(error);
       yield {
@@ -415,7 +438,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
       await task();
     } catch (error) {
       const gone =
-        error instanceof NoteUnavailableError ||
+        isQuietStop(error) ||
         getNotesErrorHandling(error) === "missing" ||
         !this.deps.store.getNote(noteId);
       if (gone) {
@@ -447,6 +470,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
     }
   }
 
+  /** The API as the note's owner. */
+  private api(noteId: string): CloudNoteApi {
+    return this.deps.api(this.assertOwned(noteId).cloud!.ownerUserId);
+  }
+
   private assertOwned(noteId: string): Note {
     const note = this.deps.store.getNote(noteId);
     if (
@@ -459,10 +487,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   /**
-   * Runs one API call with the contract's retry rules: network errors wait
-   * for the connection (as long as it takes), server errors back off a
-   * bounded number of times, "busy" waits a bounded number of times, and
-   * anything that needs the user throws.
+   * Runs one API call with the contract's retry rules: network errors
+   * (timeouts included) back off and wait for the connection as long as it
+   * takes, server errors back off a bounded number of times, "busy" waits
+   * (honouring Retry-After) until a slot frees, and anything that needs the
+   * user throws.
    */
   private async request<T>(noteId: string, call: () => Promise<T>): Promise<T> {
     let serverFailures = 0;
@@ -546,7 +575,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
     if (cloud.onServer && cloud.unsyncedFields.length === 0) {
       return;
     }
-    const { api } = this.deps;
+    const api = this.api(noteId);
     let sent: Partial<Pick<Note, "title" | "personalNotes">> = {};
     if (cloud.onServer) {
       try {
@@ -591,7 +620,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
         .getSegments(noteId)
         .find((segment) => segment.kind === "import")?.transcript?.text ?? "";
     const server = await this.request(noteId, () =>
-      this.deps.api.importNote({
+      this.api(noteId).importNote({
         id: noteId,
         transcript,
         ...(note.titleSource === "user" ? { title: note.title } : {}),
@@ -635,7 +664,8 @@ export class CloudNotePipeline extends BaseNotePipeline {
     noteId: string,
     segmentId: string,
   ): Promise<void> {
-    const { store, api, audio } = this.deps;
+    const { store, audio } = this.deps;
+    const api = this.api(noteId);
     const current = () =>
       store.getSegments(noteId).find((segment) => segment.id === segmentId);
 
@@ -682,6 +712,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
       }
 
       let interruptions = 0;
+      let networkFailures = 0;
       for (;;) {
         this.assertOwned(noteId);
         if (!this.deps.connectivity.isOnline()) {
@@ -705,6 +736,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
         });
         if (result.outcome === "partial") {
           interruptions = 0;
+          networkFailures = 0;
           continue;
         }
         if (result.outcome === "complete") {
@@ -742,8 +774,12 @@ export class CloudNotePipeline extends BaseNotePipeline {
             `The upload kept failing (${result.status})`,
           );
         }
+        // No response at all (captive portal, DNS, VPN drop) while the
+        // device reports a connection: keep trying, but back off too.
         this.deps.setActivity(noteId, { kind: "waiting-for-connection" });
-        await this.deps.sleep(backoffMs(interruptions));
+        await this.deps.sleep(
+          backoffMs(serverSide ? interruptions : networkFailures++),
+        );
       }
     }
     throw new NoteBlockedError(
@@ -770,7 +806,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
               ? { personalNotes: latest.personalNotes }
               : {}),
           };
-          return this.deps.api.processNote(noteId, body);
+          return this.api(noteId).processNote(noteId, body);
         });
         await this.confirmServerNote(noteId, server, body);
         await this.deps.store.updateNote(noteId, (draft) => {
@@ -807,29 +843,39 @@ export class CloudNotePipeline extends BaseNotePipeline {
     }
   }
 
-  /** Polls until the server settles, asking it to pick up a stale job. */
+  /**
+   * Follows the note until the server settles it, asking it to pick up a
+   * stale job. An open note is polled; otherwise the list refresh updates
+   * its status, and one `GET` fetches the result once it is final.
+   */
   private async settle(noteId: string): Promise<void> {
     const started = this.deps.now();
     for (;;) {
       this.deps.setActivity(noteId, { kind: "processing" });
-      const server = await this.request(noteId, () =>
-        this.deps.api.getNote(noteId),
-      );
-      const applied = await this.applyServerNote(noteId, server);
-      if (
-        applied &&
-        (server.status === "ready" || server.status === "failed")
-      ) {
-        await this.releaseTranscribedAudio(noteId, server);
-        return;
+      const local = this.assertOwned(noteId).status;
+      const listedAsFinal = local === "ready" || local === "failed";
+      if (this.deps.isNoteOpen(noteId) || listedAsFinal) {
+        const server = await this.request(noteId, () =>
+          this.api(noteId).getNote(noteId),
+        );
+        const applied = await this.applyServerNote(noteId, server);
+        if (
+          applied &&
+          (server.status === "ready" || server.status === "failed")
+        ) {
+          await this.releaseTranscribedAudio(noteId, server);
+          return;
+        }
+        if (server.status === "draft") {
+          await this.requestProcessing(noteId);
+        }
       }
       const requestedAt =
         this.deps.store.getNote(noteId)?.cloud?.processRequestedAt;
       if (
-        server.status === "draft" ||
-        (requestedAt &&
-          this.deps.now() - dayjs(requestedAt).valueOf() >
-            NOTE_PROCESSING_STALE_MS)
+        requestedAt &&
+        this.deps.now() - dayjs(requestedAt).valueOf() >
+          NOTE_PROCESSING_STALE_MS
       ) {
         await this.requestProcessing(noteId);
       }

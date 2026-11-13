@@ -1,6 +1,7 @@
 import type { Note, NoteSegment } from "@voquill/types";
 import { describe, expect, it, vi } from "vitest";
 import {
+  NotesAccountChangedError,
   NotesApiError,
   NotesNetworkError,
   type ServerNote,
@@ -25,7 +26,7 @@ vi.mock("../utils/log.utils", () => ({
 const USER = "user-1";
 const NOW = "2026-05-01T12:00:00.000Z";
 
-type Failure = NotesApiError | NotesNetworkError;
+type Failure = NotesApiError | NotesNetworkError | NotesAccountChangedError;
 
 /** An in-memory `/v1/notes` with the contract's idempotency rules. */
 class FakeNotesServer implements CloudNoteApi {
@@ -369,7 +370,10 @@ const createHarness = ({
   const activities: (NoteCloudActivity | null)[] = [];
   const deletions: string[] = [];
   let uploadScript: UploadScript = () => "complete";
+  let interruptedStatus: number | null = 503;
+  let noteOpen = true;
   const yields = { count: 0, gate: Promise.resolve() };
+  const sleeps: number[] = [];
 
   const pipeline = new CloudNotePipeline({
     store,
@@ -379,7 +383,7 @@ const createHarness = ({
         deletions.push(deletion.noteId);
       },
     },
-    api: server,
+    api: () => server,
     audio: {
       getFileSize: async () => 32_044,
       uploadResumable: async ({ url, uploadId }) => {
@@ -392,7 +396,7 @@ const createHarness = ({
           totalBytes: 32_044,
           status:
             outcome === "interrupted"
-              ? 503
+              ? interruptedStatus
               : outcome === "rejected"
                 ? 400
                 : null,
@@ -413,11 +417,14 @@ const createHarness = ({
           ? Promise.resolve()
           : new Promise<void>((resolve) => waiters.push(resolve)),
     },
-    sleep: async () => {},
+    sleep: async (ms) => {
+      sleeps.push(ms);
+    },
     now: () => Date.parse(NOW),
     getCloudNotesUserId: () => userId,
     setActivity: (_noteId, activity) => activities.push(activity),
     onSettled: () => {},
+    isNoteOpen: () => noteOpen,
     yieldToDictation: async () => {
       yields.count++;
       await yields.gate;
@@ -433,6 +440,7 @@ const createHarness = ({
     activities,
     deletions,
     yields,
+    sleeps,
     setOnline(value: boolean) {
       online = value;
       if (value) {
@@ -444,8 +452,12 @@ const createHarness = ({
     setUser(value: string | null) {
       userId = value;
     },
-    setUploads(script: UploadScript) {
+    setNoteOpen(value: boolean) {
+      noteOpen = value;
+    },
+    setUploads(script: UploadScript, status: number | null = 503) {
       uploadScript = script;
+      interruptedStatus = status;
     },
   };
 };
@@ -1238,5 +1250,78 @@ describe("CloudNotePipeline races with work in flight", () => {
       title: "Renamed on phone",
       personalNotes: "written on the phone",
     });
+  });
+});
+
+describe("CloudNotePipeline network robustness and accounts", () => {
+  it("backs off on upload failures that get no response at all (S7)", async () => {
+    const harness = createHarness({ segments: [recordedSegment(0)] });
+    let attempts = 0;
+    harness.setUploads(
+      () => (++attempts <= 8 ? "interrupted" : "complete"),
+      null,
+    );
+    await harness.pipeline.process("note");
+
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+    const uploadWaits = harness.sleeps.slice(0, 8);
+    expect(uploadWaits).toEqual([
+      1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000,
+    ]);
+  });
+
+  it("stops quietly when the account changes under a running note (S5)", async () => {
+    const harness = createHarness();
+    const server = harness.server;
+    const original = server.requestSegmentUpload.bind(server);
+    server.requestSegmentUpload = async (...args) => {
+      harness.setUser("account-b");
+      return original(...args);
+    };
+    await harness.pipeline.process("note");
+
+    const note = harness.store.getNote("note");
+    expect(note?.status).toBe("pending");
+    expect(note?.error).toBeNull();
+    expect(server.calls).not.toContain("processNote");
+  });
+
+  it("stops quietly when the API refuses the request for another account (S5)", async () => {
+    const harness = createHarness();
+    harness.server.failNext(
+      "putNote",
+      new NotesAccountChangedError("The signed-in account changed"),
+    );
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")).toMatchObject({
+      status: "pending",
+      error: null,
+    });
+  });
+});
+
+describe("CloudNotePipeline polling (N11)", () => {
+  it("polls only an open note; others wait for the list, then fetch the result once", async () => {
+    const harness = createHarness();
+    harness.setNoteOpen(false);
+    let slept = 0;
+    harness.sleeps.push = (ms: number) => {
+      slept++;
+      if (slept === 3) {
+        // The list refresh reported the note ready.
+        void harness.store.updateNote("note", (note) => {
+          note.status = "ready";
+        });
+        harness.server.pollsUntilDone = 0;
+      }
+      return Array.prototype.push.call(harness.sleeps, ms);
+    };
+    await harness.pipeline.process("note");
+
+    expect(harness.server.calls.filter((c) => c === "getNote")).toHaveLength(1);
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+    expect(harness.store.getSegments("note").every((s) => !s.audioPath)).toBe(
+      true,
+    );
   });
 });

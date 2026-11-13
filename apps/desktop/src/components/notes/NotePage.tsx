@@ -29,7 +29,7 @@ import {
   Typography,
 } from "@mui/material";
 import type { Note, NoteError } from "@voquill/types";
-import { useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../../actions/app.actions";
@@ -44,6 +44,7 @@ import {
   retryNote,
   retryNoteSegment,
   setNoteView,
+  setOpenNote,
   stopMeetingNote,
 } from "../../actions/note.actions";
 import { openUpgradePlanDialog } from "../../actions/pricing.actions";
@@ -811,6 +812,11 @@ export default function NotePage() {
       await loadNoteSegments(noteId).catch(showErrorSnackbar);
     }
   }, [noteId, Boolean(note)]);
+
+  useEffect(() => {
+    setOpenNote(noteId);
+    return () => setOpenNote(null);
+  }, [noteId]);
 
   const goBack = () => navigate(NOTES_PATH);
   const backLabel = intl.formatMessage({ defaultMessage: "Back to notes" });

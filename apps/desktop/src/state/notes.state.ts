@@ -57,6 +57,8 @@ export type NotesState = {
   noteView: NoteView;
   /** The device reports a network connection. */
   online: boolean;
+  /** The note whose screen is open (polled while it processes). */
+  openNoteId: Nullable<string>;
 };
 
 export const INITIAL_NOTES_STATE: NotesState = {
@@ -70,4 +72,5 @@ export const INITIAL_NOTES_STATE: NotesState = {
   askLimitResetsAt: null,
   noteView: "notes",
   online: true,
+  openNoteId: null,
 };

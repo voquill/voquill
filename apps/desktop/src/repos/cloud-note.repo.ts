@@ -11,10 +11,7 @@ import type {
   NoteAskEvent,
   NoteAskInput,
 } from "../pipelines/base-note.pipeline";
-import {
-  getNewServerAuthHeaders,
-  NEW_SERVER_URL,
-} from "../utils/new-server.utils";
+import { getNewServerAuth, NEW_SERVER_URL } from "../utils/new-server.utils";
 import { BaseRepo } from "./base.repo";
 
 /**
@@ -84,6 +81,28 @@ export const NOTE_SERVER_LIMITS = {
 export const getNoteAudioDurationForBytes = (bytes: number): number =>
   Math.floor((bytes / NOTE_AUDIO_BYTES_PER_SECOND) * 1000);
 
+/** What `/ask` accepts (docs/notes.md "Ask"). */
+export const NOTE_ASK_LIMITS = {
+  maxQuestionChars: 2_000,
+  maxHistoryMessages: 20,
+  maxHistoryMessageChars: 8_000,
+};
+
+/** The question and the most recent history, each within the server's caps. */
+export const capAskInput = ({
+  question,
+  history,
+}: Pick<NoteAskInput, "question" | "history">): Pick<
+  NoteAskInput,
+  "question" | "history"
+> => ({
+  question: question.slice(0, NOTE_ASK_LIMITS.maxQuestionChars),
+  history: history.slice(-NOTE_ASK_LIMITS.maxHistoryMessages).map((m) => ({
+    role: m.role,
+    content: m.content.slice(0, NOTE_ASK_LIMITS.maxHistoryMessageChars),
+  })),
+});
+
 /** The server's fixed id for an imported note's only segment. */
 const SERVER_IMPORT_SEGMENT_ID = "import";
 
@@ -129,8 +148,15 @@ export class NotesApiError extends Error {
   }
 }
 
-/** The request never got an HTTP response (offline, DNS, TLS, reset). */
+/** The request never got an HTTP response (offline, DNS, TLS, reset, timeout). */
 export class NotesNetworkError extends Error {}
+
+/**
+ * The request was not sent: nobody is signed in, or the signed-in account
+ * is not the one the request belongs to (signed out or switched). Callers
+ * stop quietly; nothing is wrong with the note.
+ */
+export class NotesAccountChangedError extends Error {}
 
 /**
  * How the client treats an error code:
@@ -225,8 +251,18 @@ type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
 export type CloudNoteRepoOptions = {
   baseUrl?: string;
   fetch?: FetchLike;
-  getAuthHeaders?: (forceRefresh: boolean) => Promise<Record<string, string>>;
+  getAuth?: typeof getNewServerAuth;
+  /**
+   * Every request is refused unless the signed-in Firebase user (whose
+   * token is sent) is this account. Null for unscoped requests.
+   */
+  ownerUserId?: string | null;
+  /** How long a call may wait for its response (and a JSON body). */
+  timeoutMs?: number;
 };
+
+/** API calls give up after this, so a socket left dead by sleep/wake cannot hang a note. */
+const NOTES_REQUEST_TIMEOUT_MS = 45_000;
 
 type SseEvent = { event: string; data: string };
 
@@ -299,49 +335,97 @@ const readApiError = async (response: Response): Promise<NotesApiError> => {
 
 /** REST client for `/v1/notes` on the Voquill server. */
 export class CloudNoteRepo extends BaseRepo {
+  private readonly options: CloudNoteRepoOptions;
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
-  private readonly getAuthHeaders: (
-    forceRefresh: boolean,
-  ) => Promise<Record<string, string>>;
+  private readonly getAuth: typeof getNewServerAuth;
+  private readonly ownerUserId: string | null;
+  private readonly timeoutMs: number;
 
   constructor(options: CloudNoteRepoOptions = {}) {
     super();
+    this.options = options;
     this.baseUrl = options.baseUrl ?? NEW_SERVER_URL;
     this.fetchImpl =
       options.fetch ?? ((input, init) => globalThis.fetch(input, init));
-    this.getAuthHeaders = options.getAuthHeaders ?? getNewServerAuthHeaders;
+    this.getAuth = options.getAuth ?? getNewServerAuth;
+    this.ownerUserId = options.ownerUserId ?? null;
+    this.timeoutMs = options.timeoutMs ?? NOTES_REQUEST_TIMEOUT_MS;
   }
 
-  private async send(
+  /** The same client, bound to one account (see `ownerUserId`). */
+  forOwner(ownerUserId: string): CloudNoteRepo {
+    return new CloudNoteRepo({ ...this.options, ownerUserId });
+  }
+
+  /**
+   * Sends one request. `read` consumes the body within the same timeout;
+   * without it (a stream) the timeout covers only the wait for the response.
+   */
+  private async send<T = Response>(
     method: string,
     path: string,
-    body?: unknown,
-    signal?: AbortSignal,
-  ): Promise<Response> {
+    {
+      body,
+      signal,
+      read,
+    }: {
+      body?: unknown;
+      signal?: AbortSignal;
+      read?: (response: Response) => Promise<T>;
+    } = {},
+  ): Promise<T> {
     const attempt = async (forceRefresh: boolean) => {
-      const headers = await this.getAuthHeaders(forceRefresh);
+      const auth = await this.getAuth(forceRefresh);
+      if (!auth || (this.ownerUserId && auth.uid !== this.ownerUserId)) {
+        throw new NotesAccountChangedError("The signed-in account changed");
+      }
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, this.timeoutMs);
+      const forwardAbort = () => controller.abort();
+      signal?.addEventListener("abort", forwardAbort);
       try {
-        return await this.fetchImpl(`${this.baseUrl}/v1/notes${path}`, {
-          method,
-          headers,
-          body: body === undefined ? undefined : JSON.stringify(body),
-          signal,
-        });
-      } catch (error) {
-        throw new NotesNetworkError(
-          error instanceof Error ? error.message : String(error),
+        const response = await this.fetchImpl(
+          `${this.baseUrl}/v1/notes${path}`,
+          {
+            method,
+            headers: auth.headers,
+            body: body === undefined ? undefined : JSON.stringify(body),
+            signal: controller.signal,
+          },
         );
+        if (!response.ok || !read) {
+          return { response, value: undefined };
+        }
+        return { response, value: await read(response) };
+      } catch (error) {
+        if (signal?.aborted && !timedOut) {
+          throw error;
+        }
+        throw new NotesNetworkError(
+          timedOut
+            ? "The request timed out"
+            : error instanceof Error
+              ? error.message
+              : String(error),
+        );
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", forwardAbort);
       }
     };
-    let response = await attempt(false);
-    if (response.status === 401) {
-      response = await attempt(true);
+    let result = await attempt(false);
+    if (result.response.status === 401) {
+      result = await attempt(true);
     }
-    if (!response.ok) {
-      throw await readApiError(response);
+    if (!result.response.ok) {
+      throw await readApiError(result.response);
     }
-    return response;
+    return (read ? result.value : result.response) as T;
   }
 
   private async json<T>(
@@ -349,8 +433,10 @@ export class CloudNoteRepo extends BaseRepo {
     path: string,
     body?: unknown,
   ): Promise<T> {
-    const response = await this.send(method, path, body);
-    return (await response.json()) as T;
+    return this.send(method, path, {
+      body,
+      read: (response) => response.json() as Promise<T>,
+    });
   }
 
   async listNotesPage(
@@ -408,7 +494,7 @@ export class CloudNoteRepo extends BaseRepo {
   }
 
   async deleteNote(noteId: string): Promise<void> {
-    await this.send("DELETE", `/${noteId}`);
+    await this.send("DELETE", `/${noteId}`, { read: async () => undefined });
   }
 
   /** Returns the resumable upload session URL for one audio segment. */
@@ -432,7 +518,9 @@ export class CloudNoteRepo extends BaseRepo {
 
   /** Drops an untranscribed segment whose audio is gone. */
   async deleteSegment(noteId: string, segmentId: string): Promise<void> {
-    await this.send("DELETE", `/${noteId}/segments/${segmentId}`);
+    await this.send("DELETE", `/${noteId}/segments/${segmentId}`, {
+      read: async () => undefined,
+    });
   }
 
   async processNote(
@@ -492,17 +580,14 @@ export class CloudNoteRepo extends BaseRepo {
     history,
     signal,
   }: NoteAskInput): AsyncGenerator<NoteAskEvent> {
-    const response = await this.send(
-      "POST",
-      "/ask",
-      {
-        question,
+    const response = await this.send("POST", "/ask", {
+      body: {
+        ...capAskInput({ question, history }),
         ...(noteId ? { noteId } : {}),
-        history: history.slice(-20),
         stream: true,
       },
       signal,
-    );
+    });
     if (!response.body) {
       yield { type: "error", message: "ask_incomplete" };
       return;

@@ -3,6 +3,8 @@ import type { NoteAskEvent } from "../pipelines/base-note.pipeline";
 import {
   CloudNoteRepo,
   getNotesErrorHandling,
+  NOTE_ASK_LIMITS,
+  NotesAccountChangedError,
   NotesApiError,
   NotesNetworkError,
   parseSseStream,
@@ -24,9 +26,12 @@ const repoWith = (respond: (call: Call) => Response) => {
   let refreshed = 0;
   const repo = new CloudNoteRepo({
     baseUrl: "https://api.test",
-    getAuthHeaders: async (forceRefresh) => {
+    getAuth: async (forceRefresh) => {
       if (forceRefresh) refreshed++;
-      return { Authorization: `Bearer token-${refreshed}` };
+      return {
+        uid: "u1",
+        headers: { Authorization: `Bearer token-${refreshed}` },
+      };
     },
     fetch: async (url, init) => {
       const call = {
@@ -212,7 +217,7 @@ describe("CloudNoteRepo requests", () => {
     });
 
     const offline = new CloudNoteRepo({
-      getAuthHeaders: async () => ({}),
+      getAuth: async () => ({ uid: "u1", headers: {} }),
       fetch: async () => {
         throw new TypeError("Failed to fetch");
       },
@@ -257,5 +262,96 @@ describe("getNotesErrorHandling", () => {
     [new NotesApiError(404, "note_not_found", ""), "missing"],
   ] as const)("%o is %s", (error, handling) => {
     expect(getNotesErrorHandling(error)).toBe(handling);
+  });
+});
+
+describe("CloudNoteRepo account binding and timeouts", () => {
+  const noteBody = { note: { id: "n", segments: [] } };
+
+  it("refuses to send when the signed-in user is not the note's owner (S5)", async () => {
+    let fetched = 0;
+    const repo = new CloudNoteRepo({
+      getAuth: async () => ({ uid: "account-b", headers: {} }),
+      fetch: async () => {
+        fetched++;
+        return json(200, noteBody);
+      },
+    }).forOwner("account-a");
+    await expect(repo.getNote("n")).rejects.toBeInstanceOf(
+      NotesAccountChangedError,
+    );
+    await expect(
+      repo.putNote("n", {
+        title: "t",
+        titleSource: "user",
+        personalNotes: "private",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).rejects.toBeInstanceOf(NotesAccountChangedError);
+    expect(fetched).toBe(0);
+  });
+
+  it("refuses quietly when nobody is signed in (S5)", async () => {
+    const repo = new CloudNoteRepo({
+      getAuth: async () => null,
+      fetch: async () => json(200, noteBody),
+    }).forOwner("account-a");
+    await expect(repo.getNote("n")).rejects.toBeInstanceOf(
+      NotesAccountChangedError,
+    );
+  });
+
+  it("sends for the owner", async () => {
+    const repo = new CloudNoteRepo({
+      getAuth: async () => ({ uid: "account-a", headers: {} }),
+      fetch: async () => json(200, noteBody),
+    }).forOwner("account-a");
+    await expect(repo.getNote("n")).resolves.toMatchObject({ id: "n" });
+  });
+
+  it("gives up on a request that never answers (S7)", async () => {
+    const repo = new CloudNoteRepo({
+      timeoutMs: 20,
+      getAuth: async () => ({ uid: "u1", headers: {} }),
+      fetch: (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    });
+    const failure = await repo.getNote("n").catch((error) => error);
+    expect(failure).toBeInstanceOf(NotesNetworkError);
+    expect(getNotesErrorHandling(failure)).toBe("retry");
+  });
+});
+
+describe("CloudNoteRepo.ask caps (S6)", () => {
+  it("sends at most 20 history messages of at most 8,000 characters and a 2,000-character question", async () => {
+    const { repo, calls } = repoWith(
+      () =>
+        new Response(streamOf('event: done\ndata: {"answer":"ok"}\n\n'), {
+          status: 200,
+        }),
+    );
+    const history = Array.from({ length: 30 }, (_, i) => ({
+      role: (i % 2 ? "assistant" : "user") as "user" | "assistant",
+      content: `${i}`.padEnd(20_000, "x"),
+    }));
+    await collect(
+      repo.ask({ question: "q".repeat(5_000), noteId: null, history }),
+    );
+    const body = JSON.parse(String(calls[0].init.body)) as {
+      question: string;
+      history: { content: string }[];
+    };
+    expect(body.question).toHaveLength(NOTE_ASK_LIMITS.maxQuestionChars);
+    expect(body.history).toHaveLength(20);
+    expect(body.history[0].content.startsWith("10")).toBe(true);
+    expect(
+      body.history.every(
+        (m) => m.content.length === NOTE_ASK_LIMITS.maxHistoryMessageChars,
+      ),
+    ).toBe(true);
   });
 });

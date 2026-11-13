@@ -16,17 +16,24 @@ export async function getNewServerIdToken(
   return await user.getIdToken(forceRefresh);
 }
 
-export async function getNewServerAuthHeaders(
+/**
+ * The signed-in Firebase user's uid with request headers carrying that same
+ * user's token, read together so a caller can check whose token it is.
+ * Null when nobody is signed in.
+ */
+export async function getNewServerAuth(
   forceRefresh = false,
-): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
-  const idToken = await getNewServerIdToken(forceRefresh);
-  if (idToken) {
-    headers["Authorization"] = `Bearer ${idToken}`;
+): Promise<{ uid: string; headers: Record<string, string> } | null> {
+  const user = getEffectiveAuth().currentUser;
+  if (!user) {
+    return null;
   }
-
-  return headers;
+  const idToken = await user.getIdToken(forceRefresh);
+  return {
+    uid: user.uid,
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${idToken}`,
+    },
+  };
 }

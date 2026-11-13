@@ -728,6 +728,12 @@ export const closeImportTranscriptDialog = () => {
   });
 };
 
+export const setOpenNote = (noteId: string | null) => {
+  produceAppState((draft) => {
+    draft.notes.openNoteId = noteId;
+  });
+};
+
 export const setNoteView = (view: NoteView) => {
   produceAppState((draft) => {
     draft.notes.noteView = view;

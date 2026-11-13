@@ -139,12 +139,13 @@ export const getCloudNotePipeline = (): CloudNotePipeline => {
   cloudNotePipeline ??= new CloudNotePipeline({
     store: noteStore,
     repo: getNoteRepo(),
-    api: getCloudNoteRepo(),
+    api: (ownerUserId) => getCloudNoteRepo().forOwner(ownerUserId),
     audio: getMeetingAudioRepo(),
     connectivity,
     sleep: sleepUntilOnlineOr,
     now: () => Date.now(),
     getCloudNotesUserId: () => getCloudNotesUserId(getAppState()),
+    isNoteOpen: (noteId) => getAppState().notes.openNoteId === noteId,
     setActivity: (noteId, activity) => {
       produceAppState((draft) => {
         if (activity) {

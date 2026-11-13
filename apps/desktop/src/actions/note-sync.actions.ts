@@ -22,7 +22,7 @@ let syncInFlight: Promise<void> | null = null;
  * still hold work from this device.
  */
 const syncCloudNotesNow = async (ownerUserId: string): Promise<void> => {
-  const api = getCloudNoteRepo();
+  const api = getCloudNoteRepo().forOwner(ownerUserId);
   const repo = getNoteRepo();
 
   const pendingDeletes = new Set<string>();

@@ -328,14 +328,115 @@ pub async fn search_notes(
         .iter()
         .map(|row| NoteSearchCandidate {
             note: row_to_note(row),
-            transcript: row.get("transcript"),
+            transcript: transcript_excerpts(&row.get::<String, _>("transcript"), terms),
         })
         .collect())
+}
+
+/// Characters of transcript a search candidate carries at most. Enough for
+/// ranking, snippets and Ask passages; a multi-hour transcript stays here.
+const MAX_TRANSCRIPT_EXCERPT_CHARS: usize = 8_000;
+/// Context kept on each side of a match.
+const EXCERPT_CONTEXT_BYTES: usize = 600;
+
+fn floor_char_boundary(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
+    index = index.min(text.len());
+    while !text.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
+/// The transcript as-is when short; otherwise the passages around term
+/// matches (case-insensitive), joined with an ellipsis, up to the cap.
+fn transcript_excerpts(transcript: &str, terms: &[String]) -> String {
+    if transcript.len() <= MAX_TRANSCRIPT_EXCERPT_CHARS {
+        return transcript.to_string();
+    }
+    let lower = transcript.to_lowercase();
+    let mut windows: Vec<(usize, usize)> = Vec::new();
+    // Lowercasing can change byte lengths for a few scripts; then matching
+    // by index is unsafe and the start of the transcript stands in.
+    if lower.len() == transcript.len() {
+        for term in terms {
+            let needle = term.to_lowercase();
+            if needle.is_empty() {
+                continue;
+            }
+            for (at, _) in lower.match_indices(needle.as_str()) {
+                windows.push((
+                    at.saturating_sub(EXCERPT_CONTEXT_BYTES),
+                    at + needle.len() + EXCERPT_CONTEXT_BYTES,
+                ));
+            }
+        }
+    }
+    if windows.is_empty() {
+        let end = floor_char_boundary(transcript, MAX_TRANSCRIPT_EXCERPT_CHARS);
+        return transcript[..end].to_string();
+    }
+    windows.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in windows {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    let mut excerpt = String::new();
+    for (start, end) in merged {
+        let start = floor_char_boundary(transcript, start);
+        let end = ceil_char_boundary(transcript, end);
+        let room = MAX_TRANSCRIPT_EXCERPT_CHARS.saturating_sub(excerpt.len());
+        if room == 0 {
+            break;
+        }
+        if !excerpt.is_empty() {
+            excerpt.push_str(" … ");
+        }
+        let take = floor_char_boundary(transcript, (start + room).min(end));
+        excerpt.push_str(&transcript[start..take]);
+    }
+    excerpt
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_transcripts_are_returned_whole() {
+        assert_eq!(transcript_excerpts("hello world", &["x".into()]), "hello world");
+    }
+
+    #[test]
+    fn long_transcripts_become_bounded_excerpts_around_matches() {
+        let filler = "lorem ipsum dolor ".repeat(2_000);
+        let transcript = format!("{filler}The BUDGET is final.{filler}Budget again.{filler}");
+        let excerpt = transcript_excerpts(&transcript, &["budget".into()]);
+        assert!(excerpt.len() <= MAX_TRANSCRIPT_EXCERPT_CHARS);
+        assert!(excerpt.contains("The BUDGET is final."));
+        assert!(excerpt.contains("Budget again."));
+        assert!(excerpt.contains(" … "));
+    }
+
+    #[test]
+    fn excerpts_respect_char_boundaries() {
+        let transcript = "é".repeat(10_000) + "budget" + &"ü".repeat(10_000);
+        let excerpt = transcript_excerpts(&transcript, &["budget".into()]);
+        assert!(excerpt.contains("budget"));
+        let none = transcript_excerpts(&transcript, &["missing".into()]);
+        assert!(none.len() <= MAX_TRANSCRIPT_EXCERPT_CHARS);
+    }
+
     use sqlx::sqlite::SqlitePoolOptions;
 
     async fn pool() -> SqlitePool {

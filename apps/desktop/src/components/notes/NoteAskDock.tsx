@@ -28,6 +28,7 @@ import {
 } from "../../actions/note-ask.actions";
 import { openUpgradePlanDialog } from "../../actions/pricing.actions";
 import { getNotePath } from "../../hooks/note.hooks";
+import { NOTE_ASK_LIMITS } from "../../repos/cloud-note.repo";
 import type { NoteAskMessage } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
 import { describeNoteError } from "../../utils/note-error.utils";
@@ -496,7 +497,10 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                     ? intl.formatMessage({ defaultMessage: "Ask a follow-up" })
                     : placeholder
                 }
-                inputProps={{ "aria-label": placeholder }}
+                inputProps={{
+                  "aria-label": placeholder,
+                  maxLength: NOTE_ASK_LIMITS.maxQuestionChars,
+                }}
                 sx={{ flex: 1, py: 0.5, typography: "body2" }}
               />
             )}

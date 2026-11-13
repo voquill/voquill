@@ -23,17 +23,19 @@ vi.mock("../utils/log.utils", () => ({
   }),
 }));
 
+const cloudApi = {
+  listAllNotes: async () => {
+    fakes.onList();
+    return fakes.serverNotes;
+  },
+  deleteNote: async (noteId: string) => {
+    if (fakes.serverDeleteFails) throw new Error("offline");
+    fakes.serverDeletes.push(noteId);
+  },
+};
+
 vi.mock("../repos", () => ({
-  getCloudNoteRepo: () => ({
-    listAllNotes: async () => {
-      fakes.onList();
-      return fakes.serverNotes;
-    },
-    deleteNote: async (noteId: string) => {
-      if (fakes.serverDeleteFails) throw new Error("offline");
-      fakes.serverDeletes.push(noteId);
-    },
-  }),
+  getCloudNoteRepo: () => ({ forOwner: () => cloudApi }),
   getNoteRepo: () => ({
     listDeletions: async () => fakes.deletions,
     removeDeletion: async (noteId: string) => {

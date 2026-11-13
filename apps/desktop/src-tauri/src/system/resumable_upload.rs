@@ -16,10 +16,13 @@ use reqwest::blocking::{Body, Client, Response};
 
 pub const EVT_RESUMABLE_UPLOAD_PROGRESS: &str = "resumable_upload_progress";
 
-/// A multiple of 256 KiB, as the protocol requires for every chunk but the last.
-pub const UPLOAD_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
-const PROGRESS_STEP_BYTES: u64 = 512 * 1024;
+/// A multiple of 256 KiB, as the protocol requires for every chunk but the
+/// last. Small enough that a slow uplink (down to ~4 KB/s) finishes a chunk
+/// within `REQUEST_TIMEOUT`, so every request makes progress.
+pub const UPLOAD_CHUNK_BYTES: u64 = 1024 * 1024;
+const PROGRESS_STEP_BYTES: u64 = 256 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Per chunk request; also bounds a socket left dead by sleep/wake.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]

@@ -80,6 +80,36 @@ const recordAskLimit = (resetsAt: Date | null) => {
   }
 };
 
+/**
+ * The events until `signal` aborts. Stop takes effect at once, even while a
+ * provider is between events; the stream is then closed in the background
+ * (closing an SDK stream cancels its request).
+ */
+async function* untilAborted<T>(
+  events: AsyncGenerator<T>,
+  signal: AbortSignal,
+): AsyncGenerator<T> {
+  const aborted = new Promise<null>((resolve) => {
+    if (signal.aborted) resolve(null);
+    signal.addEventListener("abort", () => resolve(null), { once: true });
+  });
+  try {
+    for (;;) {
+      const pending = events.next();
+      pending.catch(() => undefined);
+      const next = await Promise.race([pending, aborted]);
+      if (!next || next.done) {
+        return;
+      }
+      yield next.value;
+    }
+  } finally {
+    if (signal.aborted) {
+      void events.return(undefined).catch(() => undefined);
+    }
+  }
+}
+
 export const setNotesAskExpanded = (
   noteId: Nullable<string>,
   expanded: boolean,
@@ -136,10 +166,7 @@ export const askNotes = async (
       history,
       signal: controller.signal,
     });
-    for await (const event of events) {
-      if (controller.signal.aborted) {
-        break;
-      }
+    for await (const event of untilAborted(events, controller.signal)) {
       updateAnswer(noteId, answer.id, (message) => {
         if (event.type === "sources") {
           message.sources = event.sources;

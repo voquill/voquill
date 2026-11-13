@@ -151,6 +151,34 @@ describe("Ask threads", () => {
     });
   });
 
+  it("stops at once even while the provider is between events (N14)", async () => {
+    let closed = false;
+    let releaseProvider: () => void = () => {};
+    fakes.script = async function* () {
+      try {
+        yield { type: "delta", text: "Partial" };
+        // A provider that ignores the signal and stalls.
+        await new Promise<void>((resolve) => (releaseProvider = resolve));
+        yield { type: "delta", text: " late" };
+      } finally {
+        closed = true;
+      }
+    };
+    const asking = askNotes("n1", "Question");
+    await vi.waitFor(() => expect(answers("n1")[0]?.content).toBe("Partial"));
+    stopAskingNotes("n1");
+    await asking;
+
+    expect(answers("n1")[0]).toMatchObject({
+      content: "Partial",
+      streaming: false,
+      stopped: true,
+    });
+    releaseProvider();
+    await vi.waitFor(() => expect(closed).toBe(true));
+    expect(answers("n1")[0].content).toBe("Partial");
+  });
+
   it("records the daily limit so the box can say when Ask is back", async () => {
     const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
     fakes.script = scripted([
