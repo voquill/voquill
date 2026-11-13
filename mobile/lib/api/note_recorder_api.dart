@@ -2,6 +2,28 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+/// Why the native recorder changed state on its own.
+enum NoteRecorderReason {
+  /// A call, Siri or another app took the audio session.
+  interruption,
+
+  /// The segment reached its duration/size cap; recording continues in a
+  /// new segment file ([NoteRecorderState.segmentId] is the new one).
+  rollover,
+
+  /// The note reached its duration cap; recording is paused.
+  limit,
+
+  /// Writing failed (storage full); the session ended, the file is kept.
+  writeFailed,
+
+  /// The microphone failed; the session ended, the file is kept.
+  error,
+
+  /// Paused or resumed from the notification.
+  user,
+}
+
 class NoteRecorderState {
   final String noteId;
   final String segmentId;
@@ -9,12 +31,14 @@ class NoteRecorderState {
 
   /// Audio captured into the current segment file so far.
   final int segmentElapsedMs;
+  final NoteRecorderReason? reason;
 
   const NoteRecorderState({
     required this.noteId,
     required this.segmentId,
     required this.isPaused,
     required this.segmentElapsedMs,
+    this.reason,
   });
 
   factory NoteRecorderState.fromMap(Map<dynamic, dynamic> map) =>
@@ -23,8 +47,20 @@ class NoteRecorderState {
         segmentId: map['segmentId'] as String,
         isPaused: map['isPaused'] as bool,
         segmentElapsedMs: (map['segmentElapsedMs'] as num).toInt(),
+        reason: switch (map['reason']) {
+          'interruption' => NoteRecorderReason.interruption,
+          'rollover' => NoteRecorderReason.rollover,
+          'limit' => NoteRecorderReason.limit,
+          'write_failed' => NoteRecorderReason.writeFailed,
+          'error' => NoteRecorderReason.error,
+          'user' => NoteRecorderReason.user,
+          _ => null,
+        },
       );
 }
+
+/// Native error code when free storage is too low to record.
+const noteRecorderLowStorageCode = 'LOW_STORAGE';
 
 enum NoteRecorderAction { open, stop }
 
@@ -62,13 +98,38 @@ class NoteRecorder {
     required String segmentId,
     required String path,
     required int priorElapsedMs,
+    required int maxSegmentMs,
+    required int maxSegmentBytes,
+    required int maxNoteMs,
   }) {
     return _channel.invokeMethod('start', {
       'noteId': noteId,
       'segmentId': segmentId,
       'path': path,
       'priorElapsedMs': priorElapsedMs,
+      'maxSegmentMs': maxSegmentMs,
+      'maxSegmentBytes': maxSegmentBytes,
+      'maxNoteMs': maxNoteMs,
     });
+  }
+
+  Future<int> freeBytes(String path) async {
+    final result = await _channel.invokeMethod<num>('freeBytes', {
+      'path': path,
+    });
+    return result?.toInt() ?? 0;
+  }
+
+  /// Keeps meeting audio and notes out of iCloud backups (Android excludes
+  /// them through the manifest's backup rules).
+  Future<void> excludeFromBackup(String path) {
+    return _channel.invokeMethod('excludeFromBackup', {'path': path});
+  }
+
+  /// False on Android 9 and older, where only one recorder can hold the
+  /// microphone, so dictation cannot run while a meeting records.
+  Future<bool> canShareMicrophone() async {
+    return await _channel.invokeMethod<bool>('canShareMicrophone') ?? true;
   }
 
   Future<NoteRecorderState?> pause() => _invokeState('pause');

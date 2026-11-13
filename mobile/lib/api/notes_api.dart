@@ -10,7 +10,9 @@ import 'package:http/http.dart' as http;
 const noteAudioContentType = 'audio/aac';
 
 const _quotaErrorCodes = {'word_quota_exceeded', 'audio_quota_exceeded'};
+const _queuedErrorCodes = {'too_many_processing', 'too_many_pending_uploads'};
 const _uploadSessionExpiredCode = 'upload_session_expired';
+const _uploadRejectedCode = 'upload_rejected';
 
 /// GCS requires every chunk but the last to be a multiple of 256 KiB.
 const _uploadChunkBytes = 32 * 256 * 1024;
@@ -38,7 +40,21 @@ class NotesApiException implements Exception {
   bool get isNetwork => statusCode == null;
   bool get isQuota => _quotaErrorCodes.contains(code);
   bool get isNoteNotFound => code == 'note_not_found';
-  bool get isUploadSessionExpired => code == _uploadSessionExpiredCode;
+
+  /// The session is gone (404/410) or refused the bytes (400: the size did
+  /// not match `sizeBytes`); either way a new session URL is needed.
+  bool get needsNewUploadSession =>
+      code == _uploadSessionExpiredCode || code == _uploadRejectedCode;
+
+  /// The plan's limit of notes processing / uploads pending is reached;
+  /// retrying later succeeds once another note finishes.
+  bool get isQueued => _queuedErrorCodes.contains(code);
+
+  /// The server already accepted this segment's audio and is processing it.
+  bool get isSegmentProcessing => code == 'segment_processing';
+
+  int? get retryAfterSeconds =>
+      (details?['retryAfterSeconds'] as num?)?.toInt();
 
   /// Worth retrying later without user action.
   bool get isTransient {
@@ -260,6 +276,15 @@ class NotesApi {
     await _send('DELETE', '/v1/notes/$id');
   }
 
+  /// Removes an untranscribed segment whose audio is gone. Missing segments
+  /// are fine.
+  Future<void> deleteSegment(String noteId, String segmentId) async {
+    await _send('DELETE', '/v1/notes/$noteId/segments/$segmentId');
+  }
+
+  /// Aborts in-flight requests (sign-out).
+  void close() => _client.close();
+
   Future<List<NoteSearchResult>> searchNotes(String query, {int? limit}) async {
     final json = await _send(
       'GET',
@@ -381,10 +406,14 @@ class NotesApi {
           : RegExp(r'bytes=0-(\d+)').firstMatch(range);
       return match == null ? 0 : int.parse(match.group(1)!) + 1;
     }
-    final isExpired = status == 404 || status == 410;
+    final code = switch (status) {
+      404 || 410 => _uploadSessionExpiredCode,
+      400 => _uploadRejectedCode,
+      _ => 'upload_failed',
+    };
     throw NotesApiException(
       statusCode: status,
-      code: isExpired ? _uploadSessionExpiredCode : 'upload_failed',
+      code: code,
       message: 'Audio upload failed ($status).',
     );
   }

@@ -38,7 +38,10 @@ void main() {
     await tester.pump();
 
     expect(find.byType(Image), findsNothing);
-    expect(find.textContaining('[tracker]', findRichText: true), findsOneWidget);
+    expect(
+      find.textContaining('[tracker]', findRichText: true),
+      findsOneWidget,
+    );
     expect(find.textContaining('[image]', findRichText: true), findsOneWidget);
     expect(find.textContaining('<img', findRichText: true), findsOneWidget);
     expect(launched, isEmpty);
@@ -52,13 +55,18 @@ void main() {
     expect(launched, isEmpty);
 
     await tester.tap(find.textContaining('Agenda', findRichText: true));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(launched, isEmpty, reason: 'the address is shown first');
+    expect(find.text('https://example.com/agenda'), findsOneWidget);
+    await tester.tap(find.text('Open'));
+    await tester.pumpAndSettle();
     expect(launched, ['https://example.com/agenda']);
 
     await pump(tester, '[Run](javascript:alert(1))');
     await tester.pump();
     await tester.tap(find.textContaining('Run', findRichText: true));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(find.text('Open link?'), findsNothing);
     expect(launched, hasLength(1));
   });
 }

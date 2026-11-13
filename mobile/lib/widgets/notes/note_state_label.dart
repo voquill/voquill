@@ -51,6 +51,7 @@ class NoteStateLabel extends StatelessWidget {
               );
       case NoteDisplayState.paused:
       case NoteDisplayState.waitingForConnection:
+      case NoteDisplayState.queued:
       case NoteDisplayState.processing:
       case NoteDisplayState.draft:
         return Text(
@@ -69,6 +70,8 @@ String noteStateText(NoteDisplayState state) {
       return 'Paused';
     case NoteDisplayState.waitingForConnection:
       return 'Waiting for connection';
+    case NoteDisplayState.queued:
+      return 'Queued';
     case NoteDisplayState.uploading:
       return 'Uploading';
     case NoteDisplayState.processing:

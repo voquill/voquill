@@ -33,7 +33,6 @@ class _NotePageState extends State<NotePage> {
   final _personalNotes = TextEditingController();
   Timer? _titleTimer;
   Timer? _notesTimer;
-  bool _didInitFields = false;
 
   String get _id => widget.noteId;
 
@@ -76,17 +75,35 @@ class _NotePageState extends State<NotePage> {
     );
   }
 
-  /// The title follows the server (e.g. the AI title arriving) until the
-  /// user starts typing.
+  String? _syncedTitle;
+  String? _syncedPersonalNotes;
+
+  /// Fields follow the stored value (the AI title arriving, My notes saved on
+  /// another device) until the user changes them here; local typing always
+  /// wins over a value that arrives later.
   void _syncFields(NoteView view) {
-    if (!_didInitFields) {
-      _didInitFields = true;
-      _title.text = view.title;
-      _personalNotes.text = view.personalNotes;
-      return;
+    _syncedTitle = _follow(_title, view.title, _syncedTitle, _titleTimer);
+    _syncedPersonalNotes = _follow(
+      _personalNotes,
+      view.personalNotes,
+      _syncedPersonalNotes,
+      _notesTimer,
+    );
+  }
+
+  String? _follow(
+    TextEditingController controller,
+    String stored,
+    String? lastSynced,
+    Timer? pendingSave,
+  ) {
+    if (controller.text == stored) return stored;
+    final isUntouched = lastSynced == null || controller.text == lastSynced;
+    final isSaving = pendingSave?.isActive ?? false;
+    if (isUntouched && !isSaving && controller.text != stored) {
+      controller.text = stored;
     }
-    final isEditingTitle = _titleTimer?.isActive ?? false;
-    if (!isEditingTitle && _title.text != view.title) _title.text = view.title;
+    return isUntouched && !isSaving ? stored : lastSynced;
   }
 
   Future<void> _onMenu(_NoteMenuAction action, NoteView view) async {
@@ -161,10 +178,11 @@ class _NotePageState extends State<NotePage> {
       onSelected: (action) => _onMenu(action, view),
       itemBuilder: (_) => [
         if (isReady) ...[
-          const PopupMenuItem(
-            value: _NoteMenuAction.resume,
-            child: Text('Resume recording'),
-          ),
+          if (view.server?.source != NoteSource.imported)
+            const PopupMenuItem(
+              value: _NoteMenuAction.resume,
+              child: Text('Resume recording'),
+            ),
           const PopupMenuItem(
             value: _NoteMenuAction.regenerate,
             child: Text('Regenerate notes'),
@@ -316,6 +334,7 @@ class _RecordingControls extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isPaused = view.state == NoteDisplayState.paused;
+    final isBusy = useAppStore().select(context, (s) => s.notes.isRecorderBusy);
     return Column(
       children: [
         NoteElapsedText(view: view, style: theme.textTheme.displayMedium),
@@ -342,8 +361,11 @@ class _RecordingControls extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               tooltip: isPaused ? 'Resume' : 'Pause',
               icon: Icon(isPaused ? Icons.mic : Icons.pause),
-              onPressed: () =>
-                  isPaused ? resumeRecording(view.id) : pauseRecording(view.id),
+              onPressed: isBusy
+                  ? null
+                  : () => isPaused
+                        ? resumeRecording(view.id)
+                        : pauseRecording(view.id),
             ),
             IconButton.filled(
               iconSize: 40,
@@ -354,7 +376,7 @@ class _RecordingControls extends StatelessWidget {
                 foregroundColor: theme.colorScheme.onError,
               ),
               icon: const Icon(Icons.stop_rounded),
-              onPressed: () => stopRecording(view.id),
+              onPressed: isBusy ? null : () => stopRecording(view.id),
             ),
           ],
         ),
@@ -379,6 +401,10 @@ class _StatusCard extends StatelessWidget {
       NoteDisplayState.waitingForConnection => (
         'Waiting for connection',
         'Your recording is saved on this device and uploads as soon as you are online.',
+      ),
+      NoteDisplayState.queued => (
+        'Queued',
+        'Another note is being processed. This one starts as soon as it is done.',
       ),
       NoteDisplayState.uploading => (
         'Uploading',
@@ -453,15 +479,45 @@ class _FailedSegmentBanner extends StatelessWidget {
 
   final NoteView view;
 
+  Future<void> _confirmRemove(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove this part?'),
+        content: const Text(
+          "The part of the recording that couldn't be transcribed is deleted from this device. The rest of the note stays.",
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed ?? false) await dropFailedSegments(view.id);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final error = view.failedSegmentError;
     return MaterialBanner(
       backgroundColor: theme.colorScheme.errorContainer,
       content: Text(
-        '${describeNoteError(view.failedSegmentError)} That part of the recording is safe on this device.',
+        '${describeNoteError(error)} That part of the recording is safe on this device.',
       ),
       actions: [
+        TextButton(
+          onPressed: () => _confirmRemove(context),
+          child: const Text('Remove'),
+        ),
+        if (isQuotaError(error))
+          TextButton(onPressed: presentPaywall, child: const Text('Upgrade')),
         TextButton(
           onPressed: () => retryNote(view.id),
           child: const Text('Retry'),

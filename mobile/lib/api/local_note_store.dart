@@ -58,9 +58,54 @@ class LocalNoteStore {
     await file.writeAsString(transcript, flush: true);
   }
 
+  /// Everything stored for a note; only for a note the user deleted.
   Future<void> deleteNoteFiles(String noteId) async {
     final dir = noteDirectory(noteId);
     if (await dir.exists()) await dir.delete(recursive: true);
+  }
+
+  Future<void> deleteSegmentFile(String noteId, String fileName) async {
+    final file = segmentFile(noteId, fileName);
+    if (await file.exists()) await file.delete();
+    await _deleteDirectoryIfEmpty(noteDirectory(noteId));
+  }
+
+  Future<void> deleteImportTranscript(String noteId) =>
+      deleteSegmentFile(noteId, _importFileName);
+
+  Future<void> _deleteDirectoryIfEmpty(Directory dir) async {
+    if (await dir.exists() && await dir.list().isEmpty) await dir.delete();
+  }
+
+  /// Files on disk per note id, to find audio no snapshot entry references.
+  Future<Map<String, List<File>>> listNoteFiles() async {
+    final notesDir = Directory(p.join(root.path, 'notes'));
+    if (!await notesDir.exists()) return const {};
+    final result = <String, List<File>>{};
+    await for (final dir in notesDir.list()) {
+      if (dir is! Directory) continue;
+      final files = await dir
+          .list()
+          .where((e) => e is File)
+          .cast<File>()
+          .toList();
+      result[p.basename(dir.path)] = files;
+    }
+    return result;
+  }
+
+  static bool isImportFile(File file) =>
+      p.basename(file.path) == _importFileName;
+
+  /// Moves an unreadable snapshot aside so the app can start and the audio
+  /// it referenced can be recovered from disk.
+  Future<void> quarantineSnapshot() async {
+    final file = File(p.join(root.path, _snapshotFileName));
+    if (await file.exists()) {
+      await file.rename(
+        '${file.path}.unreadable-${DateTime.now().millisecondsSinceEpoch}',
+      );
+    }
   }
 
   /// Completes once every queued write reached the disk.

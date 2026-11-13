@@ -1,3 +1,4 @@
+import 'package:app/api/notes_api.dart';
 import 'package:app/model/local_note_model.dart';
 import 'package:app/model/note_model.dart';
 import 'package:app/state/notes_state.dart';
@@ -7,6 +8,10 @@ enum NoteDisplayState {
   recording,
   paused,
   waitingForConnection,
+
+  /// The plan's limit of notes processing at once is reached; this one goes
+  /// when another finishes.
+  queued,
   uploading,
   processing,
   failed,
@@ -15,7 +20,10 @@ enum NoteDisplayState {
 
   bool get isCapturing => this == recording || this == paused;
   bool get isBusy =>
-      this == waitingForConnection || this == uploading || this == processing;
+      this == waitingForConnection ||
+      this == queued ||
+      this == uploading ||
+      this == processing;
 }
 
 /// One note as the UI sees it: the local copy (if any) merged over the
@@ -64,13 +72,14 @@ NoteDisplayState _localDisplayState(LocalNote local, NoteSyncStatus? sync) {
       return NoteDisplayState.paused;
     case LocalNotePhase.pendingUpload:
     case LocalNotePhase.uploading:
-      return sync?.isWaitingForConnection == true
-          ? NoteDisplayState.waitingForConnection
-          : NoteDisplayState.uploading;
     case LocalNotePhase.processing:
-      return sync?.isWaitingForConnection == true
-          ? NoteDisplayState.waitingForConnection
-          : NoteDisplayState.processing;
+      if (sync?.isQueued == true) return NoteDisplayState.queued;
+      if (sync?.isWaitingForConnection == true) {
+        return NoteDisplayState.waitingForConnection;
+      }
+      return local.phase == LocalNotePhase.processing
+          ? NoteDisplayState.processing
+          : NoteDisplayState.uploading;
     case LocalNotePhase.ready:
       return NoteDisplayState.ready;
     case LocalNotePhase.failed:
@@ -154,7 +163,7 @@ const _noteErrorMessages = {
   'word_quota_exceeded':
       "You've used all of your free words for now. Upgrade to Pro to process this meeting.",
   'audio_quota_exceeded':
-      "You've reached your monthly limit of meeting audio. It resets over the next days.",
+      "You've used all your meeting audio for the last 30 days. Upgrade, or wait until older recordings stop counting.",
   'member_not_found':
       'Your account is still being set up. Try again in a moment.',
   'transcription_failed': 'The recording could not be transcribed right now.',
@@ -165,7 +174,7 @@ const _noteErrorMessages = {
   'no_audio': 'No audio was recorded for this note.',
   'note_not_found': 'This note was deleted on another device.',
   'note_exists': 'This transcript could not be imported.',
-  'segment_too_large': 'This recording is too large to process.',
+  'segment_too_large': 'This recording is too large for your plan.',
   'segment_too_long': 'A single recording can be at most 4 hours long.',
   'note_too_long': 'A note can contain at most 8 hours of audio.',
   'too_many_segments': 'This note has too many recordings. Start a new note.',
@@ -175,6 +184,18 @@ const _noteErrorMessages = {
 /// Plain-language explanation for a failed note or segment.
 String describeNoteError(NoteError? error) =>
     _noteErrorMessages[error?.code] ?? _genericNoteError;
+
+/// Plain-language text for a failed request the user just made.
+String describeApiError(NotesApiException e) {
+  if (e.isNetwork) return "You're offline. Try again when you're connected.";
+  if (e.code == 'regenerate_cooldown') {
+    final seconds = e.retryAfterSeconds;
+    return seconds == null
+        ? 'The notes were just regenerated. Try again in a few minutes.'
+        : 'The notes were just regenerated. Try again in ${(seconds / 60).ceil()} min.';
+  }
+  return describeNoteError(e.toNoteError());
+}
 
 bool isQuotaError(NoteError? error) =>
     error?.code == 'word_quota_exceeded' ||

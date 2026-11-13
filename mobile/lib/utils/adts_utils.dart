@@ -6,7 +6,9 @@ const _adtsSampleRates = [
   11025, 8000, 7350,
 ];
 const _samplesPerBlock = 1024;
-const _headerLength = 7;
+
+/// Smallest file that can hold an ADTS frame header.
+const adtsHeaderLength = 7;
 
 /// Counts the audio in an ADTS (raw AAC) stream frame by frame. Meeting audio
 /// is recorded as ADTS because every frame is self-describing: a file cut off
@@ -23,7 +25,7 @@ class AdtsDurationCounter {
     _pending.add(chunk);
     final bytes = _pending.takeBytes();
     var offset = 0;
-    while (bytes.length - offset >= _headerLength) {
+    while (bytes.length - offset >= adtsHeaderLength) {
       if (bytes[offset] != 0xFF || (bytes[offset + 1] & 0xF0) != 0xF0) {
         _isCorrupt = true;
         return;
@@ -33,7 +35,8 @@ class AdtsDurationCounter {
           ((bytes[offset + 3] & 0x03) << 11) |
           (bytes[offset + 4] << 3) |
           (bytes[offset + 5] >> 5);
-      if (rateIndex >= _adtsSampleRates.length || frameLength < _headerLength) {
+      if (rateIndex >= _adtsSampleRates.length ||
+          frameLength < adtsHeaderLength) {
         _isCorrupt = true;
         return;
       }

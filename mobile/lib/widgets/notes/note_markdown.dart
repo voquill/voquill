@@ -16,7 +16,7 @@ final _noteExtensionSet = md.ExtensionSet(
 const _openableSchemes = {'http', 'https', 'mailto'};
 
 /// Renders untrusted Markdown: images never load (their alt text is shown
-/// instead) and links open only when the user taps them.
+/// instead) and links open only when the user taps and confirms them.
 class NoteMarkdown extends StatelessWidget {
   const NoteMarkdown({
     super.key,
@@ -34,11 +34,29 @@ class NoteMarkdown extends StatelessWidget {
     return Text('[$text]');
   }
 
-  static void _onTapLink(String text, String? href, String title) {
+  /// Links open only after the user saw the address and confirmed it
+  /// (docs/notes.md, Rendering).
+  static Future<void> _onTapLink(BuildContext context, String? href) async {
     final uri = href == null ? null : Uri.tryParse(href);
-    if (uri != null && _openableSchemes.contains(uri.scheme)) {
-      openUrl(uri.toString());
-    }
+    if (uri == null || !_openableSchemes.contains(uri.scheme)) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Open link?'),
+        content: SelectableText(uri.toString()),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Open'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed ?? false) await openUrl(uri.toString());
   }
 
   @override
@@ -50,7 +68,7 @@ class NoteMarkdown extends StatelessWidget {
             padding: padding,
             extensionSet: _noteExtensionSet,
             imageBuilder: _imageAsText,
-            onTapLink: _onTapLink,
+            onTapLink: (_, href, _) => _onTapLink(context, href),
           )
         : Padding(
             padding: padding,
@@ -59,7 +77,7 @@ class NoteMarkdown extends StatelessWidget {
               selectable: true,
               extensionSet: _noteExtensionSet,
               imageBuilder: _imageAsText,
-              onTapLink: _onTapLink,
+              onTapLink: (_, href, _) => _onTapLink(context, href),
             ),
           );
   }

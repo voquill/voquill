@@ -35,6 +35,10 @@ class LocalNoteSegment with EquatableMixin {
   /// The native recorder may still be appending to this file.
   final bool isOpen;
   final String? uploadUrl;
+
+  /// The size [uploadUrl] was created for; the session only accepts exactly
+  /// that many bytes.
+  final int? uploadSizeBytes;
   final bool isUploaded;
 
   const LocalNoteSegment({
@@ -44,6 +48,7 @@ class LocalNoteSegment with EquatableMixin {
     this.durationMs = 0,
     this.isOpen = false,
     this.uploadUrl,
+    this.uploadSizeBytes,
     this.isUploaded = false,
   });
 
@@ -59,6 +64,7 @@ class LocalNoteSegment with EquatableMixin {
     durationMs,
     isOpen,
     uploadUrl,
+    uploadSizeBytes,
     isUploaded,
   ];
 }

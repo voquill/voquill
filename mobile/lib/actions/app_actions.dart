@@ -42,9 +42,11 @@ StreamSubscription<User?> listenToAuthChanges() {
             email: firebaseUser.email,
           );
         });
+        // Notes works offline and owns crash recovery; never wait on the
+        // network calls below.
+        unawaited(initializeNotesForUser(firebaseUser.uid));
         await loginRevenueCat(firebaseUser.uid);
         await refreshMainData();
-        unawaited(initializeNotesForUser(firebaseUser.uid));
       }
       syncKeyboardAuth();
     } else {

@@ -440,7 +440,11 @@ void main() {
     final note = local()!;
     expect(note.phase, LocalNotePhase.ready);
     expect(note.segments.map((s) => s.id), [_segmentB]);
-    expect(note.segments.single.isUploaded, isFalse);
+    expect(
+      note.segments.single.isUploaded,
+      isTrue,
+      reason: 'the server still has unreadable audio; Retry sends process',
+    );
     expect(audioExists(), isFalse);
     expect(store.segmentFile(_noteId, '$_segmentB.aac').existsSync(), isTrue);
     final view = buildNoteView(getAppState().notes, _noteId)!;
@@ -451,7 +455,7 @@ void main() {
     server.failSegmentIds.clear();
     await retryNote(_noteId);
     expect(local(), isNull);
-    expect(server.callCount('UPLOAD'), 3);
+    expect(server.callCount('UPLOAD'), 2);
   });
 
   test('all segments failing fails the note and keeps everything', () async {
@@ -459,8 +463,28 @@ void main() {
     server.failSegmentIds.add(_segmentA);
     await boot();
     expect(local()!.phase, LocalNotePhase.failed);
-    expect(local()!.segments.single.isUploaded, isFalse);
     expect(audioExists(), isTrue);
+  });
+
+  test('audio the server lost is uploaded again on Retry', () async {
+    await seedStoppedNote();
+    await boot();
+    expect(local(), isNull);
+    // Simulate a later resume whose segment the server reports lost.
+    expect(await resumeServerNote(_noteId), isTrue);
+    await File(recorder.path!).writeAsBytes(adtsFrames(10));
+    final newSegment = recorder.state!.segmentId;
+    server.errors['process'] = FakeServerError(
+      409,
+      'audio_missing',
+      details: {
+        'segmentIds': [newSegment],
+      },
+    );
+    await stopRecording(_noteId);
+    await syncAllNotes();
+    expect(local(), isNull);
+    expect(server.callCount('UPLOAD'), 3);
   });
 
   test('a processing note re-sends process after a restart', () async {
