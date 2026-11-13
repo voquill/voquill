@@ -154,14 +154,36 @@ export const buildNoteTranscriptText = (segments: NoteSegment[]): string =>
     .join(PARAGRAPH_SEPARATOR);
 
 /**
+ * Development builds only (`pnpm run dev`): a shorter segment roll or note
+ * limit, in minutes (at least 2), so rollover and the limit can be tried
+ * in minutes. Production builds ignore it (`import.meta.env.DEV` is false).
+ */
+function getDevNoteDurationOverride(
+  minutes: string | undefined,
+): number | null {
+  if (!import.meta.env.DEV || !minutes) {
+    return null;
+  }
+  const value = Number(minutes);
+  return Number.isFinite(value) && value > 0
+    ? Math.max(2, value) * 60_000
+    : null;
+}
+
+/**
  * A segment rolls over to a new file well before the smallest server cap
  * (free plan 120 MB; ~59 minutes of WAV), so no segment is ever refused.
  * The same limits apply to local notes, so both behave alike.
  */
-export const NOTE_SEGMENT_ROLL_MS = 55 * 60_000;
+export const NOTE_SEGMENT_ROLL_MS =
+  getDevNoteDurationOverride(
+    import.meta.env.VITE_NOTES_DEV_SEGMENT_ROLL_MINUTES,
+  ) ?? 55 * 60_000;
 /** Recording stops before a note reaches the server's 8-hour cap. */
 export const NOTE_RECORDING_LIMIT_MS =
-  NOTE_SERVER_LIMITS.maxNoteMs - 10 * 60_000;
+  getDevNoteDurationOverride(
+    import.meta.env.VITE_NOTES_DEV_RECORDING_LIMIT_MINUTES,
+  ) ?? NOTE_SERVER_LIMITS.maxNoteMs - 10 * 60_000;
 const RESUME_HEADROOM_MS = 60_000;
 
 export type NoteCaptureAction = "roll" | "stop" | null;
