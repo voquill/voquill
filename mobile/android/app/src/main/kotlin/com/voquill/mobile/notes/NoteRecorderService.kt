@@ -21,27 +21,45 @@ import com.voquill.mobile.R
  * "Taking notes" notification with elapsed time and Pause/Resume/Stop.
  */
 class NoteRecorderService : Service() {
+    private var foregroundType = 0
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_TOGGLE_PAUSE) NoteRecorder.toggleFromNotification(this)
-        if (!NoteRecorder.isActive && !NoteRecorder.isSyncActive) {
-            stopSelfCompat()
-            return START_NOT_STICKY
-        }
+        // Always reach the foreground first: a service started with
+        // startForegroundService must call startForeground even when it is
+        // about to stop, or the app crashes.
         startInForeground()
+        isRunning = true
+        if (intent?.action == ACTION_TOGGLE_PAUSE) NoteRecorder.toggleFromNotification(this)
+        if (!NoteRecorder.isActive && !NoteRecorder.isSyncActive) stopSelfCompat()
         return START_NOT_STICKY
+    }
+
+    /** Android 15 caps data-sync services at 6 hours a day. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        NoteRecorder.setSyncActive(this, false)
+        if (!NoteRecorder.isActive) stopSelfCompat()
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        super.onDestroy()
     }
 
     private fun startInForeground() {
         val notification = buildNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val type = if (NoteRecorder.isActive) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            // When stopping, keep the current type: switching to microphone
+            // from the background is not allowed on Android 14+.
+            val type = when {
+                NoteRecorder.isActive -> ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                NoteRecorder.isSyncActive -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                foregroundType != 0 -> foregroundType
+                else -> ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
             }
             startForeground(NOTIFICATION_ID, notification, type)
+            foregroundType = type
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -54,6 +72,7 @@ class NoteRecorderService : Service() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        isRunning = false
         stopSelf()
     }
 
@@ -128,18 +147,26 @@ class NoteRecorderService : Service() {
         private const val REQUEST_TOGGLE = 1
         private const val ACTION_TOGGLE_PAUSE = "com.voquill.mobile.notes.TOGGLE_PAUSE"
 
-        /** Starts, refreshes or stops the service to match [NoteRecorder]. */
+        /** True from the first startForeground until the service stops. */
+        @Volatile
+        private var isRunning = false
+
+        /**
+         * Starts or refreshes the service to match [NoteRecorder]. It is never
+         * stopped from outside: once nothing is active, the refresh intent
+         * makes it stop itself after reaching the foreground.
+         */
         fun update(context: Context) {
+            val shouldRun = NoteRecorder.isActive || NoteRecorder.isSyncActive
+            if (!shouldRun && !isRunning) return
             val intent = Intent(context, NoteRecorderService::class.java)
             try {
-                if (NoteRecorder.isActive || NoteRecorder.isSyncActive) {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        context.startForegroundService(intent)
-                    } else {
-                        context.startService(intent)
-                    }
+                if (isRunning) {
+                    context.startService(intent)
+                } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
                 } else {
-                    context.stopService(intent)
+                    context.startService(intent)
                 }
             } catch (e: Exception) {
                 // Android 12+ refuses to start foreground services from the

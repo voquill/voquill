@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+. Meeting audio, My notes and cached notes stay on the device. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="notes/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="notes/" />
+    </device-transfer>
+</data-extraction-rules>
