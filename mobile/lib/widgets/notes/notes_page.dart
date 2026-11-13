@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:app/actions/notes_actions.dart';
 import 'package:app/api/notes_api.dart';
+import 'package:app/model/common_model.dart';
 import 'package:app/model/note_model.dart';
 import 'package:app/store/store.dart';
 import 'package:app/utils/note_utils.dart';
@@ -147,9 +148,15 @@ class _NotesPageState extends State<NotesPage> {
             if (list.isEmpty && !hasQuery)
               SliverFillRemaining(
                 hasScrollBody: false,
-                child: notes.listStatus.isLoading && notes.serverNoteIds.isEmpty
-                    ? const Center(child: CircularProgressIndicator())
-                    : const _EmptyNotes(),
+                child: switch (notes.listStatus) {
+                  ActionStatus.loading => const Center(
+                    child: CircularProgressIndicator(),
+                  ),
+                  ActionStatus.error => const Center(
+                    child: Text("Couldn't load your notes. Pull to refresh."),
+                  ),
+                  _ => const _EmptyNotes(),
+                },
               )
             else
               SliverList.builder(
