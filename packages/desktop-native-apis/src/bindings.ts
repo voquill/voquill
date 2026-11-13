@@ -817,9 +817,9 @@ async noteUpsert(note: Note) : Promise<Result<Note, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async noteList() : Promise<Result<Note[], string>> {
+async noteList(cloudOwnerUserId: string | null) : Promise<Result<Note[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("note_list") };
+    return { status: "ok", data: await TAURI_INVOKE("note_list", { cloudOwnerUserId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -852,9 +852,41 @@ async noteSegmentList(noteId: string) : Promise<Result<NoteSegment[], string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async noteSearch(terms: string[], matchAll: boolean, limit: number) : Promise<Result<NoteSearchCandidate[], string>> {
+async noteSearch(terms: string[], matchAll: boolean, limit: number, cloudOwnerUserId: string | null) : Promise<Result<NoteSearchCandidate[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("note_search", { terms, matchAll, limit }) };
+    return { status: "ok", data: await TAURI_INVOKE("note_search", { terms, matchAll, limit, cloudOwnerUserId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentDelete(noteId: string, segmentId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_delete", { noteId, segmentId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionAdd(deletion: NoteDeletion) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_add", { deletion }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionList(ownerUserId: string) : Promise<Result<NoteDeletion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_list", { ownerUserId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionRemove(noteId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_remove", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -924,6 +956,29 @@ async setTrayMeetingMenu(menu: TrayMeetingMenu) : Promise<Result<null, string>> 
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async meetingAudioFileSize(path: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_file_size", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Uploads a meeting audio file to a resumable upload session, resuming from
+ * whatever the session already stored. Emits `resumable_upload_progress`.
+ */
+async resumableUpload(args: ResumableUploadArgs) : Promise<Result<ResumableUploadOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resumable_upload", { args }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resumableUploadCancel(uploadId: string) : Promise<void> {
+    await TAURI_INVOKE("resumable_upload_cancel", { uploadId });
 }
 }
 
@@ -1094,7 +1149,8 @@ export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
 export type NativeSetupResult = "success" | "require-restart" | "failed"
 export type NativeSetupStatus = "ready" | "needs-setup" | "needs-restart"
-export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; createdAt: number; updatedAt: number }
+export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null }
+export type NoteDeletion = { noteId: string; ownerUserId: string; createdAt: number }
 export type NoteSearchCandidate = { note: Note; 
 /**
  * Segment transcripts in index order, separated by blank lines.
@@ -1104,7 +1160,7 @@ export type NoteSegment = { id: string; noteId: string; segmentIndex: number; ki
 /**
  * JSON array of utterances.
  */
-transcriptUtterances: string | null; createdAt: number }
+transcriptUtterances: string | null; createdAt: number; errorCode: string | null; errorMessage: string | null; uploadUrl: string | null; uploadSizeBytes: number | null; uploadComplete: boolean }
 export type PairedRemoteDevice = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
 export type PairedRemoteDeviceDeleteArgs = { id: string }
 export type PairedRemoteDeviceUpsertArgs = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
@@ -1118,6 +1174,16 @@ export type PillWindowSize = "dictation" | "assistant_compact" | "assistant_expa
 export type RemoteReceiverStatus = { enabled: boolean; deviceId: string; deviceName: string; listenAddress: string | null; port: number | null; pairingCode: string; lastSenderDeviceId: string | null; lastEventId: string | null; lastDeliveryStatus: string | null; lastDeliveryAt: string | null; lastError: string | null; lastTargetClassName: string | null; lastTargetTitle: string | null; lastTargetEditable: boolean | null; devicePlatform: string }
 export type RemoteSenderDeliverArgs = { targetDeviceId: string; text: string; mode: string }
 export type RemoteSenderPairArgs = { receiverDeviceId: string; receiverName: string; receiverPlatform: string; receiverAddress: string; pairingCode: string }
+export type ResumableUploadArgs = { 
+/**
+ * Caller-chosen id for progress events and cancellation.
+ */
+uploadId: string; filePath: string; 
+/**
+ * The session URL; it is a credential and is never logged.
+ */
+url: string; headers: UploadHeader[] }
+export type ResumableUploadOutcome = { outcome: UploadOutcomeKind; uploadedBytes: number; totalBytes: number; status: number | null; message: string | null }
 /**
  * Reads `enterprise.json` from the app config directory. Returns `None` if the file does not exist.
  * 
@@ -1142,6 +1208,24 @@ export type TranscriptionAudioSnapshot = { filePath: string; durationMs: number 
  * set. The status line is always disabled.
  */
 export type TrayMeetingMenu = { startLabel: string | null; statusLabel: string | null; stopLabel: string | null }
+export type UploadHeader = { name: string; value: string }
+export type UploadOutcomeKind = 
+/**
+ * The session has every byte.
+ */
+"complete" | 
+/**
+ * The session is gone (404/410): request a new one and start over.
+ */
+"expired" | 
+/**
+ * A network error, 429 or 5xx: query and resume later.
+ */
+"interrupted" | 
+/**
+ * Any other response; retrying unchanged will not help.
+ */
+"rejected" | "cancelled"
 export type User = { id: string; name: string; bio: string; company?: string | null; title?: string | null; onboarded: boolean; preferredMicrophone?: string | null; preferredLanguage?: string | null; wordsThisMonth?: number; wordsThisMonthMonth?: string | null; wordsTotal?: number; playInteractionChime?: boolean; hasFinishedTutorial?: boolean; hasMigratedPreferredMicrophone?: boolean; cohort?: string | null; stylingMode?: string | null; selectedToneId?: string | null; activeToneIds?: string | null; streak?: number | null; streakRecordedAt?: string | null; referralSource?: string | null }
 export type UserPreferences = { userId: string; transcriptionMode?: string | null; transcriptionApiKeyId?: string | null; transcriptionDevice?: string | null; transcriptionModelSize?: string | null; postProcessingMode?: string | null; postProcessingApiKeyId?: string | null; postProcessingOllamaUrl?: string | null; postProcessingOllamaModel?: string | null; agentMode?: string | null; agentModeApiKeyId?: string | null; openclawGatewayUrl?: string | null; openclawToken?: string | null; activeToneId?: string | null; gotStartedAt?: number | null; gpuEnumerationEnabled?: boolean; pasteKeybind?: string | null; lastSeenFeature?: string | null; isEnterprise?: boolean; languageSwitchEnabled?: boolean; secondaryDictationLanguage?: string | null; activeDictationLanguage?: string | null; additionalDictationLanguages?: string[] | null; preferredMicrophone?: string | null; ignoreUpdateDialog?: boolean; incognitoModeEnabled?: boolean; incognitoModeIncludeInStats?: boolean; dictationLimitMinutes?: number; dictationPillVisibility?: string; useNewBackend?: boolean; realtimeOutputEnabled?: boolean; remoteOutputEnabled?: boolean; remoteTargetDeviceId?: string | null; remoteReceiverPort?: number | null; remoteReceiverAutoStart?: boolean; dictationAudioDim?: number; menuBarIconHidden?: boolean; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type UserPreferencesGetArgs = { userId: string }

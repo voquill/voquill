@@ -1234,12 +1234,26 @@ pub async fn tone_delete(
 #[tauri::command]
 #[specta::specta]
 pub async fn clear_local_data(
+    app: AppHandle,
     database: State<'_, crate::state::OptionKeyDatabase>,
 ) -> Result<(), String> {
+    let audio_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some(capture) =
+            audio_app.try_state::<Arc<crate::system::meeting_capture::MeetingCapture>>()
+        {
+            capture.stop()?;
+        }
+        crate::system::meeting_audio::delete_all_meeting_audio(&audio_app)
+            .map_err(|err| err.to_string())
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+
     let pool = database.pool();
     let mut transaction = pool.begin().await.map_err(|err| err.to_string())?;
 
-    const TABLES_TO_CLEAR: [&str; 8] = [
+    const TABLES_TO_CLEAR: [&str; 11] = [
         "chat_messages",
         "conversations",
         "user_profiles",
@@ -1248,6 +1262,9 @@ pub async fn clear_local_data(
         "hotkeys",
         "api_keys",
         "user_preferences",
+        "note_segments",
+        "notes",
+        "note_deletions",
     ];
 
     for table in TABLES_TO_CLEAR {
@@ -2397,9 +2414,10 @@ pub async fn note_upsert(
 #[tauri::command]
 #[specta::specta]
 pub async fn note_list(
+    cloud_owner_user_id: Option<String>,
     database: State<'_, crate::state::OptionKeyDatabase>,
 ) -> Result<Vec<crate::domain::Note>, String> {
-    crate::db::note_queries::fetch_notes(database.pool())
+    crate::db::note_queries::fetch_notes(database.pool(), cloud_owner_user_id.as_deref())
         .await
         .map_err(|err| err.to_string())
 }
@@ -2453,9 +2471,61 @@ pub async fn note_search(
     terms: Vec<String>,
     match_all: bool,
     limit: u32,
+    cloud_owner_user_id: Option<String>,
     database: State<'_, crate::state::OptionKeyDatabase>,
 ) -> Result<Vec<crate::domain::NoteSearchCandidate>, String> {
-    crate::db::note_queries::search_notes(database.pool(), &terms, match_all, limit)
+    crate::db::note_queries::search_notes(
+        database.pool(),
+        &terms,
+        match_all,
+        limit,
+        cloud_owner_user_id.as_deref(),
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_segment_delete(
+    note_id: String,
+    segment_id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<(), String> {
+    crate::db::note_queries::delete_segment(database.pool(), &note_id, &segment_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_deletion_add(
+    deletion: crate::domain::NoteDeletion,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<(), String> {
+    crate::db::note_queries::upsert_deletion(database.pool(), &deletion)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_deletion_list(
+    owner_user_id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<crate::domain::NoteDeletion>, String> {
+    crate::db::note_queries::fetch_deletions(database.pool(), &owner_user_id)
+        .await
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn note_deletion_remove(
+    note_id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<(), String> {
+    crate::db::note_queries::delete_deletion(database.pool(), &note_id)
         .await
         .map_err(|err| err.to_string())
 }
@@ -2571,6 +2641,83 @@ pub async fn meeting_audio_delete(app: AppHandle, path: String) -> Result<(), St
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn meeting_audio_file_size(app: AppHandle, path: String) -> Result<u64, String> {
+    let path = crate::system::meeting_audio::managed_segment_path(&app, &path)
+        .map_err(|err| err.to_string())?;
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .map_err(|err| err.to_string())
+}
+
+/// Uploads a meeting audio file to a resumable upload session, resuming from
+/// whatever the session already stored. Emits `resumable_upload_progress`.
+#[tauri::command]
+#[specta::specta]
+pub async fn resumable_upload(
+    app: AppHandle,
+    uploads: State<'_, Arc<crate::system::resumable_upload::ResumableUploads>>,
+    args: crate::system::resumable_upload::ResumableUploadArgs,
+) -> Result<crate::system::resumable_upload::ResumableUploadOutcome, String> {
+    use crate::system::resumable_upload::{
+        build_client, run_upload, ResumableUploadProgress, EVT_RESUMABLE_UPLOAD_PROGRESS,
+        UPLOAD_CHUNK_BYTES,
+    };
+
+    let path = crate::system::meeting_audio::managed_segment_path(&app, &args.file_path)
+        .map_err(|err| err.to_string())?;
+    let uploads = Arc::clone(&uploads);
+    let cancel = uploads.register(&args.upload_id);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+
+    // reqwest's blocking client must not run on an async runtime thread.
+    let upload_id = args.upload_id.clone();
+    std::thread::Builder::new()
+        .name("resumable-upload".into())
+        .spawn(move || {
+            let total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let progress_app = app.clone();
+            let progress_id = upload_id.clone();
+            let result = build_client()
+                .map_err(|err| err.to_string())
+                .and_then(|client| {
+                    run_upload(
+                        &client,
+                        &path,
+                        &args.url,
+                        &args.headers,
+                        UPLOAD_CHUNK_BYTES,
+                        cancel,
+                        move |uploaded_bytes| {
+                            let payload = ResumableUploadProgress {
+                                upload_id: progress_id.clone(),
+                                uploaded_bytes,
+                                total_bytes: total,
+                            };
+                            let _ = progress_app.emit(EVT_RESUMABLE_UPLOAD_PROGRESS, payload);
+                        },
+                    )
+                    .map_err(|err| err.to_string())
+                });
+            let _ = sender.send(result);
+        })
+        .map_err(|err| err.to_string())?;
+
+    let result = receiver.await.map_err(|err| err.to_string())?;
+    uploads.unregister(&args.upload_id);
+    result
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn resumable_upload_cancel(
+    uploads: State<'_, Arc<crate::system::resumable_upload::ResumableUploads>>,
+    upload_id: String,
+) {
+    uploads.cancel(&upload_id);
 }
 
 #[tauri::command]

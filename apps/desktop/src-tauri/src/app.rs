@@ -162,6 +162,9 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             app.manage(crate::state::OverlayState::new());
             app.manage(crate::state::RemoteReceiverState::new());
             app.manage(crate::state::FloatingWindowState::new());
+            app.manage(std::sync::Arc::new(
+                crate::system::resumable_upload::ResumableUploads::default(),
+            ));
 
             match crate::system::auth_session::AuthSession::new(app.handle()) {
                 Ok(session) => {
@@ -340,6 +343,10 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::note_segment_upsert,
             crate::commands::note_segment_list,
             crate::commands::note_search,
+            crate::commands::note_segment_delete,
+            crate::commands::note_deletion_add,
+            crate::commands::note_deletion_list,
+            crate::commands::note_deletion_remove,
             crate::commands::meeting_capture_start,
             crate::commands::meeting_capture_stop,
             crate::commands::meeting_capture_status,
@@ -348,6 +355,9 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::meeting_audio_read,
             crate::commands::meeting_audio_delete,
             crate::commands::set_tray_meeting_menu,
+            crate::commands::meeting_audio_file_size,
+            crate::commands::resumable_upload,
+            crate::commands::resumable_upload_cancel,
         ])
 }
 

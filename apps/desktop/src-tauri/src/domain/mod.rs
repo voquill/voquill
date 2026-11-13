@@ -19,7 +19,7 @@ pub use app_target::{AppTarget, EVT_REGISTER_CURRENT_APP};
 pub use hotkey::{CompositorBinding, Hotkey};
 pub use keyboard::{KeysHeldPayload, EVT_KEYS_HELD};
 pub use monitor::{MonitorAtCursor, OverlayAnchor, ScreenVisibleArea};
-pub use note::{Note, NoteSearchCandidate, NoteSegment};
+pub use note::{Note, NoteDeletion, NoteSearchCandidate, NoteSegment};
 pub use overlay::{OverlayPhase, OverlayPhasePayload, PillWindowSize, EVT_OVERLAY_PHASE};
 pub use paired_remote_device::PairedRemoteDevice;
 pub use permissions::{PermissionKind, PermissionState, PermissionStatus};

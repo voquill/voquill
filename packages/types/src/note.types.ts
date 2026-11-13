@@ -1,7 +1,8 @@
 /**
  * Voquill Notes. Field names follow the `/v1/notes` server contract so a
  * cloud note and a local note share one shape in the apps. `storage`,
- * client statuses, `transcribedMs` and `audioPath` are client-side only.
+ * client statuses, `cloud`, `transcribedMs`, `audioPath` and `upload` are
+ * client-side only.
  */
 
 export type NoteStorage = "local" | "cloud";
@@ -28,6 +29,24 @@ export type NoteError = {
   message: string;
 };
 
+export type NoteEditableField = "title" | "personalNotes";
+
+/** Client bookkeeping for a note stored in Voquill cloud. */
+export type NoteCloudSync = {
+  /** The account the note belongs to; it is only shown to that account. */
+  ownerUserId: string;
+  /** The server is known to have the note. */
+  onServer: boolean;
+  /** Edits made on this device that the server has not confirmed yet. */
+  unsyncedFields: NoteEditableField[];
+  /** When the server last accepted `process` (or `regenerate`/`import`). */
+  processRequestedAt: string | null;
+  /** The server's `updatedAt` as last seen. */
+  serverUpdatedAt: string | null;
+  /** The server `updatedAt` that the locally cached segments match. */
+  fetchedUpdatedAt: string | null;
+};
+
 export type Note = {
   id: string;
   storage: NoteStorage;
@@ -41,6 +60,8 @@ export type Note = {
   durationMs: number;
   createdAt: string;
   updatedAt: string;
+  /** Null for local notes. */
+  cloud: NoteCloudSync | null;
 };
 
 export type NoteUtterance = {
@@ -65,12 +86,22 @@ export type NoteSegmentStatus =
   | "transcribed"
   | "failed";
 
+/** An upload session for a cloud note's segment audio. */
+export type NoteSegmentUpload = {
+  /** Resumable session URL; a credential, never log it. */
+  url: string;
+  sizeBytes: number;
+  complete: boolean;
+};
+
 export type NoteSegment = {
   id: string;
   noteId: string;
   index: number;
   kind: NoteSegmentKind;
   status: NoteSegmentStatus;
+  /** Why the segment is `failed`. */
+  error: NoteError | null;
   durationMs: number;
   createdAt: string;
   transcript: NoteTranscript | null;
@@ -78,4 +109,5 @@ export type NoteSegment = {
   transcribedMs: number;
   /** Local audio file; null for imports and once the audio is deleted. */
   audioPath: string | null;
+  upload: NoteSegmentUpload | null;
 };

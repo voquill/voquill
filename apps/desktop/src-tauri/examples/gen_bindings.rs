@@ -114,6 +114,10 @@ fn main() {
         note_segment_upsert,
         note_segment_list,
         note_search,
+        note_segment_delete,
+        note_deletion_add,
+        note_deletion_list,
+        note_deletion_remove,
         meeting_capture_start,
         meeting_capture_stop,
         meeting_capture_status,
@@ -122,6 +126,9 @@ fn main() {
         meeting_audio_read,
         meeting_audio_delete,
         set_tray_meeting_menu,
+        meeting_audio_file_size,
+        resumable_upload,
+        resumable_upload_cancel,
     ]);
 
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

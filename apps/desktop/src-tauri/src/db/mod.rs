@@ -131,6 +131,7 @@ pub const APP_TARGET_INSERTION_METHOD_MIGRATION_SQL: &str =
 pub const REMOVE_OPEN_CHAT_HOTKEY_MIGRATION_SQL: &str =
     include_str!("migrations/069_remove_open_chat_hotkey.sql");
 pub const NOTES_MIGRATION_SQL: &str = include_str!("migrations/070_notes.sql");
+pub const NOTE_CLOUD_SYNC_MIGRATION_SQL: &str = include_str!("migrations/071_note_cloud_sync.sql");
 
 pub fn migrations() -> Vec<tauri_plugin_sql::Migration> {
     vec![
@@ -552,6 +553,12 @@ pub fn migrations() -> Vec<tauri_plugin_sql::Migration> {
             version: 70,
             description: "create_notes_and_note_segments_tables",
             sql: NOTES_MIGRATION_SQL,
+            kind: tauri_plugin_sql::MigrationKind::Up,
+        },
+        tauri_plugin_sql::Migration {
+            version: 71,
+            description: "add_note_cloud_sync",
+            sql: NOTE_CLOUD_SYNC_MIGRATION_SQL,
             kind: tauri_plugin_sql::MigrationKind::Up,
         },
     ]

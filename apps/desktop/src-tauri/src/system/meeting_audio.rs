@@ -85,6 +85,11 @@ pub fn delete_note_audio(app: &tauri::AppHandle, note_id: &str) -> io::Result<()
     }
 }
 
+pub fn delete_all_meeting_audio(app: &tauri::AppHandle) -> io::Result<()> {
+    let dir = meeting_audio_dir(app)?;
+    fs::remove_dir_all(&dir)
+}
+
 pub fn delete_segment(path: &Path) -> io::Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
