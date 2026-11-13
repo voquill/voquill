@@ -4,9 +4,11 @@ import type { ServerNote, ServerNoteSegment } from "../repos/cloud-note.repo";
 import {
   canRemoveMissingCloudNote,
   mergeNoteSearchResults,
-  mergeServerNote,
+  applyServerNote,
   mergeServerSegments,
   needsFullNoteFetch,
+  noteFromServer,
+  serverNoteChanges,
 } from "./note-sync.utils";
 
 const server = (overrides: Partial<ServerNote> = {}): ServerNote => ({
@@ -64,10 +66,15 @@ const segment = (overrides: Partial<NoteSegment> = {}): NoteSegment => ({
   ...overrides,
 });
 
-describe("mergeServerNote", () => {
+const applied = (note: Note, version: ServerNote) => {
+  const next = structuredClone(note);
+  applyServerNote(next, version);
+  return next;
+};
+
+describe("noteFromServer", () => {
   it("takes server fields and AI output for a new note (e.g. from mobile)", () => {
-    const merged = mergeServerNote(null, server({ status: "draft" }), "u1");
-    expect(merged).toMatchObject({
+    expect(noteFromServer(server({ status: "draft" }), "u1")).toMatchObject({
       storage: "cloud",
       status: "paused",
       title: "AI title",
@@ -79,9 +86,11 @@ describe("mergeServerNote", () => {
       },
     });
   });
+});
 
+describe("applyServerNote", () => {
   it("keeps unsynced edits but takes the server's AI fields", () => {
-    const merged = mergeServerNote(
+    const merged = applied(
       local({
         cloud: {
           ...local().cloud!,
@@ -89,7 +98,6 @@ describe("mergeServerNote", () => {
         },
       }),
       server(),
-      "u1",
     );
     expect(merged).toMatchObject({
       title: "My title",
@@ -100,29 +108,57 @@ describe("mergeServerNote", () => {
   });
 
   it("takes the server's title and notes once edits are confirmed", () => {
-    expect(mergeServerNote(local(), server(), "u1")).toMatchObject({
+    expect(applied(local(), server())).toMatchObject({
       title: "AI title",
       personalNotes: "server notes",
     });
   });
 
   it("keeps the status of work still running on this device", () => {
+    expect(applied(local({ status: "recording" }), server()).status).toBe(
+      "recording",
+    );
     expect(
-      mergeServerNote(local({ status: "recording" }), server(), "u1").status,
-    ).toBe("recording");
-    expect(
-      mergeServerNote(
+      applied(
         local({
           status: "failed",
           error: { code: "audio_quota_exceeded", message: "" },
         }),
         server({ status: "draft" }),
-        "u1",
       ),
     ).toMatchObject({
       status: "failed",
       error: { code: "audio_quota_exceeded" },
     });
+  });
+
+  it("ignores a version older than one already applied (a GET that raced a PATCH)", () => {
+    const confirmed = local({
+      personalNotes: "confirmed edit",
+      cloud: {
+        ...local().cloud!,
+        serverUpdatedAt: "2026-05-01T14:00:00.000Z",
+      },
+    });
+    const note = structuredClone(confirmed);
+    expect(
+      applyServerNote(
+        note,
+        server({ personalNotes: "before the edit", status: "processing" }),
+      ),
+    ).toBe(false);
+    expect(note).toEqual(confirmed);
+    expect(serverNoteChanges(confirmed, server())).toBe(false);
+  });
+
+  it("applies a version with the same or a newer timestamp", () => {
+    const note = local({
+      cloud: {
+        ...local().cloud!,
+        serverUpdatedAt: "2026-05-01T13:00:00.000Z",
+      },
+    });
+    expect(applied(note, server()).personalNotes).toBe("server notes");
   });
 });
 

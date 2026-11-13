@@ -7,54 +7,90 @@ import {
   type ServerNoteSegment,
 } from "../repos/cloud-note.repo";
 import type { NoteSearchResult } from "./note-search.utils";
+import { isEqual } from "lodash-es";
 import { syncNoteStatus } from "./note-state.utils";
 
 /**
- * The local copy of a cloud note after seeing the server's version. The
- * server wins for everything it generates; the user's own edits win while
- * they are not yet confirmed; work in progress on this device keeps its
- * status.
+ * The server's `updatedAt` moves forward with every change, so a version
+ * older than one this device already applied (a GET that started before a
+ * PATCH returned) carries nothing new.
  */
-export const mergeServerNote = (
-  local: Note | null,
+export const isStaleServerNote = (local: Note, server: ServerNote): boolean => {
+  const known = local.cloud?.serverUpdatedAt;
+  return Boolean(known) && Date.parse(server.updatedAt) < Date.parse(known!);
+};
+
+/**
+ * Applies the server's version to a cloud note as it is now, field by
+ * field: the server wins for what it generates, the user's unconfirmed
+ * edits win, and work in progress on this device keeps its status. Returns
+ * false (nothing changed) for a stale version.
+ */
+export const applyServerNote = (note: Note, server: ServerNote): boolean => {
+  if (!note.cloud || isStaleServerNote(note, server)) {
+    return false;
+  }
+  const unsynced = note.cloud.unsyncedFields;
+  const serverStatus = toClientNoteStatus(server.status);
+  const status = syncNoteStatus(note.status, serverStatus);
+  const serverIsAuthoritative = status === serverStatus;
+  if (!unsynced.includes("title")) {
+    note.title = server.title;
+    note.titleSource = server.titleSource;
+  }
+  if (!unsynced.includes("personalNotes")) {
+    note.personalNotes = server.personalNotes;
+  }
+  if (serverIsAuthoritative) {
+    note.error = server.error;
+    note.durationMs = server.durationMs;
+  } else {
+    note.durationMs = Math.max(server.durationMs, note.durationMs);
+  }
+  note.status = status;
+  note.source = server.source;
+  note.generatedNotes = server.generatedNotes;
+  note.createdAt = server.createdAt;
+  note.updatedAt = server.updatedAt;
+  note.cloud.onServer = true;
+  note.cloud.serverUpdatedAt = server.updatedAt;
+  return true;
+};
+
+/** A cloud note this device has not seen (recorded elsewhere). */
+export const noteFromServer = (
   server: ServerNote,
   ownerUserId: string,
 ): Note => {
-  const unsynced = local?.cloud?.unsyncedFields ?? [];
-  const keepTitle = local !== null && unsynced.includes("title");
-  const keepPersonalNotes =
-    local !== null && unsynced.includes("personalNotes");
-  const status = syncNoteStatus(
-    local?.status ?? null,
-    toClientNoteStatus(server.status),
-  );
-  const serverIsAuthoritative = status === toClientNoteStatus(server.status);
-  return {
+  const note: Note = {
     id: server.id,
     storage: "cloud",
-    status,
-    title: keepTitle ? local.title : server.title,
-    titleSource: keepTitle ? local.titleSource : server.titleSource,
-    error: serverIsAuthoritative ? server.error : (local?.error ?? null),
+    status: toClientNoteStatus(server.status),
+    title: server.title,
+    titleSource: server.titleSource,
+    error: server.error,
     source: server.source,
-    personalNotes: keepPersonalNotes
-      ? local.personalNotes
-      : server.personalNotes,
+    personalNotes: server.personalNotes,
     generatedNotes: server.generatedNotes,
-    durationMs: serverIsAuthoritative
-      ? server.durationMs
-      : Math.max(server.durationMs, local?.durationMs ?? 0),
+    durationMs: server.durationMs,
     createdAt: server.createdAt,
     updatedAt: server.updatedAt,
     cloud: {
       ownerUserId,
       onServer: true,
-      unsyncedFields: unsynced,
-      processRequestedAt: local?.cloud?.processRequestedAt ?? null,
+      unsyncedFields: [],
+      processRequestedAt: null,
       serverUpdatedAt: server.updatedAt,
-      fetchedUpdatedAt: local?.cloud?.fetchedUpdatedAt ?? null,
+      fetchedUpdatedAt: null,
     },
   };
+  return note;
+};
+
+/** Whether applying `server` would change the stored note (skips no-op writes). */
+export const serverNoteChanges = (local: Note, server: ServerNote): boolean => {
+  const next = structuredClone(local);
+  return applyServerNote(next, server) && !isEqual(next, local);
 };
 
 /**

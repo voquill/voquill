@@ -50,13 +50,31 @@ export type NoteStore = {
   getNotes(): Note[];
   getSegments(noteId: string): NoteSegment[];
   loadSegments(noteId: string): Promise<NoteSegment[]>;
-  insertNote(note: Note, segments: NoteSegment[]): Promise<void>;
-  /** Replaces a note's fields (keeps its segments). */
-  putNote(note: Note): Promise<void>;
-  /** Adds or replaces one segment of a note whose segments are loaded. */
-  putSegment(segment: NoteSegment): Promise<void>;
+  /**
+   * Adds a new note; false (and nothing written) when the id exists or was
+   * deleted this session.
+   */
+  insertNote(note: Note, segments: NoteSegment[]): Promise<boolean>;
+  /**
+   * Replaces a loaded note's segments with `merge(current)`, computed from
+   * the segments as they are at that moment; only changed segments are
+   * written. Does nothing if the note is gone.
+   */
+  mergeSegments(
+    noteId: string,
+    merge: (current: NoteSegment[]) => NoteSegment[],
+  ): Promise<void>;
   removeSegment(noteId: string, segmentId: string): Promise<void>;
-  updateNote(noteId: string, recipe: (note: Note) => void): Promise<void>;
+  /**
+   * Applies `recipe` to the note as it is now. Every write is one of these,
+   * so no write can carry back state read before an await. `touch: false`
+   * keeps `updatedAt` (server versions carry their own).
+   */
+  updateNote(
+    noteId: string,
+    recipe: (note: Note) => void,
+    options?: { touch?: boolean },
+  ): Promise<void>;
   updateSegment(
     noteId: string,
     segmentId: string,

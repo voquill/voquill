@@ -1068,3 +1068,175 @@ describe("CloudNotePipeline note deleted elsewhere", () => {
     ).toHaveLength(1);
   });
 });
+
+/** Answers with the server's state when called, but only once released. */
+const holdResponses = <Args extends unknown[], Result>(
+  call: (...args: Args) => Promise<Result>,
+) => {
+  let release: () => void = () => {};
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const calls: Args[] = [];
+  return {
+    calls,
+    release: () => release(),
+    call: async (...args: Args) => {
+      calls.push(args);
+      const result = await call(...args);
+      await held;
+      return result;
+    },
+  };
+};
+
+describe("CloudNotePipeline races with work in flight", () => {
+  const readyOnServer = async () => {
+    const harness = createHarness({
+      note: localNote({
+        status: "ready",
+        cloud: { ...localNote().cloud!, onServer: true },
+      }),
+      segments: [
+        { ...recordedSegment(0), status: "transcribed", audioPath: null },
+      ],
+    });
+    await harness.server.putNote("note", {
+      title: "t",
+      titleSource: "default",
+      personalNotes: "server copy",
+      createdAt: NOW,
+    });
+    const server = harness.server.notes.get("note")!;
+    server.status = "ready";
+    server.generatedNotes = "Server notes.";
+    server.segments = [
+      {
+        id: "seg-0",
+        index: 0,
+        kind: "audio",
+        status: "transcribed",
+        error: null,
+        durationMs: 1_000,
+        createdAt: NOW,
+        transcript: { text: "hi", utterances: [] },
+      },
+    ];
+    const getNote = holdResponses(harness.server.getNote.bind(harness.server));
+    harness.server.getNote = getNote.call;
+    return { harness, getNote };
+  };
+
+  it("keeps an edit typed while a refresh was out (S1)", async () => {
+    const { harness, getNote } = await readyOnServer();
+    const refresh = harness.pipeline.refresh("note");
+    await vi.waitFor(() => expect(getNote.calls).toHaveLength(1));
+    await harness.store.updateNote("note", (note) => {
+      note.personalNotes = "typed meanwhile";
+      note.cloud!.unsyncedFields.push("personalNotes");
+    });
+    getNote.release();
+    await refresh;
+
+    expect(harness.store.getNote("note")).toMatchObject({
+      personalNotes: "typed meanwhile",
+      generatedNotes: "Server notes.",
+      cloud: { unsyncedFields: ["personalNotes"] },
+    });
+  });
+
+  it("keeps a Resume that happened while a refresh was out (S1)", async () => {
+    const { harness, getNote } = await readyOnServer();
+    const refresh = harness.pipeline.refresh("note");
+    await vi.waitFor(() => expect(getNote.calls).toHaveLength(1));
+    await harness.store.updateNote("note", (note) => {
+      note.status = "recording";
+    });
+    getNote.release();
+    await refresh;
+
+    expect(harness.store.getNote("note")?.status).toBe("recording");
+  });
+
+  it("does not bring back a note deleted while a refresh was out (S1, S8)", async () => {
+    const { harness, getNote } = await readyOnServer();
+    const refresh = harness.pipeline.refresh("note");
+    await vi.waitFor(() => expect(getNote.calls).toHaveLength(1));
+    await harness.store.deleteNote("note", { deleteAudio: true });
+    getNote.release();
+    await refresh;
+
+    expect(harness.store.getNote("note")).toBeNull();
+    expect(harness.store.getSegments("note")).toEqual([]);
+  });
+
+  it("does not bring back a note deleted while a search was out (S8)", async () => {
+    const { harness } = await readyOnServer();
+    await harness.store.deleteNote("note", { deleteAudio: true });
+    harness.store.removed.add("note");
+    const search = holdResponses(harness.server.search.bind(harness.server));
+    harness.server.search = search.call;
+    const results = harness.pipeline.search("budget");
+    await vi.waitFor(() => expect(search.calls).toHaveLength(1));
+    search.release();
+
+    expect((await results).map((r) => r.note.id)).toEqual([]);
+    expect(harness.store.getNote("note")).toBeNull();
+  });
+
+  it("keeps a confirmed edit when an older GET answers after the PATCH (S2)", async () => {
+    const { harness, getNote } = await readyOnServer();
+    const refresh = harness.pipeline.refresh("note");
+    await vi.waitFor(() => expect(getNote.calls).toHaveLength(1));
+    await harness.store.updateNote("note", (note) => {
+      note.personalNotes = "confirmed edit";
+      note.cloud!.unsyncedFields.push("personalNotes");
+    });
+    await harness.pipeline.saveEdits("note");
+    expect(harness.store.getNote("note")?.cloud?.unsyncedFields).toEqual([]);
+    getNote.release();
+    await refresh;
+
+    expect(harness.store.getNote("note")?.personalNotes).toBe("confirmed edit");
+    expect(harness.server.notes.get("note")?.personalNotes).toBe(
+      "confirmed edit",
+    );
+  });
+
+  it("does not send cached text with process for a note edited elsewhere (S3)", async () => {
+    const harness = createHarness({
+      note: localNote({
+        status: "pending",
+        title: "Old desktop title",
+        titleSource: "user",
+        personalNotes: "stale desktop copy",
+        cloud: { ...localNote().cloud!, onServer: true },
+      }),
+      segments: [],
+    });
+    await harness.server.putNote("note", {
+      title: "Renamed on phone",
+      titleSource: "user",
+      personalNotes: "written on the phone",
+      createdAt: NOW,
+    });
+    harness.server.notes.get("note")!.status = "processing";
+    const processNote = vi.spyOn(harness.server, "processNote");
+    harness.server.pollsUntilDone = 0;
+
+    await harness.pipeline.process("note");
+
+    expect(processNote).toHaveBeenCalled();
+    expect(
+      processNote.mock.calls.every(
+        ([, body]) => Object.keys(body).length === 0,
+      ),
+    ).toBe(true);
+    expect(harness.server.notes.get("note")).toMatchObject({
+      title: "Renamed on phone",
+      personalNotes: "written on the phone",
+    });
+    expect(harness.store.getNote("note")).toMatchObject({
+      title: "Renamed on phone",
+      personalNotes: "written on the phone",
+    });
+  });
+});

@@ -221,13 +221,15 @@ export const fromLocalNoteSegment = (
           utterances: parseUtterances(segment.transcriptUtterances),
         },
   createdAt: dayjs(segment.createdAt).toISOString(),
-  upload: segment.uploadUrl
-    ? {
-        url: segment.uploadUrl,
-        sizeBytes: segment.uploadSizeBytes ?? 0,
-        complete: segment.uploadComplete,
-      }
-    : null,
+  // A completed upload keeps no URL (the server already has the bytes).
+  upload:
+    segment.uploadUrl || segment.uploadComplete
+      ? {
+          url: segment.uploadUrl ?? "",
+          sizeBytes: segment.uploadSizeBytes ?? 0,
+          complete: segment.uploadComplete,
+        }
+      : null,
 });
 
 export type NoteSearchArgs = {

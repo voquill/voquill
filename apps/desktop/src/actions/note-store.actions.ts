@@ -1,5 +1,6 @@
 import type { Note, NoteSegment } from "@voquill/types";
 import dayjs from "dayjs";
+import { isEqual } from "lodash-es";
 import type { NoteStore } from "../pipelines/local-note.pipeline";
 import { getNoteRepo } from "../repos";
 import { getAppState, produceAppState } from "../store";
@@ -48,8 +49,25 @@ const persistSegment = (noteId: string, segmentId: string) =>
     }
   });
 
+/** Index order; two devices resuming the same note can share an index. */
 const sortSegments = (segments: NoteSegment[]) =>
-  segments.sort((left, right) => left.index - right.index);
+  segments.sort(
+    (left, right) =>
+      left.index - right.index ||
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id),
+  );
+
+/**
+ * Notes deleted this session. Nothing may create them again: a response
+ * that was in flight when the user deleted (search, sync, a poll) would
+ * otherwise bring the note back.
+ */
+const removedNoteIds = new Set<string>();
+
+/** Resolves once every queued SQLite write has finished. */
+const waitForNoteWrites = () =>
+  Promise.all([...writeChainByNoteId.values()]).then(() => undefined);
 
 /**
  * Loads local notes plus the cloud notes of `cloudNotesUserId`, replacing
@@ -58,6 +76,8 @@ const sortSegments = (segments: NoteSegment[]) =>
 export const loadNotes = async (
   cloudNotesUserId: string | null,
 ): Promise<Note[]> => {
+  // Queued writes hold newer state than SQLite; reading first would revert it.
+  await waitForNoteWrites();
   const notes = await getNoteRepo().listNotes(cloudNotesUserId);
   const ids = new Set(notes.map((note) => note.id));
   produceAppState((draft) => {
@@ -104,6 +124,9 @@ export const noteStore: NoteStore = {
   },
 
   insertNote: async (note, segments) => {
+    if (removedNoteIds.has(note.id) || getAppState().noteById[note.id]) {
+      return false;
+    }
     produceAppState((draft) => {
       draft.noteById[note.id] = note;
       draft.noteSegmentsByNoteId[note.id] = sortSegments([...segments]);
@@ -112,29 +135,29 @@ export const noteStore: NoteStore = {
       persistNote(note.id),
       ...segments.map((segment) => persistSegment(note.id, segment.id)),
     ]);
+    return true;
   },
 
-  putNote: async (note) => {
+  mergeSegments: async (noteId, merge) => {
+    const state = getAppState();
+    const current = state.noteSegmentsByNoteId[noteId];
+    if (!state.noteById[noteId] || !current) {
+      return;
+    }
+    const previousById = new Map(current.map((s) => [s.id, s]));
+    const next = sortSegments(merge(current));
+    const changed = next.filter(
+      (segment) => !isEqual(previousById.get(segment.id), segment),
+    );
+    if (changed.length === 0) {
+      return;
+    }
     produceAppState((draft) => {
-      draft.noteById[note.id] = note;
+      draft.noteSegmentsByNoteId[noteId] = next;
     });
-    await persistNote(note.id);
-  },
-
-  putSegment: async (segment) => {
-    produceAppState((draft) => {
-      const segments = (draft.noteSegmentsByNoteId[segment.noteId] ??= []);
-      const index = segments.findIndex(
-        (candidate) => candidate.id === segment.id,
-      );
-      if (index === -1) {
-        segments.push(segment);
-      } else {
-        segments[index] = segment;
-      }
-      sortSegments(segments);
-    });
-    await persistSegment(segment.noteId, segment.id);
+    await Promise.all(
+      changed.map((segment) => persistSegment(noteId, segment.id)),
+    );
   },
 
   removeSegment: async (noteId, segmentId) => {
@@ -151,7 +174,7 @@ export const noteStore: NoteStore = {
     );
   },
 
-  updateNote: async (noteId, recipe) => {
+  updateNote: async (noteId, recipe, { touch = true } = {}) => {
     if (!getAppState().noteById[noteId]) {
       return;
     }
@@ -159,7 +182,9 @@ export const noteStore: NoteStore = {
       const note = draft.noteById[noteId];
       if (note) {
         recipe(note);
-        note.updatedAt = dayjs().toISOString();
+        if (touch) {
+          note.updatedAt = dayjs().toISOString();
+        }
       }
     });
     await persistNote(noteId);
@@ -178,6 +203,7 @@ export const noteStore: NoteStore = {
   },
 
   deleteNote: async (noteId, options) => {
+    removedNoteIds.add(noteId);
     produceAppState((draft) => {
       delete draft.noteById[noteId];
       delete draft.noteSegmentsByNoteId[noteId];
@@ -188,12 +214,28 @@ export const noteStore: NoteStore = {
   },
 };
 
-/** Adds a segment to a note whose segments are loaded. */
-export const addNoteSegment = async (segment: NoteSegment): Promise<void> => {
+/**
+ * Appends a segment after the note's current last one (its index is taken
+ * from the segments at this moment, so a merge that landed meanwhile is
+ * counted). Does nothing if the note is gone.
+ */
+export const addNoteSegment = async (
+  segment: Omit<NoteSegment, "index">,
+): Promise<void> => {
+  if (!getAppState().noteById[segment.noteId]) {
+    return;
+  }
   produceAppState((draft) => {
     const segments = (draft.noteSegmentsByNoteId[segment.noteId] ??= []);
-    segments.push(segment);
+    const index = segments.reduce((max, s) => Math.max(max, s.index + 1), 0);
+    segments.push({ ...segment, index });
     sortSegments(segments);
   });
   await persistSegment(segment.noteId, segment.id);
+};
+
+/** Waits for queued writes, then forgets this session's state (local data cleared). */
+export const resetNoteStore = async (): Promise<void> => {
+  await waitForNoteWrites();
+  removedNoteIds.clear();
 };

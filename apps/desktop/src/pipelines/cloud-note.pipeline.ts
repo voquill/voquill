@@ -21,9 +21,10 @@ import { getLogger } from "../utils/log.utils";
 import type { NoteSearchResult } from "../utils/note-search.utils";
 import { canTransitionNote, transitionNote } from "../utils/note-state.utils";
 import {
+  applyServerNote,
   mergeNoteSearchResults,
-  mergeServerNote,
   mergeServerSegments,
+  noteFromServer,
 } from "../utils/note-sync.utils";
 import {
   BaseNotePipeline,
@@ -364,8 +365,12 @@ export class CloudNotePipeline extends BaseNotePipeline {
     for (const result of remote) {
       let note = this.deps.store.getNote(result.note.id);
       if (!note && ownerUserId) {
-        note = mergeServerNote(null, result.note, ownerUserId);
-        await this.deps.store.putNote(note);
+        // A note from another device this one has not synced yet.
+        const inserted = await this.deps.store.insertNote(
+          noteFromServer(result.note, ownerUserId),
+          [],
+        );
+        note = inserted ? this.deps.store.getNote(result.note.id) : null;
       }
       if (note) {
         remoteResults.push({
@@ -509,14 +514,22 @@ export class CloudNotePipeline extends BaseNotePipeline {
     server: ServerNote,
     sent: Partial<Pick<Note, "title" | "personalNotes">>,
   ) {
-    await this.deps.store.updateNote(noteId, (note) => {
-      if (!note.cloud) return;
-      note.cloud.onServer = true;
-      note.cloud.serverUpdatedAt = server.updatedAt;
-      note.cloud.unsyncedFields = note.cloud.unsyncedFields.filter(
-        (field) => !(field in sent) || note[field] !== sent[field],
-      );
-    });
+    await this.deps.store.updateNote(
+      noteId,
+      (note) => {
+        if (!note.cloud) return;
+        note.cloud.onServer = true;
+        const known = note.cloud.serverUpdatedAt;
+        if (!known || Date.parse(server.updatedAt) > Date.parse(known)) {
+          note.cloud.serverUpdatedAt = server.updatedAt;
+        }
+        // Edited again while the request was out: still unsynced.
+        note.cloud.unsyncedFields = note.cloud.unsyncedFields.filter(
+          (field) => !(field in sent) || note[field] !== sent[field],
+        );
+      },
+      { touch: false },
+    );
   }
 
   /**
@@ -739,18 +752,26 @@ export class CloudNotePipeline extends BaseNotePipeline {
     );
   }
 
-  /** `POST /process`, re-uploading whatever the server reports missing. */
+  /**
+   * `POST /process`, re-uploading whatever the server reports missing. The
+   * body acts like a PATCH, so it carries only edits the server has not
+   * confirmed: never this device's cached copy of text edited elsewhere.
+   */
   private async requestProcessing(noteId: string): Promise<void> {
     for (let round = 0; ; round++) {
-      const note = this.assertOwned(noteId);
-      const body = {
-        personalNotes: note.personalNotes,
-        ...(note.titleSource === "user" ? { title: note.title } : {}),
-      };
+      let body: Partial<Pick<Note, "title" | "personalNotes">> = {};
       try {
-        const server = await this.request(noteId, () =>
-          this.deps.api.processNote(noteId, body),
-        );
+        const server = await this.request(noteId, () => {
+          const latest = this.assertOwned(noteId);
+          const unsynced = latest.cloud!.unsyncedFields;
+          body = {
+            ...(unsynced.includes("title") ? { title: latest.title } : {}),
+            ...(unsynced.includes("personalNotes")
+              ? { personalNotes: latest.personalNotes }
+              : {}),
+          };
+          return this.deps.api.processNote(noteId, body);
+        });
         await this.confirmServerNote(noteId, server, body);
         await this.deps.store.updateNote(noteId, (draft) => {
           if (draft.status === "pending") {
@@ -794,8 +815,11 @@ export class CloudNotePipeline extends BaseNotePipeline {
       const server = await this.request(noteId, () =>
         this.deps.api.getNote(noteId),
       );
-      await this.applyServerNote(noteId, server);
-      if (server.status === "ready" || server.status === "failed") {
+      const applied = await this.applyServerNote(noteId, server);
+      if (
+        applied &&
+        (server.status === "ready" || server.status === "failed")
+      ) {
         await this.releaseTranscribedAudio(noteId, server);
         return;
       }
@@ -817,31 +841,51 @@ export class CloudNotePipeline extends BaseNotePipeline {
     }
   }
 
+  /**
+   * Stores the server's version against the note as it is now (the user may
+   * have typed, resumed or deleted while the request was out). Returns false
+   * when the version was older than one already applied.
+   */
   private async applyServerNote(
     noteId: string,
     server: ServerNoteWithSegments,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { store } = this.deps;
     const local = store.getNote(noteId);
-    const ownerUserId = local?.cloud?.ownerUserId;
-    if (!local || !ownerUserId) {
+    if (!local?.cloud) {
       throw new NoteUnavailableError();
     }
-    const merged = mergeServerNote(local, server, ownerUserId);
-    merged.cloud!.fetchedUpdatedAt = server.updatedAt;
-    const segments = mergeServerSegments(
+    let applied = false;
+    await store.updateNote(
       noteId,
-      store.getSegments(noteId),
-      server.segments,
+      (note) => {
+        applied = applyServerNote(note, server);
+        if (applied) {
+          note.cloud!.fetchedUpdatedAt = server.updatedAt;
+        }
+      },
+      { touch: false },
     );
-    for (const segment of segments) {
-      await store.putSegment(segment);
+    if (!applied) {
+      return false;
     }
-    merged.durationMs = Math.max(
-      merged.durationMs,
-      segments.reduce((total, segment) => total + segment.durationMs, 0),
+    await store.mergeSegments(noteId, (current) =>
+      mergeServerSegments(noteId, current, server.segments),
     );
-    await store.putNote(merged);
+    await store.updateNote(
+      noteId,
+      (note) => {
+        note.durationMs = Math.max(
+          note.durationMs,
+          store.getSegments(noteId).reduce((t, s) => t + s.durationMs, 0),
+        );
+      },
+      { touch: false },
+    );
+    if (!store.getNote(noteId)) {
+      throw new NoteUnavailableError();
+    }
+    return true;
   }
 
   /**

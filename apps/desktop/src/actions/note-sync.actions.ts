@@ -3,10 +3,11 @@ import { getAppState } from "../store";
 import { getLogger } from "../utils/log.utils";
 import { getCloudNotesUserId } from "../utils/note.utils";
 import {
+  applyServerNote,
   canRemoveMissingCloudNote,
-  mergeServerNote,
+  noteFromServer,
+  serverNoteChanges,
 } from "../utils/note-sync.utils";
-import { isEqual } from "lodash-es";
 import { noteStore } from "./note-store.actions";
 
 const MIN_SYNC_INTERVAL_MS = 15_000;
@@ -50,12 +51,19 @@ const syncCloudNotesNow = async (ownerUserId: string): Promise<void> => {
       continue;
     }
     const local = noteStore.getNote(server.id);
-    if (local && local.storage !== "cloud") {
-      continue;
-    }
-    const merged = mergeServerNote(local, server, ownerUserId);
-    if (!isEqual(local, merged)) {
-      await noteStore.putNote(merged);
+    if (!local) {
+      // Skipped if it was deleted while the list was loading.
+      await noteStore.insertNote(noteFromServer(server, ownerUserId), []);
+    } else if (
+      local.storage === "cloud" &&
+      local.cloud?.ownerUserId === ownerUserId &&
+      serverNoteChanges(local, server)
+    ) {
+      await noteStore.updateNote(
+        server.id,
+        (note) => void applyServerNote(note, server),
+        { touch: false },
+      );
     }
   }
 

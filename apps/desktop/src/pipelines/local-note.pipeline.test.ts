@@ -583,8 +583,7 @@ describe("LocalNotePipeline and dictation", () => {
     });
 
     const run = pipeline.process("note");
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(events).toEqual(["yield"]);
+    await vi.waitFor(() => expect(events).toEqual(["yield"]));
 
     dictating = false;
     releaseDictation();

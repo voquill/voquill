@@ -69,6 +69,16 @@ describe("note repo mapping", () => {
     expect(fromLocalNoteSegment(local)).toEqual(segment);
   });
 
+  it("keeps a completed upload across a restart (N4)", () => {
+    const done = {
+      ...segment,
+      upload: { url: "", sizeBytes: 10, complete: true },
+    };
+    expect(fromLocalNoteSegment(toLocalNoteSegment(done)).upload).toEqual(
+      done.upload,
+    );
+  });
+
   it("keeps an untranscribed segment without a transcript", () => {
     const local = toLocalNoteSegment({ ...segment, transcript: null });
     expect(local.transcriptText).toBeNull();

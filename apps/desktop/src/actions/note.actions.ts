@@ -85,9 +85,6 @@ const processNote = (noteId: string) => {
 const sumSegmentDurations = (segments: NoteSegment[]) =>
   segments.reduce((total, segment) => total + segment.durationMs, 0);
 
-const nextSegmentIndex = (segments: NoteSegment[]) =>
-  segments.reduce((max, segment) => Math.max(max, segment.index + 1), 0);
-
 const lastSegment = (segments: NoteSegment[]) =>
   [...segments].sort((left, right) => right.index - left.index)[0];
 
@@ -132,20 +129,16 @@ const startSegmentCapture = async (noteId: string): Promise<void> => {
     preferredMicrophone,
   });
   markCapturing(status);
-  await addNoteSegment(
-    newRecordingSegment(noteId, segmentId, segments, status),
-  );
+  await addNoteSegment(newRecordingSegment(noteId, segmentId, status));
 };
 
 const newRecordingSegment = (
   noteId: string,
   segmentId: string,
-  segments: NoteSegment[],
   status: MeetingCaptureStatus,
-): NoteSegment => ({
+): Omit<NoteSegment, "index"> => ({
   id: segmentId,
   noteId,
-  index: nextSegmentIndex(segments),
   kind: "audio",
   status: "recording",
   error: null,
@@ -163,7 +156,6 @@ const rollSegmentCapture = (noteId: string): Promise<void> =>
     if (getAppState().notes.capture?.noteId !== noteId) {
       return;
     }
-    const segments = noteStore.getSegments(noteId);
     const segmentId = createId();
     const rolled = await getMeetingAudioRepo().rollCapture(noteId, segmentId);
     produceAppState((draft) => {
@@ -177,9 +169,7 @@ const rollSegmentCapture = (noteId: string): Promise<void> =>
         segment.durationMs = rolled.finished.durationMs;
       },
     );
-    await addNoteSegment(
-      newRecordingSegment(noteId, segmentId, segments, rolled.status),
-    );
+    await addNoteSegment(newRecordingSegment(noteId, segmentId, rolled.status));
     await noteStore.updateNote(noteId, (note) => {
       note.durationMs = sumSegmentDurations(noteStore.getSegments(noteId));
     });
@@ -496,11 +486,10 @@ const adoptUnreferencedAudio = async (): Promise<void> => {
       };
       await noteStore.insertNote(note, []);
     }
-    const segments = await noteStore.loadSegments(note.id);
+    await noteStore.loadSegments(note.id);
     await addNoteSegment({
       id: orphan.segmentId,
       noteId: note.id,
-      index: nextSegmentIndex(segments),
       kind: "audio",
       status: "recorded",
       error: null,

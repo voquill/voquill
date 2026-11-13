@@ -49,6 +49,7 @@ vi.mock("../repos", () => ({
 }));
 
 const { syncCloudNotes } = await import("./note-sync.actions");
+const { noteStore } = await import("./note-store.actions");
 
 const NOW = "2026-05-01T12:00:00.000Z";
 
@@ -187,5 +188,31 @@ describe("syncCloudNotes", () => {
     await syncCloudNotes({ force: true });
     expect(getAppState().noteById.mobile).toBeUndefined();
     expect(fakes.localDeletes).toEqual([]);
+  });
+
+  it("does not bring back a note deleted while the list was loading (S8)", async () => {
+    signIn("u1");
+    fakes.serverNotes = [serverNote("kept")];
+    fakes.onList = () => {
+      void noteStore.deleteNote("kept", { deleteAudio: true });
+    };
+    await syncCloudNotes({ force: true });
+    expect(getAppState().noteById.kept).toBeUndefined();
+  });
+
+  it("keeps an edit typed while the list was loading (S1)", async () => {
+    signIn("u1");
+    fakes.serverNotes = [serverNote("gone-audio")];
+    fakes.onList = () => {
+      void noteStore.updateNote("gone-audio", (note) => {
+        note.title = "Typed meanwhile";
+        note.cloud!.unsyncedFields.push("title");
+      });
+    };
+    await syncCloudNotes({ force: true });
+    expect(getAppState().noteById["gone-audio"]).toMatchObject({
+      title: "Typed meanwhile",
+      generatedNotes: "Notes.",
+    });
   });
 });
