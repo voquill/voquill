@@ -39,16 +39,19 @@ const harness = (plan: "free" | "pro") => {
   const user = config!.users[plan];
   const api = new CloudNoteRepo({
     baseUrl: config!.base,
-    getAuthHeaders: async () => ({
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${user.idToken}`,
+    getAuth: async () => ({
+      uid: user.uid,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${user.idToken}`,
+      },
     }),
-  });
+  }).forOwner(user.uid);
   const store = new FakeNoteStore();
   const pipeline = new CloudNotePipeline({
     store,
     repo: { searchNotes: async () => [], addDeletion: async () => {} },
-    api,
+    api: () => api,
     audio: {
       getFileSize: async (path) => statSync(path).size,
       uploadResumable: async ({ url, filePath, contentType }) => {
@@ -82,6 +85,7 @@ const harness = (plan: "free" | "pro") => {
     getCloudNotesUserId: () => user.uid,
     setActivity: () => {},
     onSettled: () => {},
+    isNoteOpen: () => true,
     yieldToDictation: async () => {},
   });
   return { api, store, pipeline, user };
@@ -100,6 +104,7 @@ const recordingNote = (id: string, ownerUserId: string): Note => ({
   durationMs: 60_000,
   createdAt: NOW,
   updatedAt: NOW,
+  processedWith: null,
   cloud: {
     ownerUserId,
     onServer: false,
