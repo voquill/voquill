@@ -308,9 +308,24 @@ async transcriptionAudioLoad(id: string) : Promise<Result<TranscriptionAudioData
     else return { status: "error", error: e  as any };
 }
 },
-async purgeStaleTranscriptionAudio() : Promise<Result<string[], string>> {
+/**
+ * Deletes stored audio beyond the most recent entries. `keep_ids` are never
+ * purged and do not count towards the retained entries.
+ */
+async purgeStaleTranscriptionAudio(keepIds: string[] | null) : Promise<Result<string[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("purge_stale_transcription_audio") };
+    return { status: "ok", data: await TAURI_INVOKE("purge_stale_transcription_audio", { keepIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transcriptions that still have stored audio, newest first.
+ */
+async transcriptionAudioEntries() : Promise<Result<TranscriptionAudioEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcription_audio_entries") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1276,6 +1291,7 @@ export type TextFieldInfo = { cursorPosition: number | null; selectionLength: nu
 export type Tone = { id: string; name: string; promptTemplate: string; createdAt: number; sortOrder: number }
 export type Transcription = { id: string; transcript: string; timestamp: number; audio?: TranscriptionAudioSnapshot | null; modelSize?: string | null; inferenceDevice?: string | null; rawTranscript?: string | null; sanitizedTranscript?: string | null; transcriptionPrompt?: string | null; postProcessPrompt?: string | null; transcriptionApiKeyId?: string | null; postProcessApiKeyId?: string | null; transcriptionMode?: string | null; postProcessMode?: string | null; postProcessDevice?: string | null; transcriptionDurationMs?: number | null; postprocessDurationMs?: number | null; warnings?: string[] | null; remoteStatus?: string | null; remoteDeviceId?: string | null }
 export type TranscriptionAudioData = { samples: number[]; sampleRate: number }
+export type TranscriptionAudioEntry = { id: string; transcript: string; durationMs: number | null }
 export type TranscriptionAudioSnapshot = { filePath: string; durationMs: number }
 /**
  * Labels for the meeting section; an item is shown only when its label is
