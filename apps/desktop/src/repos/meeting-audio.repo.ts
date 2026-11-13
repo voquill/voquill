@@ -3,6 +3,7 @@ import type { Nullable } from "@voquill/types";
 import { BaseRepo } from "./base.repo";
 
 export const MEETING_CAPTURE_PROGRESS_EVENT = "meeting_capture_progress";
+export const RESUMABLE_UPLOAD_PROGRESS_EVENT = "resumable_upload_progress";
 export const MEETING_AUDIO_SAMPLE_RATE = 16_000;
 
 export type MeetingCaptureStatus = {
@@ -20,6 +21,20 @@ export type MeetingCaptureStopped = {
   segmentId: string;
   audioPath: string;
   durationMs: number;
+};
+
+export type ResumableUploadOutcome = {
+  outcome: "complete" | "expired" | "interrupted" | "rejected" | "cancelled";
+  uploadedBytes: number;
+  totalBytes: number;
+  status: number | null;
+  message: string | null;
+};
+
+export type ResumableUploadProgress = {
+  uploadId: string;
+  uploadedBytes: number;
+  totalBytes: number;
 };
 
 export const decodePcm16Base64 = (base64: string): Float32Array => {
@@ -81,5 +96,33 @@ export class MeetingAudioRepo extends BaseRepo {
 
   async deleteSegmentAudio(audioPath: string): Promise<void> {
     await invoke<void>("meeting_audio_delete", { path: audioPath });
+  }
+
+  async getFileSize(audioPath: string): Promise<number> {
+    return invoke<number>("meeting_audio_file_size", { path: audioPath });
+  }
+
+  /**
+   * One pass of a resumable upload of a segment file: resumes from what the
+   * session already has. Progress arrives as `RESUMABLE_UPLOAD_PROGRESS_EVENT`.
+   */
+  async uploadResumable(args: {
+    uploadId: string;
+    filePath: string;
+    url: string;
+    contentType: string;
+  }): Promise<ResumableUploadOutcome> {
+    return invoke<ResumableUploadOutcome>("resumable_upload", {
+      args: {
+        uploadId: args.uploadId,
+        filePath: args.filePath,
+        url: args.url,
+        headers: [{ name: "Content-Type", value: args.contentType }],
+      },
+    });
+  }
+
+  async cancelUpload(uploadId: string): Promise<void> {
+    await invoke<void>("resumable_upload_cancel", { uploadId });
   }
 }

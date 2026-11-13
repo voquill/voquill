@@ -21,9 +21,9 @@ const NOTE_TRANSITIONS: Record<
 > = {
   recording: { pause: "paused", interrupt: "paused", finish: "pending" },
   paused: { resume: "recording", finish: "pending" },
-  pending: { "start-processing": "processing" },
+  pending: { "start-processing": "processing", fail: "failed" },
   processing: { succeed: "ready", fail: "failed" },
-  ready: { resume: "recording", regenerate: "pending" },
+  ready: { resume: "recording", regenerate: "pending", retry: "pending" },
   failed: { retry: "pending" },
 };
 
@@ -62,4 +62,24 @@ export const recoverNoteStatus = (
     default:
       return status;
   }
+};
+
+/**
+ * The status of a cloud note after the server reported `serverStatus`
+ * (already mapped to a client status). Work happening on this device
+ * (recording, or `pending`: uploads and requests not yet accepted) keeps its
+ * local status; a server draft keeps whatever the device knows (a paused or
+ * locally failed note); otherwise the server is authoritative.
+ */
+export const syncNoteStatus = (
+  localStatus: NoteStatus | null,
+  serverStatus: NoteStatus,
+): NoteStatus => {
+  if (localStatus === "recording" || localStatus === "pending") {
+    return localStatus;
+  }
+  if (serverStatus === "paused" && localStatus) {
+    return localStatus;
+  }
+  return serverStatus;
 };

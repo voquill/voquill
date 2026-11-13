@@ -115,6 +115,7 @@ const storedNote = (id: string, status: Note["status"]): Note => ({
   durationMs: 0,
   createdAt: NOW,
   updatedAt: NOW,
+  cloud: null,
 });
 
 const storedSegment = (
@@ -133,6 +134,8 @@ const storedSegment = (
   transcript: null,
   transcribedMs: 0,
   audioPath: `/audio/${noteId}-${index}.wav`,
+  error: null,
+  upload: null,
 });
 
 const flushWrites = () => new Promise((resolve) => setTimeout(resolve, 0));

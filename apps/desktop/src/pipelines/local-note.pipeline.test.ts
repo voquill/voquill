@@ -8,11 +8,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { GenerateTextInput } from "../repos/generate-text.repo";
 import type { NoteSearchCandidate } from "../repos/note.repo";
 import { NOTE_CHUNK_MAX_MS } from "../utils/note-audio.utils";
+import { EMPTY_TRANSCRIPT_NOTES } from "../utils/note-prompt.utils";
 import type { NoteAskEvent } from "./base-note.pipeline";
+import { FakeNoteStore } from "./fake-note-store.test-utils";
 import {
   LocalNotePipeline,
   type NoteChatGenerator,
-  type NoteStore,
 } from "./local-note.pipeline";
 
 vi.mock("../utils/log.utils", () => ({
@@ -23,6 +24,9 @@ vi.mock("../utils/log.utils", () => ({
     verbose: () => {},
   }),
 }));
+
+const GENERATED_NOTES =
+  "The team planned the launch.\n\n## Decisions\n- Ship in May";
 
 const NOW = "2026-05-01T12:00:00.000Z";
 
@@ -39,6 +43,7 @@ const makeNote = (overrides: Partial<Note> = {}): Note => ({
   durationMs: 0,
   createdAt: NOW,
   updatedAt: NOW,
+  cloud: null,
   ...overrides,
 });
 
@@ -57,55 +62,10 @@ const audioSegment = (
   transcript: null,
   transcribedMs: 0,
   audioPath: `/audio/seg-${index}.wav`,
+  error: null,
+  upload: null,
   ...overrides,
 });
-
-/** In-memory note store; `log` records writes and deletions in the order they became durable. */
-class FakeNoteStore implements NoteStore {
-  notes = new Map<string, Note>();
-  segments = new Map<string, NoteSegment[]>();
-  log: string[] = [];
-
-  getNote = (noteId: string) => this.notes.get(noteId) ?? null;
-  getNotes = () => [...this.notes.values()];
-  getSegments = (noteId: string) => this.segments.get(noteId) ?? [];
-  loadSegments = async (noteId: string) => this.getSegments(noteId);
-
-  insertNote = async (note: Note, segments: NoteSegment[]) => {
-    this.notes.set(note.id, structuredClone(note));
-    this.segments.set(note.id, structuredClone(segments));
-    this.log.push(`insert:${note.id}`);
-  };
-
-  updateNote = async (noteId: string, recipe: (note: Note) => void) => {
-    const note = this.notes.get(noteId);
-    if (!note) return;
-    const before = note.status;
-    recipe(note);
-    if (note.status !== before) {
-      this.log.push(`note:${note.status}`);
-    }
-  };
-
-  updateSegment = async (
-    noteId: string,
-    segmentId: string,
-    recipe: (segment: NoteSegment) => void,
-  ) => {
-    const segment = this.getSegments(noteId).find((s) => s.id === segmentId);
-    if (!segment) return;
-    recipe(segment);
-    this.log.push(
-      `segment:${segmentId}:${segment.status}:${segment.transcribedMs}`,
-    );
-  };
-
-  deleteNote = async (noteId: string) => {
-    this.notes.delete(noteId);
-    this.segments.delete(noteId);
-    this.log.push(`delete-note:${noteId}`);
-  };
-}
 
 type Harness = {
   store: FakeNoteStore;
@@ -135,11 +95,13 @@ const createHarness = ({
 
   const generator: NoteChatGenerator = {
     async generateText(input: GenerateTextInput) {
-      prompts.push(input.prompt);
+      prompts.push(`${input.system ?? ""}\n${input.prompt}`);
+      const wantsTitle = input.system?.includes('"title"') ?? false;
       return {
-        text: input.prompt.includes("short, specific title")
-          ? "Launch plan"
-          : "## Summary\nWe planned the launch.",
+        text: JSON.stringify({
+          ...(wantsTitle ? { title: "Launch plan" } : {}),
+          notes: GENERATED_NOTES,
+        }),
       };
     },
     async *streamChat(input: LlmChatInput) {
@@ -167,7 +129,10 @@ const createHarness = ({
       }
       return `chunk ${transcribeCalls.length}`;
     },
-    getTextGenerator: () => (generatorEnabled ? generator : null),
+    getGenerationModel: () =>
+      generatorEnabled ? { generator, contextTokens: 32_768 } : null,
+    getChatGenerator: () => (generatorEnabled ? generator : null),
+    getCloudNotesUserId: () => null,
   });
 
   return {
@@ -196,7 +161,7 @@ describe("LocalNotePipeline.process", () => {
     expect(note.status).toBe("ready");
     expect(note.title).toBe("Launch plan");
     expect(note.titleSource).toBe("ai");
-    expect(note.generatedNotes).toBe("## Summary\nWe planned the launch.");
+    expect(note.generatedNotes).toBe(GENERATED_NOTES);
     expect(note.personalNotes).toBe("ask about pricing");
     expect(harness.prompts[0]).toContain("ask about pricing");
 
@@ -221,9 +186,7 @@ describe("LocalNotePipeline.process", () => {
     await harness.pipeline.process("note");
     expect(harness.store.getNote("note")?.title).toBe("Board call");
     expect(
-      harness.prompts.some((prompt) =>
-        prompt.includes("short, specific title"),
-      ),
+      harness.prompts.some((prompt) => prompt.includes('"title": string')),
     ).toBe(false);
   });
 
@@ -282,15 +245,16 @@ describe("LocalNotePipeline.process", () => {
         },
       },
       transcribe: async () => "hello",
-      getTextGenerator: () => ({
-        generateText: async () => {
-          throw new Error("model unavailable");
+      getGenerationModel: () => ({
+        generator: {
+          generateText: async () => {
+            throw new Error("model unavailable");
+          },
         },
-        // eslint-disable-next-line require-yield
-        async *streamChat() {
-          return;
-        },
+        contextTokens: 32_768,
       }),
+      getChatGenerator: () => null,
+      getCloudNotesUserId: () => null,
     });
     await harness.pipeline.process("note");
 
@@ -330,15 +294,17 @@ describe("LocalNotePipeline.process", () => {
       transcribe: async () => {
         throw new Error("silence must not be sent");
       },
-      getTextGenerator: () => {
+      getGenerationModel: () => {
         throw new Error("nothing to generate from");
       },
+      getChatGenerator: () => null,
+      getCloudNotesUserId: () => null,
     });
     await harness.pipeline.process("note");
 
     const note = harness.store.getNote("note")!;
     expect(note.status).toBe("ready");
-    expect(note.generatedNotes).toBeNull();
+    expect(note.generatedNotes).toBe(EMPTY_TRANSCRIPT_NOTES);
     expect(harness.store.getSegments("note")[0].transcript).toEqual({
       text: "",
       utterances: [],
@@ -366,7 +332,9 @@ describe("LocalNotePipeline.process", () => {
         await harness.store.deleteNote("note");
         return "late";
       },
-      getTextGenerator: () => null,
+      getGenerationModel: () => null,
+      getChatGenerator: () => null,
+      getCloudNotesUserId: () => null,
     });
     await harness.pipeline.process("note");
     expect(harness.store.getNote("note")).toBeNull();
@@ -397,10 +365,10 @@ describe("LocalNotePipeline resume and regenerate", () => {
 
     expect(harness.transcribeCalls).toEqual([64_000]);
     const notesPrompt = harness.prompts[0];
-    expect(notesPrompt).toContain("earlier talk\n\nchunk 1");
-    expect(harness.store.getNote("note")?.generatedNotes).toBe(
-      "## Summary\nWe planned the launch.",
+    expect(notesPrompt).toContain(
+      "--- Recording part 1 ---\nearlier talk\n\n--- Recording part 2 ---\n[00:00] Speaker: chunk 1",
     );
+    expect(harness.store.getNote("note")?.generatedNotes).toBe(GENERATED_NOTES);
     expect(harness.deleted).toEqual(["/audio/seg-1.wav"]);
   });
 
@@ -424,9 +392,7 @@ describe("LocalNotePipeline resume and regenerate", () => {
       "note:processing",
       "note:ready",
     ]);
-    expect(harness.store.getNote("note")?.generatedNotes).toContain(
-      "We planned the launch.",
-    );
+    expect(harness.store.getNote("note")?.generatedNotes).toBe(GENERATED_NOTES);
   });
 
   it("releases audio left behind by a crash after the note was ready", async () => {
@@ -534,7 +500,11 @@ describe("LocalNotePipeline search and ask", () => {
     });
     expect(events.at(-1)).toEqual({
       type: "done",
-      sources: [{ noteId: "a", title: "Planning" }],
+      answer: "It is 10k [1].",
+      sources: [
+        { noteId: "a", title: "Planning" },
+        { noteId: "b", title: "Retro" },
+      ],
     });
     const messages = harness.prompts.at(-1)!;
     expect(messages).toContain("the budget is 10k");

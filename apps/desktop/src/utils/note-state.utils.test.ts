@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   canTransitionNote,
   recoverNoteStatus,
+  syncNoteStatus,
   transitionNote,
   type NoteEvent,
 } from "./note-state.utils";
@@ -35,10 +36,12 @@ const ALLOWED: Record<string, NoteStatus> = {
   "paused:resume": "recording",
   "paused:finish": "pending",
   "pending:start-processing": "processing",
+  "pending:fail": "failed",
   "processing:succeed": "ready",
   "processing:fail": "failed",
   "ready:resume": "recording",
   "ready:regenerate": "pending",
+  "ready:retry": "pending",
   "failed:retry": "pending",
 };
 
@@ -110,5 +113,24 @@ describe("recoverNoteStatus", () => {
         true,
       );
     }
+  });
+});
+
+describe("syncNoteStatus", () => {
+  it("keeps work in progress on this device", () => {
+    expect(syncNoteStatus("recording", "ready")).toBe("recording");
+    expect(syncNoteStatus("pending", "processing")).toBe("pending");
+  });
+
+  it("keeps what the device knows while the server only has a draft", () => {
+    expect(syncNoteStatus("failed", "paused")).toBe("failed");
+    expect(syncNoteStatus(null, "paused")).toBe("paused");
+  });
+
+  it("follows the server otherwise", () => {
+    expect(syncNoteStatus("processing", "ready")).toBe("ready");
+    expect(syncNoteStatus("failed", "processing")).toBe("processing");
+    expect(syncNoteStatus("ready", "failed")).toBe("failed");
+    expect(syncNoteStatus(null, "ready")).toBe("ready");
   });
 });

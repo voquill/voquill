@@ -1,8 +1,65 @@
-import type { NoteSegment, NoteSource } from "@voquill/types";
+import type {
+  NoteCloudSync,
+  NoteSegment,
+  NoteSource,
+  NoteStorage,
+} from "@voquill/types";
 import type { AppState } from "../state/app.state";
 import { getIntl } from "../i18n";
+import { getIsVoquillCloudUser } from "./member.utils";
 import { buildNoteTranscriptText } from "./note-audio.utils";
-import { getGenerativePrefs } from "./user.utils";
+import {
+  getEffectivePostProcessingMode,
+  getEffectiveTranscriptionMode,
+  getGenerativePrefs,
+} from "./user.utils";
+
+/** The signed-in Voquill cloud account whose cloud notes this device shows. */
+export const getCloudNotesUserId = (state: AppState): string | null =>
+  state.auth && !state.isEnterprise ? state.auth.uid : null;
+
+/**
+ * The storage a new note gets; it never changes afterwards. Cloud needs a
+ * signed-in Voquill cloud member with both transcription and post-processing
+ * set to Voquill cloud; anything else (API keys, local Whisper, enterprise,
+ * signed out) is local.
+ */
+export const selectNoteStorage = (state: AppState): NoteStorage =>
+  getCloudNotesUserId(state) &&
+  getIsVoquillCloudUser(state) &&
+  getEffectiveTranscriptionMode(state) === "cloud" &&
+  getEffectivePostProcessingMode(state) === "cloud"
+    ? "cloud"
+    : "local";
+
+export const createNoteCloudSync = (
+  storage: NoteStorage,
+  ownerUserId: string | null,
+): NoteCloudSync | null =>
+  storage === "cloud" && ownerUserId
+    ? {
+        ownerUserId,
+        onServer: false,
+        unsyncedFields: [],
+        processRequestedAt: null,
+        serverUpdatedAt: null,
+        fetchedUpdatedAt: null,
+      }
+    : null;
+
+/** Context for Voquill cloud and hosted API models (all have at least this). */
+const HOSTED_MODEL_CONTEXT_TOKENS = 32_768;
+/** Self-hosted servers (e.g. Ollama's default 2-4k) often run small windows. */
+const SELF_HOSTED_MODEL_CONTEXT_TOKENS = 4_096;
+
+/** The context window local note generation plans its requests for. */
+export const getNoteGenerationContextTokens = (state: AppState): number => {
+  const prefs = getGenerativePrefs(state);
+  return prefs.mode === "api" &&
+    (prefs.provider === "ollama" || prefs.provider === "openai-compatible")
+    ? SELF_HOSTED_MODEL_CONTEXT_TOKENS
+    : HOSTED_MODEL_CONTEXT_TOKENS;
+};
 
 /** AI notes, titles and Ask need the user's post-processing model. */
 export const getNoteGenerationAvailable = (state: AppState): boolean =>

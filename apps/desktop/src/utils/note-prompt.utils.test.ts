@@ -1,92 +1,169 @@
+import type { NoteSegment } from "@voquill/types";
 import { describe, expect, it } from "vitest";
 import type { GenerateTextInput } from "../repos/generate-text.repo";
 import {
-  buildNotesPrompt,
   cleanGeneratedMarkdown,
   cleanGeneratedTitle,
-  generateNoteMarkdown,
-  NOTE_GENERATION_CHUNK_CHARS,
+  EMPTY_TRANSCRIPT_NOTES,
+  estimateTokens,
+  formatNoteTranscriptForModel,
+  generateNoteContent,
+  getSinglePassBudgetTokens,
+  parseGeneratedNoteOutput,
 } from "./note-prompt.utils";
 
-const recordingGenerator = (reply: (input: GenerateTextInput) => string) => {
-  const prompts: string[] = [];
+const recordingModel = (
+  contextTokens: number,
+  reply: (input: GenerateTextInput) => string,
+) => {
+  const requests: GenerateTextInput[] = [];
   return {
-    prompts,
-    generator: {
-      async generateText(input: GenerateTextInput) {
-        prompts.push(input.prompt);
-        return { text: reply(input) };
+    requests,
+    model: {
+      contextTokens,
+      generator: {
+        async generateText(input: GenerateTextInput) {
+          requests.push(input);
+          return { text: reply(input) };
+        },
       },
     },
   };
 };
 
-describe("generateNoteMarkdown", () => {
-  it("uses a single call for transcripts that fit", async () => {
-    const { generator, prompts } = recordingGenerator(
-      () => "```markdown\n## Summary\nShort.\n```",
+const input = {
+  personalNotes: "",
+  wantTitle: true,
+  meetingDate: "2026-05-01",
+};
+
+describe("generateNoteContent", () => {
+  it("asks once for a JSON title and notes in the server's format", async () => {
+    const { model, requests } = recordingModel(32_768, () =>
+      JSON.stringify({
+        title: '"Hiring sync"',
+        notes: "The team met.\n\n## Action items\n- [ ] Draft plan —",
+      }),
     );
-    const markdown = await generateNoteMarkdown({
-      generator,
-      transcript: "We met briefly.",
+    const content = await generateNoteContent(model, {
+      ...input,
+      transcript: "[00:00] Speaker 1: We should hire.",
       personalNotes: "focus on hiring",
     });
-    expect(markdown).toBe("## Summary\nShort.");
-    expect(prompts).toHaveLength(1);
-    expect(prompts[0]).toContain("We met briefly.");
-    expect(prompts[0]).toContain("focus on hiring");
+
+    expect(content).toEqual({
+      title: "Hiring sync",
+      notes: "The team met.\n\n## Action items\n- [ ] Draft plan",
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0].system).toContain('"## Key points"');
+    expect(requests[0].system).toContain('"## Open questions"');
+    expect(requests[0].system).toContain('{"title": string, "notes": string}');
+    expect(requests[0].prompt).toContain("Meeting date: 2026-05-01");
+    expect(requests[0].prompt).toContain("<user_notes>\nfocus on hiring");
+    expect(requests[0].prompt).toContain("<transcript>");
+    expect(requests[0].jsonResponse?.schema).toMatchObject({
+      required: ["title", "notes"],
+    });
   });
 
-  it("summarizes long transcripts part by part, then combines", async () => {
-    const paragraph = "word ".repeat(1_000).trim();
-    const transcript = Array.from({ length: 12 }, () => paragraph).join("\n\n");
-    expect(transcript.length).toBeGreaterThan(NOTE_GENERATION_CHUNK_CHARS * 2);
+  it("skips the model for a transcript without speech", async () => {
+    const { model, requests } = recordingModel(32_768, () => "unused");
+    expect(
+      await generateNoteContent(model, { ...input, transcript: " " }),
+    ).toEqual({ title: null, notes: EMPTY_TRANSCRIPT_NOTES });
+    expect(requests).toEqual([]);
+  });
 
-    const { generator, prompts } = recordingGenerator((input) =>
-      input.prompt.startsWith("This is part")
-        ? "- partial"
-        : "## Summary\nAll.",
+  it("keeps every request within a small model's context", async () => {
+    const line = `[00:00] Speaker: ${"word ".repeat(400).trim()}`;
+    const transcript = Array.from({ length: 40 }, () => line).join("\n");
+    const { model, requests } = recordingModel(4_096, (request) =>
+      request.system?.includes("one section of a long meeting")
+        ? "- point"
+        : JSON.stringify({ title: "Long meeting", notes: "Summary." }),
     );
-    const markdown = await generateNoteMarkdown({
-      generator,
-      transcript,
-      personalNotes: "",
-    });
 
-    expect(markdown).toBe("## Summary\nAll.");
-    const partPrompts = prompts.filter((prompt) =>
-      prompt.startsWith("This is part"),
-    );
-    expect(partPrompts.length).toBeGreaterThanOrEqual(3);
-    expect(partPrompts[0]).toContain(`part 1 of ${partPrompts.length}`);
-    for (const prompt of prompts) {
-      expect(prompt.length).toBeLessThan(NOTE_GENERATION_CHUNK_CHARS + 3_000);
+    const content = await generateNoteContent(model, { ...input, transcript });
+
+    expect(content.notes).toBe("Summary.");
+    expect(requests.length).toBeGreaterThan(2);
+    for (const request of requests) {
+      const tokens = estimateTokens(`${request.system}\n${request.prompt}`);
+      expect(tokens).toBeLessThan(4_096);
     }
-    expect(prompts.at(-1)).toContain("Combine these notes");
-    expect(prompts.at(-1)).toContain("## Action items");
+    expect(requests.at(-1)?.prompt).toContain("<section_notes>");
+  });
+
+  it("uses the server's single-pass budget for large contexts", () => {
+    expect(getSinglePassBudgetTokens(131_072)).toBe(64_000);
+    expect(getSinglePassBudgetTokens(4_096)).toBeLessThan(3_000);
   });
 });
 
-describe("prompt text", () => {
-  it("omits the user notes block when there are none", () => {
+describe("parseGeneratedNoteOutput", () => {
+  it("falls back to the reply as markdown when it is not JSON", () => {
     expect(
-      buildNotesPrompt({ transcript: "t", personalNotes: " " }),
-    ).not.toContain("<user_notes>");
+      parseGeneratedNoteOutput("```markdown\nJust notes\n```", true),
+    ).toEqual({
+      title: null,
+      notes: "Just notes",
+    });
+  });
+
+  it("ignores a title that was not asked for", () => {
+    expect(
+      parseGeneratedNoteOutput('{"title":"x","notes":"n"}', false),
+    ).toEqual({ title: null, notes: "n" });
+  });
+});
+
+describe("formatNoteTranscriptForModel", () => {
+  const segment = (
+    index: number,
+    transcript: NoteSegment["transcript"],
+  ): NoteSegment => ({
+    id: `s${index}`,
+    noteId: "n",
+    index,
+    kind: "audio",
+    status: "transcribed",
+    error: null,
+    durationMs: 0,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    transcript,
+    transcribedMs: 0,
+    audioPath: null,
+    upload: null,
+  });
+
+  it("labels timed turns and recording parts like the server", () => {
+    expect(
+      formatNoteTranscriptForModel([
+        segment(1, {
+          text: "",
+          utterances: [
+            { startMs: 61_000, endMs: 62_000, speaker: 0, text: "Hi." },
+            { startMs: 62_000, endMs: 63_000, speaker: 0, text: "Again." },
+            { startMs: 64_000, endMs: 65_000, speaker: 1, text: "Yes." },
+          ],
+        }),
+        segment(0, { text: "Pasted text", utterances: [] }),
+        segment(2, null),
+      ]),
+    ).toBe(
+      "--- Recording part 1 ---\nPasted text\n\n--- Recording part 2 ---\n[01:01] Speaker 1: Hi. Again.\n[01:04] Speaker 2: Yes.",
+    );
   });
 });
 
 describe("cleanGeneratedTitle", () => {
   it.each([
-    ['"Quarterly budget review."', "Quarterly budget review"],
-    ["# Hiring plan\nextra", "Hiring plan"],
-    ["Title: Roadmap", "Roadmap"],
-    ["", ""],
-  ])("cleans %j", (input, expected) => {
-    expect(cleanGeneratedTitle(input)).toBe(expected);
-  });
-
-  it("truncates very long titles", () => {
-    expect(cleanGeneratedTitle("x".repeat(200)).length).toBe(100);
+    ['"Quarterly budget review"', "Quarterly budget review"],
+    ["# Hiring plan", "Hiring plan"],
+    ["", null],
+  ])("cleans %j", (raw, expected) => {
+    expect(cleanGeneratedTitle(raw)).toBe(expected);
   });
 });
 

@@ -300,18 +300,6 @@ export const getAskSources = (passages: NoteAskPassage[]): NoteAskSource[] => {
   return sources;
 };
 
-/** The sources an answer cites as `[n]`; all of them if it cites none. */
-export const getCitedAskSources = (
-  answer: string,
-  sources: NoteAskSource[],
-): NoteAskSource[] => {
-  const cited = new Set(
-    [...answer.matchAll(/\[(\d+)\]/g)].map((match) => Number(match[1])),
-  );
-  const filtered = sources.filter((_, index) => cited.has(index + 1));
-  return filtered.length > 0 ? filtered : sources;
-};
-
 /**
  * Splits text into pieces of at most `maxChars`, breaking at paragraphs,
  * then sentences, then words.

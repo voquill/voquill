@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   Note,
+  NoteCloudSync,
+  NoteEditableField,
   NoteError,
   NoteSegment,
   NoteSegmentKind,
@@ -28,6 +30,13 @@ export type LocalNote = {
   errorMessage: string | null;
   createdAt: number;
   updatedAt: number;
+  cloudOwnerUserId: string | null;
+  cloudOnServer: boolean;
+  /** Comma-separated `NoteEditableField`s. */
+  cloudUnsyncedFields: string;
+  cloudProcessRequestedAt: number | null;
+  cloudServerUpdatedAt: number | null;
+  cloudFetchedUpdatedAt: number | null;
 };
 
 export type LocalNoteSegment = {
@@ -42,6 +51,17 @@ export type LocalNoteSegment = {
   transcriptText: string | null;
   transcriptUtterances: string | null;
   createdAt: number;
+  errorCode: string | null;
+  errorMessage: string | null;
+  uploadUrl: string | null;
+  uploadSizeBytes: number | null;
+  uploadComplete: boolean;
+};
+
+export type NoteDeletion = {
+  noteId: string;
+  ownerUserId: string;
+  createdAt: number;
 };
 
 type LocalNoteSearchCandidate = {
@@ -53,6 +73,17 @@ export type NoteSearchCandidate = {
   note: Note;
   transcript: string;
 };
+
+const toTimestamp = (value: string | null): number | null =>
+  value === null ? null : dayjs(value).valueOf();
+
+const fromTimestamp = (value: number | null): string | null =>
+  value === null ? null : dayjs(value).toISOString();
+
+const toError = (
+  code: string | null,
+  message: string | null,
+): NoteError | null => (code ? { code, message: message ?? "" } : null);
 
 export const toLocalNote = (note: Note): LocalNote => ({
   id: note.id,
@@ -68,12 +99,30 @@ export const toLocalNote = (note: Note): LocalNote => ({
   errorMessage: note.error?.message ?? null,
   createdAt: dayjs(note.createdAt).valueOf(),
   updatedAt: dayjs(note.updatedAt).valueOf(),
+  cloudOwnerUserId: note.cloud?.ownerUserId ?? null,
+  cloudOnServer: note.cloud?.onServer ?? false,
+  cloudUnsyncedFields: note.cloud?.unsyncedFields.join(",") ?? "",
+  cloudProcessRequestedAt: toTimestamp(note.cloud?.processRequestedAt ?? null),
+  cloudServerUpdatedAt: toTimestamp(note.cloud?.serverUpdatedAt ?? null),
+  cloudFetchedUpdatedAt: toTimestamp(note.cloud?.fetchedUpdatedAt ?? null),
 });
 
-export const fromLocalNote = (note: LocalNote): Note => {
-  const error: NoteError | null = note.errorCode
-    ? { code: note.errorCode, message: note.errorMessage ?? "" }
+const fromLocalCloudSync = (note: LocalNote): NoteCloudSync | null =>
+  note.storage === "cloud"
+    ? {
+        ownerUserId: note.cloudOwnerUserId ?? "",
+        onServer: note.cloudOnServer,
+        unsyncedFields: note.cloudUnsyncedFields
+          .split(",")
+          .filter(Boolean) as NoteEditableField[],
+        processRequestedAt: fromTimestamp(note.cloudProcessRequestedAt),
+        serverUpdatedAt: fromTimestamp(note.cloudServerUpdatedAt),
+        fetchedUpdatedAt: fromTimestamp(note.cloudFetchedUpdatedAt),
+      }
     : null;
+
+export const fromLocalNote = (note: LocalNote): Note => {
+  const error = toError(note.errorCode, note.errorMessage);
   return {
     id: note.id,
     storage: note.storage as NoteStorage,
@@ -87,6 +136,7 @@ export const fromLocalNote = (note: LocalNote): Note => {
     error,
     createdAt: dayjs(note.createdAt).toISOString(),
     updatedAt: dayjs(note.updatedAt).toISOString(),
+    cloud: fromLocalCloudSync(note),
   };
 };
 
@@ -104,6 +154,11 @@ export const toLocalNoteSegment = (segment: NoteSegment): LocalNoteSegment => ({
     ? JSON.stringify(segment.transcript.utterances)
     : null,
   createdAt: dayjs(segment.createdAt).valueOf(),
+  errorCode: segment.error?.code ?? null,
+  errorMessage: segment.error?.message ?? null,
+  uploadUrl: segment.upload?.url ?? null,
+  uploadSizeBytes: segment.upload?.sizeBytes ?? null,
+  uploadComplete: segment.upload?.complete ?? false,
 });
 
 const parseUtterances = (value: string | null): NoteUtterance[] => {
@@ -126,6 +181,7 @@ export const fromLocalNoteSegment = (
   index: segment.segmentIndex,
   kind: segment.kind as NoteSegmentKind,
   status: segment.status as NoteSegmentStatus,
+  error: toError(segment.errorCode, segment.errorMessage),
   durationMs: segment.durationMs,
   audioPath: segment.audioPath,
   transcribedMs: segment.transcribedMs,
@@ -137,26 +193,43 @@ export const fromLocalNoteSegment = (
           utterances: parseUtterances(segment.transcriptUtterances),
         },
   createdAt: dayjs(segment.createdAt).toISOString(),
+  upload: segment.uploadUrl
+    ? {
+        url: segment.uploadUrl,
+        sizeBytes: segment.uploadSizeBytes ?? 0,
+        complete: segment.uploadComplete,
+      }
+    : null,
 });
+
+export type NoteSearchArgs = {
+  terms: string[];
+  matchAll: boolean;
+  limit: number;
+  /** Whose cloud notes to include besides local notes; null for none. */
+  cloudOwnerUserId: string | null;
+};
 
 /** The on-device note store, also the local copy of cloud notes. */
 export abstract class BaseNoteRepo extends BaseRepo {
-  abstract listNotes(): Promise<Note[]>;
+  /** Local notes plus the cloud notes of `cloudOwnerUserId`. */
+  abstract listNotes(cloudOwnerUserId: string | null): Promise<Note[]>;
   abstract upsertNote(note: Note): Promise<Note>;
   /** Removes the note, its segments and any local audio recorded for it. */
   abstract deleteNote(noteId: string): Promise<void>;
   abstract listSegments(noteId: string): Promise<NoteSegment[]>;
   abstract upsertSegment(segment: NoteSegment): Promise<NoteSegment>;
-  abstract searchNotes(args: {
-    terms: string[];
-    matchAll: boolean;
-    limit: number;
-  }): Promise<NoteSearchCandidate[]>;
+  abstract deleteSegment(noteId: string, segmentId: string): Promise<void>;
+  abstract searchNotes(args: NoteSearchArgs): Promise<NoteSearchCandidate[]>;
+  /** Cloud notes deleted here whose server delete is still outstanding. */
+  abstract addDeletion(deletion: NoteDeletion): Promise<void>;
+  abstract listDeletions(ownerUserId: string): Promise<NoteDeletion[]>;
+  abstract removeDeletion(noteId: string): Promise<void>;
 }
 
 export class LocalNoteRepo extends BaseNoteRepo {
-  async listNotes(): Promise<Note[]> {
-    const notes = await invoke<LocalNote[]>("note_list");
+  async listNotes(cloudOwnerUserId: string | null): Promise<Note[]> {
+    const notes = await invoke<LocalNote[]>("note_list", { cloudOwnerUserId });
     return notes.map(fromLocalNote);
   }
 
@@ -185,23 +258,30 @@ export class LocalNoteRepo extends BaseNoteRepo {
     return fromLocalNoteSegment(stored);
   }
 
-  async searchNotes({
-    terms,
-    matchAll,
-    limit,
-  }: {
-    terms: string[];
-    matchAll: boolean;
-    limit: number;
-  }): Promise<NoteSearchCandidate[]> {
-    const candidates = await invoke<LocalNoteSearchCandidate[]>("note_search", {
-      terms,
-      matchAll,
-      limit,
-    });
+  async deleteSegment(noteId: string, segmentId: string): Promise<void> {
+    await invoke<void>("note_segment_delete", { noteId, segmentId });
+  }
+
+  async searchNotes(args: NoteSearchArgs): Promise<NoteSearchCandidate[]> {
+    const candidates = await invoke<LocalNoteSearchCandidate[]>(
+      "note_search",
+      args,
+    );
     return candidates.map((candidate) => ({
       note: fromLocalNote(candidate.note),
       transcript: candidate.transcript,
     }));
+  }
+
+  async addDeletion(deletion: NoteDeletion): Promise<void> {
+    await invoke<void>("note_deletion_add", { deletion });
+  }
+
+  async listDeletions(ownerUserId: string): Promise<NoteDeletion[]> {
+    return invoke<NoteDeletion[]>("note_deletion_list", { ownerUserId });
+  }
+
+  async removeDeletion(noteId: string): Promise<void> {
+    await invoke<void>("note_deletion_remove", { noteId });
   }
 }

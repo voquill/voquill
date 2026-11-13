@@ -19,15 +19,16 @@ import {
 } from "../utils/note-audio.utils";
 import {
   buildAskMessages,
-  generateNoteMarkdown,
-  generateNoteTitle,
+  EMPTY_TRANSCRIPT_NOTES,
+  formatNoteTranscriptForModel,
+  generateNoteContent,
+  type NoteGenerationModel,
   type NoteTextGenerator,
 } from "../utils/note-prompt.utils";
 import {
   extractQuestionTerms,
   extractSearchTerms,
   getAskSources,
-  getCitedAskSources,
   rankNoteSearchResults,
   selectAskPassages,
   type NoteSearchDocument,
@@ -49,6 +50,11 @@ export type NoteStore = {
   getSegments(noteId: string): NoteSegment[];
   loadSegments(noteId: string): Promise<NoteSegment[]>;
   insertNote(note: Note, segments: NoteSegment[]): Promise<void>;
+  /** Replaces a note's fields (keeps its segments). */
+  putNote(note: Note): Promise<void>;
+  /** Adds or replaces one segment of a note whose segments are loaded. */
+  putSegment(segment: NoteSegment): Promise<void>;
+  removeSegment(noteId: string, segmentId: string): Promise<void>;
   updateNote(noteId: string, recipe: (note: Note) => void): Promise<void>;
   updateSegment(
     noteId: string,
@@ -76,7 +82,10 @@ export type LocalNotePipelineDeps = {
     sampleRate: number;
   }): Promise<string>;
   /** The user's post-processing model, or null when post-processing is off. */
-  getTextGenerator(): NoteChatGenerator | null;
+  getGenerationModel(): NoteGenerationModel | null;
+  getChatGenerator(): NoteChatGenerator | null;
+  /** Whose cloud notes (local copies) search may include. */
+  getCloudNotesUserId(): string | null;
 };
 
 export type NoteErrorCode =
@@ -117,6 +126,25 @@ const toDocument = (
   note,
   transcript: buildNoteTranscriptText(segments),
 });
+
+/** Text search over the notes stored on this device. */
+export const searchLocalNotes = async (
+  repo: Pick<BaseNoteRepo, "searchNotes">,
+  query: string,
+  cloudOwnerUserId: string | null,
+): Promise<NoteSearchResult[]> => {
+  const terms = extractSearchTerms(query);
+  if (terms.length === 0) {
+    return [];
+  }
+  const candidates = await repo.searchNotes({
+    terms,
+    matchAll: true,
+    limit: SEARCH_LIMIT,
+    cloudOwnerUserId,
+  });
+  return rankNoteSearchResults(candidates, terms);
+};
 
 export class LocalNotePipeline extends BaseNotePipeline {
   private readonly deps: LocalNotePipelineDeps;
@@ -175,6 +203,12 @@ export class LocalNotePipeline extends BaseNotePipeline {
     await this.process(noteId);
   }
 
+  async saveEdits(): Promise<void> {}
+
+  async refresh(noteId: string): Promise<void> {
+    await this.deps.store.loadSegments(noteId);
+  }
+
   async resumeAfterRestart(noteId: string): Promise<void> {
     const note = this.deps.store.getNote(noteId);
     if (note?.status === "pending") {
@@ -208,6 +242,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
         durationMs: 0,
         createdAt: now,
         updatedAt: now,
+        cloud: null,
       },
       [
         {
@@ -221,6 +256,8 @@ export class LocalNotePipeline extends BaseNotePipeline {
           transcript: { text, utterances: [] },
           transcribedMs: 0,
           audioPath: null,
+          error: null,
+          upload: null,
         },
       ],
     );
@@ -232,16 +269,11 @@ export class LocalNotePipeline extends BaseNotePipeline {
   }
 
   async search(query: string): Promise<NoteSearchResult[]> {
-    const terms = extractSearchTerms(query);
-    if (terms.length === 0) {
-      return [];
-    }
-    const candidates = await this.deps.repo.searchNotes({
-      terms,
-      matchAll: true,
-      limit: SEARCH_LIMIT,
-    });
-    return rankNoteSearchResults(candidates, terms);
+    return searchLocalNotes(
+      this.deps.repo,
+      query,
+      this.deps.getCloudNotesUserId(),
+    );
   }
 
   async *ask({
@@ -249,7 +281,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
     noteId,
     history,
   }: NoteAskInput): AsyncGenerator<NoteAskEvent> {
-    const generator = this.deps.getTextGenerator();
+    const generator = this.deps.getChatGenerator();
     if (!generator) {
       yield { type: "error", message: "post_processing_disabled" };
       return;
@@ -295,7 +327,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
       };
       return;
     }
-    yield { type: "done", sources: getCitedAskSources(answer, sources) };
+    yield { type: "done", answer, sources };
   }
 
   private async getAskDocuments(
@@ -317,6 +349,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
             terms,
             matchAll: false,
             limit: ASK_CANDIDATE_LIMIT,
+            cloudOwnerUserId: this.deps.getCloudNotesUserId(),
           })
         : [];
     if (candidates.length > 0) {
@@ -411,36 +444,29 @@ export class LocalNotePipeline extends BaseNotePipeline {
 
   private async generate(noteId: string): Promise<void> {
     const { store } = this.deps;
-    const transcript = buildNoteTranscriptText(store.getSegments(noteId));
-    const generator = transcript ? this.deps.getTextGenerator() : null;
-    if (!generator) {
+    const transcript = formatNoteTranscriptForModel(store.getSegments(noteId));
+    const model = transcript.trim() ? this.deps.getGenerationModel() : null;
+    if (!model) {
       await store.updateNote(noteId, (note) => {
-        note.generatedNotes = null;
+        note.generatedNotes = transcript.trim() ? null : EMPTY_TRANSCRIPT_NOTES;
       });
       return;
     }
 
     try {
-      const personalNotes = store.getNote(noteId)?.personalNotes ?? "";
-      const markdown = await generateNoteMarkdown({
-        generator,
+      const note = store.getNote(noteId);
+      const content = await generateNoteContent(model, {
         transcript,
-        personalNotes,
+        personalNotes: note?.personalNotes ?? "",
+        wantTitle: note?.titleSource !== "user",
+        meetingDate: note?.createdAt.slice(0, 10) ?? "",
       });
       this.assertNoteExists(noteId);
-      const title =
-        store.getNote(noteId)?.titleSource === "user"
-          ? ""
-          : await generateNoteTitle({
-              generator,
-              source: markdown || transcript,
-            });
-      this.assertNoteExists(noteId);
-      await store.updateNote(noteId, (note) => {
-        note.generatedNotes = markdown || null;
-        if (title && note.titleSource !== "user") {
-          note.title = title;
-          note.titleSource = "ai";
+      await store.updateNote(noteId, (draft) => {
+        draft.generatedNotes = content.notes;
+        if (content.title && draft.titleSource !== "user") {
+          draft.title = content.title;
+          draft.titleSource = "ai";
         }
       });
     } catch (error) {

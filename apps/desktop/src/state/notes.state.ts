@@ -11,8 +11,23 @@ export type NoteAskMessage = {
   streaming: boolean;
 };
 
+/** What a cloud note's pipeline is doing right now (not persisted). */
+export type NoteCloudActivity =
+  | {
+      kind: "uploading";
+      segmentId: string;
+      uploadedBytes: number;
+      totalBytes: number;
+    }
+  | { kind: "waiting-for-connection" }
+  | { kind: "server-busy" }
+  | { kind: "processing" };
+
 export type NotesState = {
   loaded: boolean;
+  /** The account whose cloud notes are loaded; null for local notes only. */
+  loadedForUserId: Nullable<string>;
+  cloudActivityByNoteId: Record<string, NoteCloudActivity>;
   /** The meeting in progress this session, recording or paused. */
   activeNoteId: Nullable<string>;
   capture: Nullable<MeetingCaptureStatus>;
@@ -25,6 +40,8 @@ export type NotesState = {
 
 export const INITIAL_NOTES_STATE: NotesState = {
   loaded: false,
+  loadedForUserId: null,
+  cloudActivityByNoteId: {},
   activeNoteId: null,
   capture: null,
   importDialogOpen: false,

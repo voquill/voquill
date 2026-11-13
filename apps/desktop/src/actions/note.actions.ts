@@ -1,19 +1,33 @@
-import type { Note, NoteSegment } from "@voquill/types";
+import type { Note, NoteEditableField, NoteSegment } from "@voquill/types";
 import dayjs from "dayjs";
-import { getNotePipeline, selectNoteStorage } from "../pipelines";
+import {
+  getCloudNotePipeline,
+  getNotePipeline,
+  selectNoteStorage,
+} from "../pipelines";
+import { NotesApiError } from "../repos/cloud-note.repo";
 import { getMeetingAudioRepo } from "../repos";
-import type { MeetingCaptureStatus } from "../repos/meeting-audio.repo";
+import type {
+  MeetingCaptureStatus,
+  ResumableUploadProgress,
+} from "../repos/meeting-audio.repo";
 import type { NoteAskMessage } from "../state/notes.state";
 import { getAppState, produceAppState } from "../store";
 import { createId } from "../utils/id.utils";
 import { getLogger } from "../utils/log.utils";
-import { getDefaultNoteTitle } from "../utils/note.utils";
+import {
+  createNoteCloudSync,
+  getCloudNotesUserId,
+  getDefaultNoteTitle,
+} from "../utils/note.utils";
 import {
   canTransitionNote,
   recoverNoteStatus,
   transitionNote,
 } from "../utils/note-state.utils";
 import { getMyPreferredMicrophone } from "../utils/user.utils";
+import { needsFullNoteFetch } from "../utils/note-sync.utils";
+import { syncCloudNotes } from "./note-sync.actions";
 import { addNoteSegment, loadNotes, noteStore } from "./note-store.actions";
 
 export const CAPTURE_INTERRUPTED_ERROR_CODE = "capture_interrupted";
@@ -73,6 +87,8 @@ const startSegmentCapture = async (noteId: string): Promise<void> => {
     transcript: null,
     transcribedMs: 0,
     audioPath: status.audioPath,
+    error: null,
+    upload: null,
   });
 };
 
@@ -122,9 +138,10 @@ export const startMeetingNote = (): Promise<{
     }
 
     const now = dayjs().toISOString();
+    const storage = selectNoteStorage(getAppState());
     const note: Note = {
       id: createId(),
-      storage: selectNoteStorage(getAppState()),
+      storage,
       status: "recording",
       title: getDefaultNoteTitle("recording", now),
       titleSource: "default",
@@ -135,6 +152,7 @@ export const startMeetingNote = (): Promise<{
       durationMs: 0,
       createdAt: now,
       updatedAt: now,
+      cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
     };
     await noteStore.insertNote(note, []);
     try {
@@ -142,6 +160,9 @@ export const startMeetingNote = (): Promise<{
     } catch (error) {
       await noteStore.deleteNote(note.id);
       throw error;
+    }
+    if (note.cloud) {
+      scheduleSaveEdits(note.id, 0);
     }
     return { noteId: note.id, alreadyActive: false };
   });
@@ -280,15 +301,18 @@ const recoverRecordingNote = async (
 };
 
 /**
- * Loads notes and re-enters every note's lifecycle after a launch: recordings
- * cut off by a quit or crash become paused notes with their partial audio,
- * and interrupted processing resumes where it stopped.
+ * Loads notes and re-enters every note's lifecycle, after a launch or when
+ * the signed-in account changes: recordings cut off by a quit or crash
+ * become paused notes with their partial audio, and interrupted processing
+ * resumes where it stopped.
  */
 export const initializeNotes = async (): Promise<void> => {
-  if (getAppState().notes.loaded) {
+  const userId = getCloudNotesUserId(getAppState());
+  const { loaded, loadedForUserId } = getAppState().notes;
+  if (loaded && loadedForUserId === userId) {
     return;
   }
-  const notes = await loadNotes();
+  const notes = await loadNotes(userId);
   const capture = await getMeetingAudioRepo()
     .getCaptureStatus()
     .catch(() => null);
@@ -311,26 +335,90 @@ export const initializeNotes = async (): Promise<void> => {
     const pipeline = getNotePipeline(note.storage);
     void runPipeline(note.id, (id) => pipeline.resumeAfterRestart(id));
   }
+  void syncCloudNotes({ force: true });
 };
 
-export const loadNoteSegments = (noteId: string) =>
-  noteStore.loadSegments(noteId);
+/** Segments for display; a cloud note's are fetched when the cached copy is stale. */
+export const loadNoteSegments = async (noteId: string) => {
+  const note = noteStore.getNote(noteId);
+  if (note && needsFullNoteFetch(note)) {
+    await getNotePipeline(note.storage).refresh(noteId);
+  }
+  return noteStore.loadSegments(noteId);
+};
+
+/** Personal-notes edits re-index search server-side, so they are batched. */
+const SAVE_EDITS_DEBOUNCE_MS = 3_000;
+const saveEditsTimeoutByNoteId = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
+
+const scheduleSaveEdits = (noteId: string, delayMs: number) => {
+  clearTimeout(saveEditsTimeoutByNoteId.get(noteId));
+  saveEditsTimeoutByNoteId.set(
+    noteId,
+    setTimeout(() => {
+      saveEditsTimeoutByNoteId.delete(noteId);
+      const pipeline = getPipelineFor(noteId);
+      if (pipeline) {
+        void runPipeline(noteId, (id) => pipeline.saveEdits(id));
+      }
+    }, delayMs),
+  );
+};
+
+const editNote = async (
+  noteId: string,
+  field: NoteEditableField,
+  recipe: (note: Note) => void,
+  saveDelayMs: number,
+) => {
+  await noteStore.updateNote(noteId, (note) => {
+    recipe(note);
+    if (note.cloud && !note.cloud.unsyncedFields.includes(field)) {
+      note.cloud.unsyncedFields.push(field);
+    }
+  });
+  if (noteStore.getNote(noteId)?.cloud) {
+    scheduleSaveEdits(noteId, saveDelayMs);
+  }
+};
 
 export const renameNote = async (noteId: string, title: string) => {
   const trimmed = title.trim();
   if (!trimmed) {
     return;
   }
-  await noteStore.updateNote(noteId, (note) => {
-    note.title = trimmed;
-    note.titleSource = "user";
-  });
+  await editNote(
+    noteId,
+    "title",
+    (note) => {
+      note.title = trimmed;
+      note.titleSource = "user";
+    },
+    0,
+  );
 };
 
 export const setNotePersonalNotes = (noteId: string, personalNotes: string) =>
-  noteStore.updateNote(noteId, (note) => {
-    note.personalNotes = personalNotes;
-  });
+  editNote(
+    noteId,
+    "personalNotes",
+    (note) => {
+      note.personalNotes = personalNotes;
+    },
+    SAVE_EDITS_DEBOUNCE_MS,
+  );
+
+/** Sends every cloud edit made offline once the connection is back. */
+export const saveUnsyncedNoteEdits = () => {
+  for (const note of noteStore.getNotes()) {
+    if (note.cloud && note.cloud.unsyncedFields.length > 0) {
+      scheduleSaveEdits(note.id, 0);
+    }
+  }
+};
 
 export const retryNote = async (noteId: string) => {
   await noteStore.updateNote(noteId, (note) => {
@@ -339,11 +427,41 @@ export const retryNote = async (noteId: string) => {
   processNote(noteId);
 };
 
-export const regenerateNote = (noteId: string) => {
-  const pipeline = getPipelineFor(noteId);
-  if (pipeline) {
-    void runPipeline(noteId, (id) => pipeline.regenerate(id));
+/** Returns the error code when the request was refused (the note stays as it was). */
+export const regenerateNote = async (
+  noteId: string,
+): Promise<string | null> => {
+  try {
+    await getPipelineFor(noteId)?.regenerate(noteId);
+    return null;
+  } catch (error) {
+    getLogger().warning(`Regenerating notes was refused: ${error}`);
+    return error instanceof NotesApiError ? error.code : "unknown";
   }
+};
+
+export const retryNoteSegment = async (noteId: string, segmentId: string) => {
+  await getCloudNotePipeline().retrySegment(noteId, segmentId);
+};
+
+export const dropNoteSegment = async (noteId: string, segmentId: string) => {
+  await getCloudNotePipeline().dropSegment(noteId, segmentId);
+};
+
+export const handleResumableUploadProgress = (
+  progress: ResumableUploadProgress,
+) => {
+  produceAppState((draft) => {
+    for (const activity of Object.values(draft.notes.cloudActivityByNoteId)) {
+      if (
+        activity.kind === "uploading" &&
+        activity.segmentId === progress.uploadId
+      ) {
+        activity.uploadedBytes = progress.uploadedBytes;
+        activity.totalBytes = progress.totalBytes;
+      }
+    }
+  });
 };
 
 export const deleteNote = async (noteId: string) => {
@@ -469,8 +587,11 @@ export const askNotes = async (question: string): Promise<void> => {
     });
     for await (const event of events) {
       updateAskMessage(answerId, (message) => {
-        if (event.type === "sources" || event.type === "done") {
+        if (event.type === "sources") {
           message.sources = event.sources;
+        } else if (event.type === "done") {
+          message.sources = event.sources;
+          message.content = event.answer || message.content;
         } else if (event.type === "delta") {
           message.content += event.text;
         } else {

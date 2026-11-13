@@ -20,6 +20,7 @@ const note: Note = {
   durationMs: 61_000,
   createdAt: "2026-03-04T05:06:07.000Z",
   updatedAt: "2026-03-04T05:16:07.000Z",
+  cloud: null,
 };
 
 const segment: NoteSegment = {
@@ -36,6 +37,8 @@ const segment: NoteSegment = {
   },
   transcribedMs: 1_000,
   audioPath: "/data/meeting-audio/note-1/seg-1.wav",
+  error: null,
+  upload: null,
 };
 
 describe("note repo mapping", () => {

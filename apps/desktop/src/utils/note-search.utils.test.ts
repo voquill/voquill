@@ -5,7 +5,6 @@ import {
   extractQuestionTerms,
   extractSearchTerms,
   getAskSources,
-  getCitedAskSources,
   rankNoteSearchResults,
   selectAskPassages,
   splitHighlights,
@@ -26,6 +25,7 @@ const makeNote = (overrides: Partial<Note>): Note => ({
   durationMs: 0,
   createdAt: "2026-01-01T10:00:00.000Z",
   updatedAt: "2026-01-01T10:00:00.000Z",
+  cloud: null,
   ...overrides,
 });
 
@@ -178,14 +178,5 @@ describe("ask retrieval", () => {
     expect(
       passages.reduce((sum, p) => sum + p.text.length, 0),
     ).toBeLessThanOrEqual(100);
-  });
-
-  it("reports cited sources, or all sources when none are cited", () => {
-    const sources = [
-      { noteId: "a", title: "A" },
-      { noteId: "b", title: "B" },
-    ];
-    expect(getCitedAskSources("Yes [2].", sources)).toEqual([sources[1]]);
-    expect(getCitedAskSources("Yes.", sources)).toEqual(sources);
   });
 });

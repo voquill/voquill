@@ -64,6 +64,7 @@ import {
   SpeachesModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
+import { CloudNoteRepo } from "./cloud-note.repo";
 import { MeetingAudioRepo } from "./meeting-audio.repo";
 import { BaseNoteRepo, LocalNoteRepo } from "./note.repo";
 import {
@@ -175,6 +176,10 @@ export const getTranscriptionRepo = (): BaseTranscriptionRepo => {
 
 export const getNoteRepo = (): BaseNoteRepo => {
   return new LocalNoteRepo();
+};
+
+export const getCloudNoteRepo = (): CloudNoteRepo => {
+  return new CloudNoteRepo();
 };
 
 export const getMeetingAudioRepo = (): MeetingAudioRepo => {

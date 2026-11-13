@@ -51,13 +51,32 @@ const persistSegment = (noteId: string, segmentId: string) =>
 const sortSegments = (segments: NoteSegment[]) =>
   segments.sort((left, right) => left.index - right.index);
 
-export const loadNotes = async (): Promise<Note[]> => {
-  const notes = await getNoteRepo().listNotes();
+/**
+ * Loads local notes plus the cloud notes of `cloudNotesUserId`, replacing
+ * whatever was shown before (another account's cloud notes included).
+ */
+export const loadNotes = async (
+  cloudNotesUserId: string | null,
+): Promise<Note[]> => {
+  const notes = await getNoteRepo().listNotes(cloudNotesUserId);
+  const ids = new Set(notes.map((note) => note.id));
   produceAppState((draft) => {
-    for (const note of notes) {
-      draft.noteById[note.id] = note;
+    const active = draft.notes.activeNoteId
+      ? draft.noteById[draft.notes.activeNoteId]
+      : undefined;
+    draft.noteById = Object.fromEntries(notes.map((note) => [note.id, note]));
+    if (active && !ids.has(active.id)) {
+      // A meeting in progress stays reachable until it is stopped.
+      draft.noteById[active.id] = active;
+      ids.add(active.id);
+    }
+    for (const noteId of Object.keys(draft.noteSegmentsByNoteId)) {
+      if (!ids.has(noteId)) {
+        delete draft.noteSegmentsByNoteId[noteId];
+      }
     }
     draft.notes.loaded = true;
+    draft.notes.loadedForUserId = cloudNotesUserId;
   });
   return notes;
 };
@@ -93,6 +112,43 @@ export const noteStore: NoteStore = {
       persistNote(note.id),
       ...segments.map((segment) => persistSegment(note.id, segment.id)),
     ]);
+  },
+
+  putNote: async (note) => {
+    produceAppState((draft) => {
+      draft.noteById[note.id] = note;
+    });
+    await persistNote(note.id);
+  },
+
+  putSegment: async (segment) => {
+    produceAppState((draft) => {
+      const segments = (draft.noteSegmentsByNoteId[segment.noteId] ??= []);
+      const index = segments.findIndex(
+        (candidate) => candidate.id === segment.id,
+      );
+      if (index === -1) {
+        segments.push(segment);
+      } else {
+        segments[index] = segment;
+      }
+      sortSegments(segments);
+    });
+    await persistSegment(segment.noteId, segment.id);
+  },
+
+  removeSegment: async (noteId, segmentId) => {
+    produceAppState((draft) => {
+      const segments = draft.noteSegmentsByNoteId[noteId];
+      if (segments) {
+        draft.noteSegmentsByNoteId[noteId] = segments.filter(
+          (segment) => segment.id !== segmentId,
+        );
+      }
+    });
+    await enqueueNoteWrite(noteId, () =>
+      getNoteRepo().deleteSegment(noteId, segmentId),
+    );
   },
 
   updateNote: async (noteId, recipe) => {

@@ -3,9 +3,9 @@ import { getEffectiveAuth } from "./auth.utils";
 export const NEW_SERVER_URL: string =
   import.meta.env.VITE_NEW_SERVER_URL ?? "https://api.voquill.com";
 
-export async function getNewServerAuthHeaders(): Promise<
-  Record<string, string>
-> {
+export async function getNewServerAuthHeaders(
+  forceRefresh = false,
+): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -15,7 +15,7 @@ export async function getNewServerAuthHeaders(): Promise<
   if (!user) {
     throw new Error("Not authenticated");
   }
-  const idToken = await user.getIdToken();
+  const idToken = await user.getIdToken(forceRefresh);
   if (idToken) {
     headers["Authorization"] = `Bearer ${idToken}`;
   }

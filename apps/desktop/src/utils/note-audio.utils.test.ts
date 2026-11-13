@@ -165,6 +165,8 @@ describe("buildNoteTranscriptText", () => {
     transcript: text === null ? null : { text, utterances: [] },
     transcribedMs: 1_000,
     audioPath: null,
+    error: null,
+    upload: null,
   });
 
   it("joins segment transcripts in index order and skips empty ones", () => {
