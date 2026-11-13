@@ -4,6 +4,7 @@ import type {
   TranscriptionSession,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
+import { TranscriptionUnsupportedError } from "../repos/transcribe-audio.repo";
 import { RecoverableTranscriptionSession } from "./recoverable-transcription-session";
 import { recordedSamples, transcribeResult } from "./streaming-session.fakes";
 
@@ -167,6 +168,26 @@ describe("RecoverableTranscriptionSession", () => {
       "Transcription attempt 1 failed: offline",
       "Transcription attempt 2 failed: offline",
     ]);
+  });
+
+  it("does not retry a provider that cannot transcribe, and says why", async () => {
+    const transcribe = vi.fn(async () => {
+      throw new TranscriptionUnsupportedError("ollama");
+    });
+    const session = new RecoverableTranscriptionSession(null, {
+      transcribe,
+      maxAttempts: 3,
+      retryDelayMs: 1_000,
+    });
+
+    const result = await session.finalize(AUDIO);
+
+    expect(transcribe).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      rawTranscript: null,
+      failureCode: "provider_unsupported",
+      failureReason: expect.stringContaining("ollama can't transcribe audio"),
+    });
   });
 
   it("bounds each recovery attempt with a timeout scaled to the audio length", async () => {

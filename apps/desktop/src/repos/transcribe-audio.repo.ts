@@ -193,6 +193,16 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
  * such as Ollama): every request fails with a clear message and no audio is
  * sent anywhere.
  */
+/** The selected provider has no speech-to-text (e.g. an LLM-only API key). */
+export class TranscriptionUnsupportedError extends Error {
+  constructor(provider: string) {
+    super(
+      `${provider} can't transcribe audio. Choose a transcription provider in Settings.`,
+    );
+    this.name = "TranscriptionUnsupportedError";
+  }
+}
+
 export class UnsupportedTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   private readonly provider: string;
 
@@ -214,9 +224,7 @@ export class UnsupportedTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   }
 
   protected async transcribeSegment(): Promise<TranscribeAudioOutput> {
-    throw new Error(
-      `${this.provider} can't transcribe audio. Choose a transcription provider in Settings.`,
-    );
+    throw new TranscriptionUnsupportedError(this.provider);
   }
 }
 

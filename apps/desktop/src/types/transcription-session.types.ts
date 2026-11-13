@@ -8,7 +8,11 @@ export type StopRecordingResponse = {
   sampleRate?: number;
 };
 
-export type TranscriptionFailureCode = "quota_exceeded" | "auth_failed";
+export type TranscriptionFailureCode =
+  | "quota_exceeded"
+  | "auth_failed"
+  /** The selected provider has no speech-to-text; retrying cannot help. */
+  | "provider_unsupported";
 
 export type TranscriptionSessionResult = {
   rawTranscript: string | null;

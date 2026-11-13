@@ -41,6 +41,15 @@ const describeFailure = (
       action: "upgrade",
     };
   }
+  if (result.failureCode === "provider_unsupported") {
+    return {
+      reason: intl.formatMessage({
+        defaultMessage:
+          "Your transcription provider can't transcribe audio. Choose another one in Settings.",
+      }),
+      action: "surface_window",
+    };
+  }
   if (result.failureCode === "auth_failed") {
     return {
       reason: intl.formatMessage({

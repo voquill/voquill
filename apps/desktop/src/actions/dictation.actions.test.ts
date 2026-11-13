@@ -237,6 +237,21 @@ describe("finishDictation", () => {
     expect(outcome.notice?.body).toContain("Sign in again");
   });
 
+  it("says the provider cannot transcribe, and keeps the audio", async () => {
+    const outcome = await run(
+      makeSession(async () => ({
+        ...failed,
+        failureReason: "ollama can't transcribe audio.",
+        failureCode: "provider_unsupported",
+      })),
+      makeStrategy(),
+    );
+
+    expect(mocks.storeFailedTranscription).toHaveBeenCalledTimes(1);
+    expect(outcome.notice?.body).toContain("can't transcribe audio");
+    expect(outcome.notice?.action).toBe("surface_window");
+  });
+
   it("treats silence as nothing to deliver, not a failure", async () => {
     const outcome = await run(
       makeSession(async () => ({
