@@ -188,6 +188,38 @@ export abstract class BaseTranscribeAudioRepo extends BaseRepo {
   }
 }
 
+/**
+ * Stands in for a provider that cannot transcribe audio (an LLM-only key
+ * such as Ollama): every request fails with a clear message and no audio is
+ * sent anywhere.
+ */
+export class UnsupportedTranscribeAudioRepo extends BaseTranscribeAudioRepo {
+  private readonly provider: string;
+
+  constructor(provider: string) {
+    super();
+    this.provider = provider;
+  }
+
+  protected getSegmentDurationSec(): number {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  protected getOverlapDurationSec(): number {
+    return 0;
+  }
+
+  protected getBatchChunkCount(): number {
+    return 1;
+  }
+
+  protected async transcribeSegment(): Promise<TranscribeAudioOutput> {
+    throw new Error(
+      `${this.provider} can't transcribe audio. Choose a transcription provider in Settings.`,
+    );
+  }
+}
+
 export class LocalTranscribeAudioRepo extends BaseTranscribeAudioRepo {
   // Local whisper can handle longer segments, but 60s is a safe default
   protected getSegmentDurationSec(): number {

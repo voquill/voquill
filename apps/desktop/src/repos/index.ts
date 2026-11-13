@@ -111,6 +111,7 @@ import {
   OpenAICompatibleTranscribeAudioRepo,
   OpenAITranscribeAudioRepo,
   SpeachesTranscribeAudioRepo,
+  UnsupportedTranscribeAudioRepo,
   XaiTranscribeAudioRepo,
 } from "./transcribe-audio.repo";
 import {
@@ -475,10 +476,16 @@ export const getTranscribeAudioRepo = (
         prefs.apiKeyValue,
         prefs.transcriptionModel,
       );
-    } else {
+    } else if (prefs.provider === "groq") {
       repo = new GroqTranscribeAudioRepo(
         prefs.apiKeyValue,
         prefs.transcriptionModel,
+      );
+    } else {
+      // Never fall back to another provider with the user's audio.
+      repo = new UnsupportedTranscribeAudioRepo(prefs.provider);
+      prefs.warnings.push(
+        `${prefs.provider} does not support transcription; choose a transcription provider.`,
       );
     }
 
