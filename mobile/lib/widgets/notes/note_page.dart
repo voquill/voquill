@@ -297,10 +297,8 @@ class _NotePageState extends State<NotePage> {
                 ),
               ],
               selected: {section},
-              onSelectionChanged: (selected) {
-                HapticFeedback.selectionClick();
-                setState(() => _section = selected.single);
-              },
+              onSelectionChanged: (selected) =>
+                  setState(() => _section = selected.single),
             ),
           ),
         ),
@@ -690,12 +688,9 @@ class _RecordingCard extends StatelessWidget {
                 icon: Icon(isPaused ? Icons.mic : Icons.pause),
                 onPressed: isBusy
                     ? null
-                    : () {
-                        HapticFeedback.selectionClick();
-                        isPaused
-                            ? resumeRecording(view.id)
-                            : pauseRecording(view.id);
-                      },
+                    : () => isPaused
+                          ? resumeRecording(view.id)
+                          : pauseRecording(view.id),
               ),
               const SizedBox(width: 12),
               IconButton.filled(

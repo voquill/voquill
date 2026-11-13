@@ -7,7 +7,6 @@ import 'package:app/utils/theme_utils.dart';
 import 'package:app/widgets/notes/ask_thread.dart';
 import 'package:app/widgets/notes/note_markdown.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 /// The Ask box docked at the bottom of the notes list ([noteId] null: all
@@ -54,10 +53,7 @@ class _AskDockState extends State<AskDock> {
   void _onThreadChanged() => setState(() {});
 
   void _send() {
-    if (_thread.send(_input.text)) {
-      HapticFeedback.selectionClick();
-      _input.clear();
-    }
+    if (_thread.send(_input.text)) _input.clear();
   }
 
   void _openSource(NoteAskSource source) {
