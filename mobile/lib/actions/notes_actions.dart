@@ -628,7 +628,6 @@ Future<void> _syncLocalNote(
   String id, {
   required bool isUserInitiated,
 }) async {
-  unawaited(services.recorder.setSyncActive(true).catchError((_) {}));
   try {
     await _runSync(services, id);
     _retryAttempt = 0;
@@ -649,7 +648,24 @@ Future<void> _syncLocalNote(
       notes.syncById[id]?.uploadProgress = null;
     });
     await _persist();
-    if (_syncs.length <= 1) {
+  }
+}
+
+int _activeUploads = 0;
+
+/// Keeps the process alive (iOS background task, Android data-sync service)
+/// while audio or an import is being sent; polling does not need it.
+Future<T> _whileUploading<T>(
+  NotesServices services,
+  Future<T> Function() send,
+) async {
+  if (_activeUploads++ == 0) {
+    unawaited(services.recorder.setSyncActive(true).catchError((_) {}));
+  }
+  try {
+    return await send();
+  } finally {
+    if (--_activeUploads == 0) {
       unawaited(services.recorder.setSyncActive(false).catchError((_) {}));
     }
   }
@@ -691,9 +707,12 @@ Future<void> _runSync(NotesServices services, String id) async {
   if (note.phase == LocalNotePhase.pendingUpload ||
       note.phase == LocalNotePhase.uploading) {
     _transition(id, LocalNoteEvent.startUpload);
-    final server = note.source == NoteSource.imported
-        ? await _sendImport(services, note)
-        : await _uploadAndProcess(services, id);
+    final server = await _whileUploading(
+      services,
+      () => note.source == NoteSource.imported
+          ? _sendImport(services, note)
+          : _uploadAndProcess(services, id),
+    );
     _produceNotes((notes) => _storeServerNote(notes, server));
     _transition(id, LocalNoteEvent.processAccepted, (n) {
       n.existsOnServer = true;
