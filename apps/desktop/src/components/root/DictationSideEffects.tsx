@@ -82,12 +82,12 @@ import {
   getToneIdToUse,
 } from "../../utils/tone.utils";
 import {
-  getEffectivePillVisibility,
   getIsDictationUnlocked,
   getIsOnboarded,
   getMyPreferredMicrophone,
   getMyPrimaryDictationLanguage,
   getMyUserPreferences,
+  getPillVisibilityToApply,
   getTranscriptionPrefs,
 } from "../../utils/user.utils";
 import { surfaceMainWindow } from "../../utils/window.utils";
@@ -130,9 +130,7 @@ export const DictationSideEffects = () => {
   const additionalLanguageEntries = useAppStore(getAdditionalLanguageEntries);
   const isDictationUnlocked = useAppStore(getIsDictationUnlocked);
   const isDictationInteractable = isDictationUnlocked && !isStopping;
-  const pillVisibility = useAppStore((state) =>
-    getEffectivePillVisibility(state.userPrefs?.dictationPillVisibility),
-  );
+  const pillVisibility = useAppStore(getPillVisibilityToApply);
 
   const dictationController = useMemo(
     () =>

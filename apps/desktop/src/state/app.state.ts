@@ -133,6 +133,7 @@ export type AppState = {
   login: LoginState;
   pillConversationId: Nullable<string>;
   assistantInputMode: AssistantInputMode;
+  isPillFlashShowing: boolean;
   chat: ChatState;
 
   snackbarMessage?: string;
@@ -199,6 +200,7 @@ export const INITIAL_APP_STATE: AppState = {
   supportsPasteKeybinds: "disabled",
   pillConversationId: null,
   assistantInputMode: "voice",
+  isPillFlashShowing: false,
   local: INITIAL_LOCAL_STATE,
   chat: INITIAL_CHAT_STATE,
   onboarding: INITIAL_ONBOARDING_STATE,
