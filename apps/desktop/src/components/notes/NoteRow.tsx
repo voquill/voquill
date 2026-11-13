@@ -9,7 +9,7 @@ import { splitHighlights } from "../../utils/note-search.utils";
 import { ListTile } from "../common/ListTile";
 import { RecordingDot } from "./MeetingIndicatorChip";
 
-export const HighlightedText = ({
+const HighlightedText = ({
   text,
   terms,
 }: {

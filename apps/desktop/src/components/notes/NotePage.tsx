@@ -420,7 +420,7 @@ export default function NotePage() {
 
   return (
     <Box sx={{ flex: 1, overflowY: "auto" }}>
-      <Container maxWidth="md" sx={{ pt: 1, pb: 6 }}>
+      <Container key={note.id} maxWidth="md" sx={{ pt: 1, pb: 6 }}>
         <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 2 }}>
           <Tooltip
             title={intl.formatMessage({ defaultMessage: "Back to notes" })}
