@@ -40,6 +40,9 @@ export const HighlightedText = ({
 
 const NoteRowStatus = ({ noteId }: { noteId: string }) => {
   const status = useAppStore((state) => state.noteById[noteId]?.status);
+  const isImport = useAppStore(
+    (state) => state.noteById[noteId]?.source === "import",
+  );
   const isCapturing = useAppStore(
     (state) => state.notes.capture?.noteId === noteId,
   );
@@ -93,7 +96,7 @@ const NoteRowStatus = ({ noteId }: { noteId: string }) => {
           color="text.secondary"
           sx={{ fontVariantNumeric: "tabular-nums" }}
         >
-          {elapsed}
+          {isImport ? <FormattedMessage defaultMessage="Imported" /> : elapsed}
         </Typography>
       );
   }

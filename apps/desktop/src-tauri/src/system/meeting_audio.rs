@@ -4,7 +4,7 @@
 //! the file length and `repair_segment` rewrites the header from it.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -148,8 +148,10 @@ fn data_bytes_for_len(len: u64) -> u64 {
     data - data % BYTES_PER_SAMPLE
 }
 
+/// Appends go straight to the OS, so a process crash loses nothing that was
+/// appended; the header is brought up to date by `commit`.
 pub struct SegmentWriter {
-    file: BufWriter<File>,
+    file: File,
     samples_written: u64,
     last_sync: Instant,
 }
@@ -166,7 +168,7 @@ impl SegmentWriter {
         file.write_all(&wav_header(0))?;
         file.sync_all()?;
         Ok(Self {
-            file: BufWriter::new(file),
+            file,
             samples_written: 0,
             last_sync: Instant::now(),
         })
@@ -179,21 +181,22 @@ impl SegmentWriter {
     pub fn append(&mut self, samples: &[i16]) -> io::Result<()> {
         let room = MAX_DATA_BYTES / BYTES_PER_SAMPLE - self.samples_written;
         let writable = &samples[..samples.len().min(room as usize)];
-        for sample in writable {
-            self.file.write_all(&sample.to_le_bytes())?;
-        }
+        let bytes: Vec<u8> = writable
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect();
+        self.file.write_all(&bytes)?;
         self.samples_written += writable.len() as u64;
         Ok(())
     }
 
-    /// Hands buffered samples to the OS and makes the header match them.
+    /// Makes the header match the appended samples and periodically forces
+    /// them to disk.
     pub fn commit(&mut self) -> io::Result<()> {
-        self.file.flush()?;
         let data_bytes = self.samples_written * BYTES_PER_SAMPLE;
-        let file = self.file.get_mut();
-        write_header_sizes(file, data_bytes)?;
+        write_header_sizes(&mut self.file, data_bytes)?;
         if self.last_sync.elapsed() >= SYNC_INTERVAL {
-            file.sync_data()?;
+            self.file.sync_data()?;
             self.last_sync = Instant::now();
         }
         Ok(())
@@ -201,7 +204,7 @@ impl SegmentWriter {
 
     pub fn finish(mut self) -> io::Result<u64> {
         self.commit()?;
-        self.file.get_mut().sync_all()?;
+        self.file.sync_all()?;
         Ok(self.samples_written)
     }
 }
@@ -394,14 +397,13 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_segment_keeps_flushed_samples_after_repair() {
+    fn interrupted_segment_keeps_every_appended_sample_after_repair() {
         let path = temp_path("interrupted");
         let mut writer = SegmentWriter::create(&path).unwrap();
         writer.append(&[10, 20]).unwrap();
         writer.commit().unwrap();
         writer.append(&[30, 40, 50]).unwrap();
-        writer.file.flush().unwrap();
-        std::mem::forget(writer);
+        drop(writer);
 
         // Header still claims 2 samples; a torn half sample is appended.
         OpenOptions::new()
@@ -440,8 +442,7 @@ mod tests {
         let mut writer = SegmentWriter::create(&path).unwrap();
         let samples: Vec<i16> = (0..32_000).map(|value| value as i16).collect();
         writer.append(&samples).unwrap();
-        writer.file.flush().unwrap();
-        std::mem::forget(writer);
+        drop(writer);
 
         let bytes = read_segment_pcm(&path, 1_000, 5_000).unwrap();
         assert_eq!(bytes.len(), 16_000 * 2);

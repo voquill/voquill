@@ -76,27 +76,35 @@ const startSegmentCapture = async (noteId: string): Promise<void> => {
   });
 };
 
-/** Finalizes the segment being captured, if any; returns its note id. */
-const stopSegmentCapture = async (): Promise<string | null> => {
-  const stopped = await getMeetingAudioRepo().stopCapture();
+/**
+ * Finalizes the segment being captured. If the native layer no longer has
+ * the capture, the segment's duration is recovered from its file.
+ */
+const stopSegmentCapture = async (): Promise<void> => {
+  const expected = getAppState().notes.capture;
+  const audio = getMeetingAudioRepo();
+  const stopped = await audio.stopCapture();
   produceAppState((draft) => {
     draft.notes.capture = null;
   });
-  if (!stopped) {
-    return null;
+  const finished = stopped ?? expected;
+  if (!finished) {
+    return;
   }
+  const durationMs = stopped
+    ? stopped.durationMs
+    : await audio.repairSegment(finished.audioPath);
   await noteStore.updateSegment(
-    stopped.noteId,
-    stopped.segmentId,
+    finished.noteId,
+    finished.segmentId,
     (segment) => {
       segment.status = "recorded";
-      segment.durationMs = stopped.durationMs;
+      segment.durationMs = durationMs;
     },
   );
-  await noteStore.updateNote(stopped.noteId, (note) => {
+  await noteStore.updateNote(finished.noteId, (note) => {
     note.durationMs = sumSegmentDurations(noteStore.getSegments(note.id));
   });
-  return stopped.noteId;
 };
 
 /**
@@ -277,6 +285,9 @@ const recoverRecordingNote = async (
  * and interrupted processing resumes where it stopped.
  */
 export const initializeNotes = async (): Promise<void> => {
+  if (getAppState().notes.loaded) {
+    return;
+  }
   const notes = await loadNotes();
   const capture = await getMeetingAudioRepo()
     .getCaptureStatus()

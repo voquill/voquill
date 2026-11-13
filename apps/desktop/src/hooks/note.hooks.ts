@@ -19,7 +19,7 @@ export const useStartMeetingNote = () => {
         showSnackbar(
           intl.formatMessage({
             defaultMessage:
-              "A meeting is already being recorded. Stop it to start a new one.",
+              "A meeting is already in progress. Stop it to start a new one.",
           }),
         );
       }
