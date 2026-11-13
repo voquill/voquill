@@ -50,7 +50,8 @@ class _NotesPageState extends State<NotesPage> {
     setState(() => _query = value);
     _searchTimer?.cancel();
     final query = value.trim();
-    if (query.isEmpty) {
+    // Titles filter instantly; the server search starts at two characters.
+    if (query.length < 2) {
       setState(() {
         _results = const [];
         _isSearching = false;

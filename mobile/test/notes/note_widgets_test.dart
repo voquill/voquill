@@ -73,7 +73,11 @@ void main() {
     );
 
     Future<void> show(Widget child) async {
-      await tester.pumpWidget(StoreScope(child: MaterialApp(theme: testTheme(), home: child)));
+      await tester.pumpWidget(
+        StoreScope(
+          child: MaterialApp(theme: testTheme(), home: child),
+        ),
+      );
       await tester.pump();
     }
 
@@ -94,7 +98,10 @@ void main() {
     expect(find.byTooltip('Resume recording'), findsOneWidget);
     expect(find.byTooltip('Stop and write notes'), findsOneWidget);
     expect(find.text('My notes'), findsOneWidget);
-    expect(find.text('Ask works once this meeting is processed.'), findsOneWidget);
+    expect(
+      find.text('Ask works once this meeting is processed.'),
+      findsOneWidget,
+    );
 
     await show(const NotePage(noteId: 'ready'));
     expect(find.text('Decisions'), findsOneWidget);

@@ -527,10 +527,17 @@ class FakeNoteRecorder implements NoteRecorder {
   /// Completes `start` only when the test says so.
   Completer<void>? holdStart;
 
+  /// Completes `stop` only when the test says so.
+  Completer<void>? holdStop;
+
+  /// Runs after `getState` has read the state it returns.
+  void Function()? onGetState;
+
   void emit(NoteRecorderEvent event) => _events.add(event);
 
-  /// Simulates the native side switching to a new segment file.
-  Future<String> rollOver() async {
+  /// Simulates the native side switching to a new segment file; with
+  /// [isDelivered] false the event is lost on the way to Dart.
+  Future<String> rollOver({bool isDelivered = true}) async {
     final current = state!;
     final next =
         '44444444-4444-4444-8444-${(calls.length).toString().padLeft(12, '0')}';
@@ -542,7 +549,7 @@ class FakeNoteRecorder implements NoteRecorder {
       segmentElapsedMs: 0,
       reason: NoteRecorderReason.rollover,
     );
-    emit(NoteRecorderStateEvent(state!));
+    if (isDelivered) emit(NoteRecorderStateEvent(state!));
     return next;
   }
 
@@ -598,13 +605,18 @@ class FakeNoteRecorder implements NoteRecorder {
   @override
   Future<NoteRecorderState?> stop() async {
     calls.add('stop');
+    await holdStop?.future;
     final current = state;
     state = null;
     return current;
   }
 
   @override
-  Future<NoteRecorderState?> getState() async => state;
+  Future<NoteRecorderState?> getState() async {
+    final current = state;
+    onGetState?.call();
+    return current;
+  }
 
   @override
   Future<NoteRecorderActionEvent?> takePendingAction() async {

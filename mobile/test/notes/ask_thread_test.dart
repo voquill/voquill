@@ -66,6 +66,20 @@ void main() {
     },
   );
 
+  test('history keeps the last 20 messages of 8,000 characters', () async {
+    final ask = thread();
+    for (var i = 0; i < 12; i++) {
+      ask.send('Q$i?');
+      stream.add(NoteAskDoneEvent(i == 11 ? 'x' * 9000 : 'A$i.'));
+      await pumpEventQueue();
+    }
+    ask.send('Last?');
+    final history = calls.last.history;
+    expect(history, hasLength(AskThread.maxHistoryMessages));
+    expect(history.first.content, 'Q2?');
+    expect(history.last.content, hasLength(AskThread.maxHistoryMessageChars));
+  });
+
   test(
     'errors become plain text; the daily limit is reported upward',
     () async {

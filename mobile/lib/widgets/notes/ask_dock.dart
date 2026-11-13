@@ -23,7 +23,8 @@ class AskDock extends StatefulWidget {
   /// Shown right of the field (the list's New button).
   final Widget? trailing;
 
-  /// Injected in tests and screenshots; created here otherwise.
+  /// Owned by the caller when given (the note page keeps its conversation
+  /// while the box steps aside for typing); created here otherwise.
   final AskThread? thread;
 
   @override

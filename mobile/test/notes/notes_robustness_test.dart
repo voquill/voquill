@@ -774,4 +774,248 @@ void main() {
       },
     );
   });
+
+  group('recorder bookkeeping', () {
+    test('an edit made while Stop runs survives and reaches process', () async {
+      await boot();
+      final id = (await startNewNote())!;
+      await File(recorder.path!).writeAsBytes(adtsFrames(10));
+      recorder.holdStop = Completer();
+      final stopping = stopRecording(id);
+      await eventually(() => recorder.calls.contains('stop'));
+      await updateNoteTitle(id, 'Design review');
+      await updateNotePersonalNotes(id, 'Typed while stopping');
+      recorder.holdStop!.complete();
+      await stopping;
+
+      expect(local(id)!.title, 'Design review');
+      expect(local(id)!.personalNotes, 'Typed while stopping');
+      await syncAllNotes();
+      expect(server.notes[id]!['personalNotes'], 'Typed while stopping');
+      expect(server.notes[id]!['title'], 'Design review');
+    });
+
+    test('stop applies a rollover whose event never arrived', () async {
+      await boot();
+      final id = (await startNewNote())!;
+      await File(recorder.path!).writeAsBytes(adtsFrames(10));
+      final next = await recorder.rollOver(isDelivered: false);
+      await File(recorder.path!).writeAsBytes(adtsFrames(10));
+      await stopRecording(id);
+      await syncAllNotes();
+
+      expect(server.segments[id]!.keys, contains(next));
+      expect(server.segments[id]!.values.map((s) => s['index']), [0, 1]);
+      expect(server.notes[id]!['status'], 'ready');
+    });
+
+    test('a rollover while the notes load is not missed', () async {
+      final file = await writeSegment('$_segmentA.aac', adtsFrames(10));
+      await seed([
+        const LocalNoteSegment(
+          id: _segmentA,
+          fileName: '$_segmentA.aac',
+          isOpen: true,
+          index: 0,
+        ),
+      ], phase: LocalNotePhase.recording);
+      recorder.path = file.path;
+      recorder.state = const NoteRecorderState(
+        noteId: _noteId,
+        segmentId: _segmentA,
+        isPaused: false,
+        segmentElapsedMs: 640,
+      );
+      String? next;
+      recorder.onGetState = () {
+        recorder.onGetState = null;
+        unawaited(recorder.rollOver().then((id) => next = id));
+      };
+      await initializeNotes(servicesFor(root));
+      await eventually(() => (local()?.segments.length ?? 0) == 2);
+
+      final note = local()!;
+      expect(note.phase, LocalNotePhase.recording);
+      expect(note.segments.map((s) => s.id), [_segmentA, next]);
+      expect(note.segments.map((s) => s.isOpen), [false, true]);
+      expect(note.segments.map((s) => s.index), [0, 1]);
+    });
+
+    test(
+      'recovery never adopts or deletes files of the note being recorded',
+      () async {
+        await writeSegment('$_segmentA.aac', adtsFrames(10));
+        // The recorder just opened its next file: no header yet.
+        final opening = await writeSegment('$_segmentB.aac', const []);
+        await seed([
+          const LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            isOpen: true,
+          ),
+        ], phase: LocalNotePhase.recording);
+        recorder.path = opening.path;
+        recorder.state = const NoteRecorderState(
+          noteId: _noteId,
+          segmentId: _segmentB,
+          isPaused: false,
+          segmentElapsedMs: 0,
+        );
+        await initializeNotes(servicesFor(root));
+
+        expect(opening.existsSync(), isTrue);
+        final note = local()!;
+        expect(note.segments.map((s) => s.id), [_segmentA, _segmentB]);
+        expect(note.segments.map((s) => s.isOpen), [false, true]);
+        expect(getAppState().notes.recorderNoteId, _noteId);
+      },
+    );
+
+    test('orphan files join their note in recording order', () async {
+      const older = '99999999-9999-4999-8999-999999999999';
+      const newer = '77777777-7777-4777-8777-777777777777';
+      await writeSegment('$_segmentA.aac', adtsFrames(10));
+      final first = await writeSegment('$older.aac', adtsFrames(10));
+      final second = await writeSegment('$newer.aac', adtsFrames(10));
+      first.setLastModifiedSync(DateTime(2026, 1, 1, 10, 30));
+      second.setLastModifiedSync(DateTime(2026, 1, 1, 11));
+      await seed([
+        const LocalNoteSegment(
+          id: _segmentA,
+          fileName: '$_segmentA.aac',
+          durationMs: 640,
+          index: 0,
+        ),
+      ], phase: LocalNotePhase.paused);
+      await initializeNotes(servicesFor(root));
+
+      final note = local()!;
+      expect(note.segments.map((s) => s.id), [_segmentA, older, newer]);
+      expect(note.segments.map((s) => s.index), [0, 1, 2]);
+    });
+  });
+
+  group('one meeting at a time', () {
+    test(
+      'a paused meeting whose recorder is gone is finished by a new one',
+      () async {
+        await writeSegment('$_segmentA.aac', adtsFrames(10));
+        await seed([
+          const LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            durationMs: 640,
+          ),
+        ], phase: LocalNotePhase.paused);
+        await boot();
+        expect(local()!.phase, LocalNotePhase.paused);
+
+        final id = await startNewNote();
+        expect(id, isNotNull);
+        expect(snackbar(), contains('"Meeting" was finished'));
+        await syncAllNotes();
+        expect(local(), isNull);
+        expect(server.notes[_noteId]!['status'], 'ready');
+        expect(local(id!)!.phase, LocalNotePhase.recording);
+      },
+    );
+
+    test('a paused meeting the recorder holds blocks a new one', () async {
+      await boot();
+      final id = (await startNewNote())!;
+      await pauseRecording(id);
+      expect(await startNewNote(), isNull);
+      expect(snackbar(), contains('Finish your current meeting'));
+      expect(local(id)!.phase, LocalNotePhase.paused);
+    });
+  });
+
+  group('polling', () {
+    test('a processing note off-screen follows the list, not GET', () async {
+      await writeSegment('$_segmentA.aac', adtsFrames(10));
+      await seed([
+        const LocalNoteSegment(
+          id: _segmentA,
+          fileName: '$_segmentA.aac',
+          durationMs: 640,
+        ),
+      ]);
+      server.processingPolls = 3;
+      await boot();
+
+      expect(local(), isNull);
+      expect(
+        server.calls.where((c) => c == 'GET /v1/notes').length,
+        greaterThanOrEqualTo(3),
+      );
+      // Finalizing reads the segments once; nothing polls the note itself.
+      expect(server.callCount('GET /v1/notes/$_noteId'), 1);
+    });
+
+    test('the open note polls GET', () async {
+      await writeSegment('$_segmentA.aac', adtsFrames(10));
+      await seed([
+        const LocalNoteSegment(
+          id: _segmentA,
+          fileName: '$_segmentA.aac',
+          durationMs: 640,
+        ),
+      ]);
+      server.processingPolls = 3;
+      await initializeNotes(servicesFor(root));
+      noteScreenOpened(_noteId);
+      await syncAllNotes();
+
+      expect(local(), isNull);
+      expect(server.callCount('GET /v1/notes/$_noteId'), greaterThan(3));
+    });
+  });
+
+  group('lost audio', () {
+    test(
+      'audio_missing for a segment this device never had deletes it',
+      () async {
+        const elsewhere = '88888888-8888-4888-8888-888888888888';
+        await writeSegment('$_segmentA.aac', adtsFrames(10));
+        await seed([
+          const LocalNoteSegment(
+            id: _segmentA,
+            fileName: '$_segmentA.aac',
+            durationMs: 640,
+          ),
+        ]);
+        server.notes[_noteId] = {
+          'id': _noteId,
+          'title': 'Meeting',
+          'titleSource': 'user',
+          'status': 'draft',
+          'error': null,
+          'source': 'recording',
+          'personalNotes': '',
+          'generatedNotes': null,
+          'durationMs': 0,
+          'createdAt': '2026-01-01T00:00:00.000Z',
+          'updatedAt': '2026-01-01T00:00:00.000Z',
+        };
+        server.segments[_noteId] = {
+          elsewhere: {
+            'id': elsewhere,
+            'index': 0,
+            'kind': 'audio',
+            'status': 'uploading',
+            'error': null,
+            'durationMs': 0,
+          },
+        };
+        await boot();
+
+        expect(
+          server.callCount('DELETE /v1/notes/$_noteId/segments/$elsewhere'),
+          1,
+        );
+        expect(local(), isNull);
+        expect(server.notes[_noteId]!['status'], 'ready');
+      },
+    );
+  });
 }

@@ -657,6 +657,10 @@ class _RecordingCard extends StatelessWidget {
     final colors = context.colors;
     final isPaused = view.state == NoteDisplayState.paused;
     final isBusy = useAppStore().select(context, (s) => s.notes.isRecorderBusy);
+    final isSilent = useAppStore().select(
+      context,
+      (s) => s.notes.isRecorderSilent && s.notes.recorderNoteId == view.id,
+    );
 
     return Padding(
       padding: Theming.padding.withTop(16).withBottom(0),
@@ -686,6 +690,13 @@ class _RecordingCard extends StatelessWidget {
                           ),
                         ),
                       ),
+                      if (isSilent && !isPaused)
+                        Text(
+                          'No audio detected. A call or another app may be using the microphone.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colors.error,
+                          ),
+                        ),
                       if (isPaused)
                         Text(
                           'Resume to keep recording, or stop to write the notes.',

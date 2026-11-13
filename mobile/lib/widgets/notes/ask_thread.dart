@@ -51,11 +51,12 @@ class AskThread extends ChangeNotifier {
 
   List<NoteAskMessage> _history() {
     final messages = [
-      for (final turn in turns.where((t) => !t.isStreaming && t.error == null))
-        ...[
-          NoteAskMessage(role: 'user', content: turn.question),
-          NoteAskMessage(role: 'assistant', content: turn.answer),
-        ],
+      for (final turn in turns.where(
+        (t) => !t.isStreaming && t.error == null,
+      )) ...[
+        NoteAskMessage(role: 'user', content: turn.question),
+        NoteAskMessage(role: 'assistant', content: turn.answer),
+      ],
     ];
     final recent = messages.length > maxHistoryMessages
         ? messages.sublist(messages.length - maxHistoryMessages)

@@ -68,7 +68,12 @@ Future<void> _handleSyncFailure(
   required bool isUserInitiated,
 }) async {
   _logger.w('Note sync stopped: ${e.code} (${e.statusCode})');
-  if (e.isNoteDeleted) {
+  // `note_deleted`, or a note the server had and no longer does: deleted on
+  // another device either way.
+  final wasDeleted =
+      e.isNoteDeleted ||
+      (e.isNoteNotFound && (_localOf(services, id)?.existsOnServer ?? false));
+  if (wasDeleted) {
     await _recoverDeletedNote(services, id);
     return;
   }
@@ -83,17 +88,6 @@ Future<void> _handleSyncFailure(
     );
     _scheduleRetry(services, after: e.retryAfterSeconds);
     return;
-  }
-  if (e.isNoteNotFound) {
-    // Deleted on another device: Retry recreates it from the local audio.
-    _updateLocal(services, id, (note) {
-      note.existsOnServer = false;
-      for (final segment in note.segments) {
-        segment.isUploaded = false;
-        segment.uploadUrl = null;
-        segment.uploadSizeBytes = null;
-      }
-    });
   }
   _transition(
     services,
@@ -123,14 +117,16 @@ Future<void> _recoverDeletedNote(NotesServices services, String id) async {
   }
   final newId = const Uuid().v4();
   await services.store.moveNoteFiles(id, newId);
+  // Re-read: My notes typed while the files moved must come along.
+  final latest = _localOf(services, id) ?? note;
   final recovered = LocalNote(
     id: newId,
     title: 'Recovered recording',
-    personalNotes: note.personalNotes,
-    createdAt: note.createdAt,
+    personalNotes: latest.personalNotes,
+    createdAt: latest.createdAt,
     phase: LocalNotePhase.paused,
     segments: [
-      for (final (index, segment) in note.segments.indexed)
+      for (final (index, segment) in latest.segments.indexed)
         LocalNoteSegment(
           id: segment.id,
           fileName: segment.fileName,
@@ -278,6 +274,13 @@ Future<Note> _uploadAndProcess(NotesServices services, String id) async {
     } on NotesApiException catch (e) {
       final missing = (e.details?['segmentIds'] as List?)?.cast<String>();
       if (e.code != 'audio_missing' || missing == null || attempt > 0) rethrow;
+      // Ours are uploaded again; segments this device never had (another
+      // device recorded them and lost the audio) are removed, as the
+      // contract asks.
+      final localIds = _requireLocal(services, id).segments.map((s) => s.id);
+      for (final segmentId in missing.where((m) => !localIds.contains(m))) {
+        await _deleteServerSegment(services, id, segmentId);
+      }
       _markForUpload(services, id, missing.contains);
       await _persist(services);
     }
@@ -368,16 +371,26 @@ Future<void> _dropMissingSegment(
 ) async {
   _logger.w('Segment audio file is missing; dropping the segment');
   if (_requireLocal(services, id).existsOnServer) {
-    try {
-      await services.api.deleteSegment(id, segment.id);
-    } on NotesApiException catch (e) {
-      if (!e.isNoteNotFound) rethrow;
-    }
+    await _deleteServerSegment(services, id, segment.id);
   }
   _updateLocal(services, id, (n) {
     n.segments = n.segments.where((s) => s.id != segment.id).toList();
   });
   await _persist(services);
+}
+
+/// `DELETE …/segments/:id`. Already transcribed means the server has what
+/// it needs, and a missing note has no segments left: both are done.
+Future<void> _deleteServerSegment(
+  NotesServices services,
+  String noteId,
+  String segmentId,
+) async {
+  try {
+    await services.api.deleteSegment(noteId, segmentId);
+  } on NotesApiException catch (e) {
+    if (!e.isNoteNotFound && e.code != 'segment_transcribed') rethrow;
+  }
 }
 
 /// Resumes the persisted upload session when it still matches the file; a
@@ -647,8 +660,10 @@ Future<void> _finalizeReadyNote(NotesServices services, String id) async {
       .toList();
   _updateLocal(services, id, (n) {
     n.segments = keep;
-    n.title = ready.title;
-    n.titleSource = ready.titleSource;
+    if (n.titleSource != NoteTitleSource.user) {
+      n.title = ready.title;
+      n.titleSource = ready.titleSource;
+    }
     n.priorDurationMs =
         ready.durationMs - keep.fold(0, (sum, s) => sum + s.durationMs);
     n.error =
