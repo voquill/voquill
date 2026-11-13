@@ -199,3 +199,46 @@ final class MicrophoneEngine {
         consumers.forEach { $0.microphoneInterruptionEnded(resumed: resumed) }
     }
 }
+
+/// Converts tap buffers to a fixed format. The input format changes when the
+/// route changes (AirPods, a call), so every consumer writes through one of
+/// these instead of assuming the hardware format it started with.
+final class PCMConverter {
+    let outputFormat: AVAudioFormat
+    private var converter: AVAudioConverter?
+
+    init(outputFormat: AVAudioFormat) {
+        self.outputFormat = outputFormat
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.frameLength > 0 else { return nil }
+        if buffer.format == outputFormat { return buffer }
+        if converter?.inputFormat != buffer.format {
+            converter = AVAudioConverter(from: buffer.format, to: outputFormat)
+            converter?.downmix = true
+        }
+        guard let converter = converter else { return nil }
+
+        let ratio = outputFormat.sampleRate / buffer.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
+
+        var consumed = false
+        var error: NSError?
+        converter.convert(to: output, error: &error) { _, status in
+            if consumed {
+                status.pointee = .noDataNow
+                return nil
+            }
+            consumed = true
+            status.pointee = .haveData
+            return buffer
+        }
+        if let error = error {
+            NSLog("[VoquillApp] Audio conversion failed: %@", error.localizedDescription)
+            return nil
+        }
+        return output.frameLength > 0 ? output : nil
+    }
+}

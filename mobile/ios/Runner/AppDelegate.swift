@@ -6,6 +6,7 @@ import UIKit
   private static let appGroupId = "group.com.voquill.mobile"
   private var channel: FlutterMethodChannel?
   private var noteRecorderChannel: NoteRecorderChannel?
+  private var microphonePcmStream: MicrophonePcmStream?
 
   override func application(
     _ application: UIApplication,
@@ -16,6 +17,7 @@ import UIKit
 
     let controller = window?.rootViewController as! FlutterViewController
     noteRecorderChannel = NoteRecorderChannel(binaryMessenger: controller.binaryMessenger)
+    microphonePcmStream = MicrophonePcmStream(binaryMessenger: controller.binaryMessenger)
     let channel = FlutterMethodChannel(
       name: "com.voquill.mobile/shared",
       binaryMessenger: controller.binaryMessenger

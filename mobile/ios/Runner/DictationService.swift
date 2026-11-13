@@ -7,6 +7,8 @@ class DictationService: MicrophoneConsumer {
 
     private let microphone = MicrophoneEngine.shared
     private var audioFile: AVAudioFile?
+    private var fileConverter: PCMConverter?
+    private let fileLock = NSLock()
     private var isRecording = false
     private var activityRef: Any?
 
@@ -70,7 +72,7 @@ class DictationService: MicrophoneConsumer {
         NSLog("[VoquillApp] pauseRecording")
         stopRecordingTimeout()
         isRecording = false
-        audioFile = nil
+        setAudioFile(nil)
         defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
         setPhase(.active)
         updateLiveActivity(phase: "active")
@@ -109,7 +111,7 @@ class DictationService: MicrophoneConsumer {
         stopRecordingTimeout()
         stopIdleTimeout()
         isRecording = false
-        audioFile = nil
+        setAudioFile(nil)
         defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
         microphone.detach(self)
         stopHeartbeat()
@@ -121,7 +123,15 @@ class DictationService: MicrophoneConsumer {
 
     func microphone(didReceive buffer: AVAudioPCMBuffer) {
         guard isRecording else { return }
-        try? audioFile?.write(from: buffer)
+        fileLock.lock()
+        if let file = audioFile, let converted = fileConverter?.convert(buffer) {
+            do {
+                try file.write(from: converted)
+            } catch {
+                NSLog("[VoquillApp] Dictation audio write failed: %@", error.localizedDescription)
+            }
+        }
+        fileLock.unlock()
         updateAudioLevel(buffer: buffer)
     }
 
@@ -136,7 +146,16 @@ class DictationService: MicrophoneConsumer {
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
-        audioFile = try? AVAudioFile(forWriting: audioUrl, settings: settings)
+        setAudioFile(try? AVAudioFile(forWriting: audioUrl, settings: settings))
+    }
+
+    /// The tap thread writes the file, so swaps happen under `fileLock`; the
+    /// converter pins buffers to the format the file was opened with.
+    private func setAudioFile(_ file: AVAudioFile?) {
+        fileLock.lock()
+        audioFile = file
+        fileConverter = file.map { PCMConverter(outputFormat: $0.processingFormat) }
+        fileLock.unlock()
     }
 
     private func updateAudioLevel(buffer: AVAudioPCMBuffer) {
@@ -235,7 +254,7 @@ class DictationService: MicrophoneConsumer {
         stopRecordingTimeout()
         stopIdleTimeout()
         isRecording = false
-        audioFile = nil
+        setAudioFile(nil)
         defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
     }
 

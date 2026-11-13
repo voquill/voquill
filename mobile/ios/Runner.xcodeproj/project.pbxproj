@@ -34,6 +34,7 @@
 		8A9E00042F50000100A6698B /* MeetingRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00032F50000100A6698B /* MeetingRecorder.swift */; };
 		8A9E00062F50000100A6698B /* MeetingNoteAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */; };
 		8A9E00072F50000100A6698B /* MeetingNoteAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */; };
+		8A9E00092F50000100A6698B /* MicrophonePcmStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A9E00082F50000100A6698B /* MicrophonePcmStream.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -151,6 +152,7 @@
 		8A9E00012F50000100A6698B /* MicrophoneEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophoneEngine.swift; sourceTree = "<group>"; };
 		8A9E00032F50000100A6698B /* MeetingRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingRecorder.swift; sourceTree = "<group>"; };
 		8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingNoteAttributes.swift; sourceTree = "<group>"; };
+		8A9E00082F50000100A6698B /* MicrophonePcmStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicrophonePcmStream.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -297,6 +299,7 @@
 				8AE398A82F6305B900127B97 /* Settings.bundle */,
 				8A85E6642F41FCB300A6698B /* DictationService.swift */,
 				8A9E00012F50000100A6698B /* MicrophoneEngine.swift */,
+				8A9E00082F50000100A6698B /* MicrophonePcmStream.swift */,
 				8A9E00032F50000100A6698B /* MeetingRecorder.swift */,
 				8A9E00052F50000100A6698B /* MeetingNoteAttributes.swift */,
 				8A85E6622F41FCAB00A6698B /* DictationAttributes.swift */,
@@ -721,6 +724,7 @@
 				8A85E6632F41FCAD00A6698B /* DictationAttributes.swift in Sources */,
 				8A85E6652F41FCB500A6698B /* DictationService.swift in Sources */,
 				8A9E00022F50000100A6698B /* MicrophoneEngine.swift in Sources */,
+				8A9E00092F50000100A6698B /* MicrophonePcmStream.swift in Sources */,
 				8A9E00042F50000100A6698B /* MeetingRecorder.swift in Sources */,
 				8A9E00062F50000100A6698B /* MeetingNoteAttributes.swift in Sources */,
 			);

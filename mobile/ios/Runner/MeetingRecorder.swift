@@ -4,75 +4,135 @@ import Flutter
 import Foundation
 import UIKit
 
-enum MeetingRecorderError: Error {
+enum MeetingRecorderError: LocalizedError {
     case busy
     case notRecording
+    case lowStorage
+
+    var errorDescription: String? {
+        switch self {
+        case .busy: return "A meeting is already recording"
+        case .notRecording: return "No meeting is recording"
+        case .lowStorage: return "Not enough free storage to record"
+        }
+    }
 }
 
-/// Records a meeting note segment to an ADTS AAC file (16 kHz mono). ADTS has
-/// no trailing index, so the file stays playable up to the last frame even if
-/// the app is killed mid-recording.
+/// Records a meeting note as ADTS AAC segments (16 kHz mono). ADTS has no
+/// trailing index, so a file stays playable up to its last frame even if the
+/// app is killed mid-recording.
+///
+/// Segments roll over to a new file (same directory, new UUID) at
+/// `maxSegmentMs` or `maxSegmentBytes`, between two buffers, so no audio is
+/// lost at the boundary.
+/// At `maxNoteMs` recording pauses with reason `limit`. A failed write ends
+/// the session with reason `write_failed`; what was written stays on disk.
 final class MeetingRecorder: MicrophoneConsumer {
     static let shared = MeetingRecorder()
-    private static let sampleRate: Double = 16000
+    static let sampleRate: Double = 16000
+    /// Refuse to start below this much free space.
+    static let minimumFreeBytes: Int64 = 20 * 1024 * 1024
 
-    /// Called on the main thread when the recorder pauses or resumes by itself.
+    /// Called on the main thread when the recorder changes state by itself.
     var onStateChanged: (([String: Any]) -> Void)?
+
+    private struct Session {
+        let noteId: String
+        var segmentId: String
+        let directory: URL
+        var file: AVAudioFile
+        let converter: PCMConverter
+        var fileUrl: URL
+        var segmentFrames: AVAudioFramePosition = 0
+        var sessionFrames: AVAudioFramePosition = 0
+        var buffersSinceSizeCheck = 0
+        let priorElapsedMs: Int
+        let maxSegmentMs: Int
+        let maxSegmentBytes: Int64
+        let maxNoteMs: Int
+        var isPaused = false
+        var isPausedByInterruption = false
+    }
 
     private let microphone = MicrophoneEngine.shared
     private let lock = NSLock()
-    private let outputFormat = AVAudioFormat(
+    private var session: Session?
+    private var activityRef: Any?
+    private var staleTimer: Timer?
+
+    private static let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
-        sampleRate: MeetingRecorder.sampleRate,
+        sampleRate: sampleRate,
         channels: 1,
         interleaved: false
     )!
 
-    private var noteId: String?
-    private var segmentId: String?
-    private var file: AVAudioFile?
-    private var converter: AVAudioConverter?
-    private var framesWritten: AVAudioFramePosition = 0
-    private var priorElapsedMs = 0
-    private var isPaused = false
-    private var isPausedByInterruption = false
-    private var activityRef: Any?
-
     private init() {}
 
-    // MARK: - Commands
-
-    func start(noteId: String, segmentId: String, path: String, priorElapsedMs: Int) throws {
-        guard self.noteId == nil else { throw MeetingRecorderError.busy }
-        let url = URL(fileURLWithPath: path)
+    private static func openFile(at url: URL) throws -> AVAudioFile {
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: MeetingRecorder.sampleRate,
+            AVSampleRateKey: sampleRate,
             AVNumberOfChannelsKey: 1,
             AVEncoderBitRateKey: 32000,
         ]
-        let file = try AVAudioFile(
+        return try AVAudioFile(
             forWriting: url,
             settings: settings,
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
+    }
+
+    static func freeBytes(at url: URL) -> Int64 {
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage ?? Int64.max
+    }
+
+    // MARK: - Commands
+
+    func start(
+        noteId: String,
+        segmentId: String,
+        path: String,
+        priorElapsedMs: Int,
+        maxSegmentMs: Int,
+        maxSegmentBytes: Int64,
+        maxNoteMs: Int
+    ) throws {
+        lock.lock()
+        let isBusy = session != nil
+        lock.unlock()
+        guard !isBusy else { throw MeetingRecorderError.busy }
+
+        let url = URL(fileURLWithPath: path)
+        let directory = url.deletingLastPathComponent()
+        guard MeetingRecorder.freeBytes(at: directory) >= MeetingRecorder.minimumFreeBytes else {
+            throw MeetingRecorderError.lowStorage
+        }
+        let file = try MeetingRecorder.openFile(at: url)
 
         lock.lock()
-        self.noteId = noteId
-        self.segmentId = segmentId
-        self.file = file
-        self.converter = nil
-        self.framesWritten = 0
-        self.priorElapsedMs = priorElapsedMs
-        self.isPaused = false
-        self.isPausedByInterruption = false
+        session = Session(
+            noteId: noteId,
+            segmentId: segmentId,
+            directory: directory,
+            file: file,
+            converter: PCMConverter(outputFormat: MeetingRecorder.outputFormat),
+            fileUrl: url,
+            priorElapsedMs: priorElapsedMs,
+            maxSegmentMs: maxSegmentMs,
+            maxSegmentBytes: maxSegmentBytes,
+            maxNoteMs: maxNoteMs
+        )
         lock.unlock()
 
         do {
             try microphone.attach(self)
         } catch {
-            reset()
+            lock.lock()
+            session = nil
+            lock.unlock()
             try? FileManager.default.removeItem(at: url)
             throw error
         }
@@ -81,9 +141,9 @@ final class MeetingRecorder: MicrophoneConsumer {
 
     func pause() -> [String: Any]? {
         lock.lock()
-        guard noteId != nil else { lock.unlock(); return nil }
-        isPaused = true
-        isPausedByInterruption = false
+        guard session != nil else { lock.unlock(); return nil }
+        session?.isPaused = true
+        session?.isPausedByInterruption = false
         lock.unlock()
         microphone.detach(self)
         updateLiveActivity()
@@ -92,12 +152,15 @@ final class MeetingRecorder: MicrophoneConsumer {
 
     func resume() throws -> [String: Any]? {
         lock.lock()
-        guard noteId != nil else { lock.unlock(); throw MeetingRecorderError.notRecording }
+        guard let current = session else { lock.unlock(); throw MeetingRecorderError.notRecording }
         lock.unlock()
+        guard MeetingRecorder.freeBytes(at: current.directory) >= MeetingRecorder.minimumFreeBytes else {
+            throw MeetingRecorderError.lowStorage
+        }
         try microphone.attach(self)
         lock.lock()
-        isPaused = false
-        isPausedByInterruption = false
+        session?.isPaused = false
+        session?.isPausedByInterruption = false
         lock.unlock()
         updateLiveActivity()
         return state()
@@ -106,122 +169,142 @@ final class MeetingRecorder: MicrophoneConsumer {
     func stop() -> [String: Any]? {
         let final = state()
         microphone.detach(self)
-        reset()
+        lock.lock()
+        session = nil
+        lock.unlock()
         endLiveActivities()
         return final
     }
 
-    func state() -> [String: Any]? {
+    func state(reason: String? = nil) -> [String: Any]? {
         lock.lock()
         defer { lock.unlock() }
-        guard let noteId = noteId, let segmentId = segmentId else { return nil }
-        return [
-            "noteId": noteId,
-            "segmentId": segmentId,
-            "isPaused": isPaused,
-            "segmentElapsedMs": segmentElapsedMsLocked(),
-        ]
+        guard let session = session else { return nil }
+        return MeetingRecorder.stateMap(session, reason: reason)
     }
 
-    /// A recorder can only live as long as its process; activities left over
+    private static func stateMap(_ session: Session, reason: String?) -> [String: Any] {
+        var map: [String: Any] = [
+            "noteId": session.noteId,
+            "segmentId": session.segmentId,
+            "isPaused": session.isPaused,
+            "segmentElapsedMs": milliseconds(session.segmentFrames),
+        ]
+        if let reason = reason { map["reason"] = reason }
+        return map
+    }
+
+    /// Checks the file size every ~100 buffers (about 8 s of audio); the
+    /// byte cap is set far enough below the server's that this is precise
+    /// enough.
+    private static func isOverSize(_ session: inout Session) -> Bool {
+        session.buffersSinceSizeCheck += 1
+        guard session.buffersSinceSizeCheck >= 100 else { return false }
+        session.buffersSinceSizeCheck = 0
+        let size = (try? session.fileUrl.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        return Int64(size) >= session.maxSegmentBytes
+    }
+
+    private static func milliseconds(_ frames: AVAudioFramePosition) -> Int {
+        Int(Double(frames) * 1000 / sampleRate)
+    }
+
+    /// A recorder only lives as long as its process; activities left over
     /// from a killed process are stale.
     func cleanupOnLaunch() {
         endLiveActivities()
     }
 
-    private func reset() {
-        lock.lock()
-        noteId = nil
-        segmentId = nil
-        file = nil
-        converter = nil
-        framesWritten = 0
-        isPaused = false
-        isPausedByInterruption = false
-        lock.unlock()
-    }
-
-    private func segmentElapsedMsLocked() -> Int {
-        Int(Double(framesWritten) * 1000 / MeetingRecorder.sampleRate)
-    }
-
     // MARK: - MicrophoneConsumer
 
     func microphone(didReceive buffer: AVAudioPCMBuffer) {
+        var event: [String: Any]?
+        var endSession = false
+
         lock.lock()
-        defer { lock.unlock() }
-        guard !isPaused, let file = file, buffer.frameLength > 0 else { return }
+        if var current = session, !current.isPaused, let output = current.converter.convert(buffer) {
+            do {
+                try current.file.write(from: output)
+                let frames = AVAudioFramePosition(output.frameLength)
+                current.segmentFrames += frames
+                current.sessionFrames += frames
 
-        if converter?.inputFormat != buffer.format {
-            converter = AVAudioConverter(from: buffer.format, to: outputFormat)
-            converter?.downmix = true
-        }
-        guard let converter = converter else { return }
-
-        let ratio = MeetingRecorder.sampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
-
-        var consumed = false
-        var error: NSError?
-        converter.convert(to: output, error: &error) { _, status in
-            if consumed {
-                status.pointee = .noDataNow
-                return nil
+                if current.priorElapsedMs + MeetingRecorder.milliseconds(current.sessionFrames) >= current.maxNoteMs {
+                    current.isPaused = true
+                    event = MeetingRecorder.stateMap(current, reason: "limit")
+                } else if MeetingRecorder.milliseconds(current.segmentFrames) >= current.maxSegmentMs
+                            || MeetingRecorder.isOverSize(&current) {
+                    let nextId = UUID().uuidString.lowercased()
+                    let nextUrl = current.directory.appendingPathComponent("\(nextId).aac")
+                    current.file = try MeetingRecorder.openFile(at: nextUrl)
+                    current.fileUrl = nextUrl
+                    current.segmentId = nextId
+                    current.segmentFrames = 0
+                    current.buffersSinceSizeCheck = 0
+                    event = MeetingRecorder.stateMap(current, reason: "rollover")
+                }
+                session = current
+            } catch {
+                NSLog("[VoquillApp] Meeting audio write failed: %@", error.localizedDescription)
+                current.isPaused = true
+                event = MeetingRecorder.stateMap(current, reason: "write_failed")
+                session = nil
+                endSession = true
             }
-            consumed = true
-            status.pointee = .haveData
-            return buffer
         }
-        if let error = error {
-            NSLog("[VoquillApp] Meeting audio conversion failed: %@", error.localizedDescription)
-            return
-        }
-        guard output.frameLength > 0 else { return }
-        do {
-            try file.write(from: output)
-            framesWritten += AVAudioFramePosition(output.frameLength)
-        } catch {
-            NSLog("[VoquillApp] Meeting audio write failed: %@", error.localizedDescription)
+        lock.unlock()
+
+        guard let event = event else { return }
+        DispatchQueue.main.async {
+            if endSession || event["reason"] as? String == "limit" {
+                self.microphone.detach(self)
+            }
+            if endSession { self.endLiveActivities() } else { self.updateLiveActivity() }
+            self.onStateChanged?(event)
         }
     }
 
     func microphoneInterruptionBegan() {
         lock.lock()
-        guard noteId != nil, !isPaused else { lock.unlock(); return }
-        isPaused = true
-        isPausedByInterruption = true
+        guard session != nil, session?.isPaused == false else { lock.unlock(); return }
+        session?.isPaused = true
+        session?.isPausedByInterruption = true
         lock.unlock()
-        notifyStateChanged()
+        notifyStateChanged(reason: "interruption")
     }
 
     func microphoneInterruptionEnded(resumed: Bool) {
         lock.lock()
-        guard noteId != nil, isPausedByInterruption else { lock.unlock(); return }
-        isPausedByInterruption = false
-        isPaused = !resumed
+        guard session?.isPausedByInterruption == true else { lock.unlock(); return }
+        session?.isPausedByInterruption = false
+        session?.isPaused = !resumed
         lock.unlock()
         if !resumed { microphone.detach(self) }
-        notifyStateChanged()
+        notifyStateChanged(reason: "interruption")
     }
 
-    private func notifyStateChanged() {
+    private func notifyStateChanged(reason: String) {
         DispatchQueue.main.async {
             self.updateLiveActivity()
-            if let state = self.state() { self.onStateChanged?(state) }
+            if let state = self.state(reason: reason) { self.onStateChanged?(state) }
         }
     }
 
     // MARK: - Live Activity
 
+    /// Stale after this long without a refresh, so an activity orphaned by a
+    /// crash stops claiming that notes are being taken.
+    private static let activityStaleAfter: TimeInterval = 15 * 60
+    private static let activityRefreshEvery: TimeInterval = 5 * 60
+
     private func contentState() -> Any? {
         guard #available(iOS 16.2, *) else { return nil }
         lock.lock()
-        let elapsedMs = priorElapsedMs + segmentElapsedMsLocked()
-        let paused = isPaused
-        lock.unlock()
+        defer { lock.unlock() }
+        guard let session = session else { return nil }
+        let elapsedMs = session.priorElapsedMs + MeetingRecorder.milliseconds(session.sessionFrames)
         return MeetingNoteAttributes.ContentState(
-            isPaused: paused,
+            isPaused: session.isPaused,
             elapsedSeconds: elapsedMs / 1000,
             timerStart: Date().addingTimeInterval(-Double(elapsedMs) / 1000)
         )
@@ -229,15 +312,23 @@ final class MeetingRecorder: MicrophoneConsumer {
 
     private func startLiveActivity(noteId: String) {
         guard #available(iOS 16.2, *) else { return }
-        endLiveActivities()
+        // Snapshot the old activities before requesting the new one, so ending
+        // them can never end the activity created here.
+        let previous = Activity<MeetingNoteAttributes>.activities
+        Task {
+            for activity in previous {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
         guard ActivityAuthorizationInfo().areActivitiesEnabled,
               let state = contentState() as? MeetingNoteAttributes.ContentState else { return }
         do {
             activityRef = try Activity.request(
                 attributes: MeetingNoteAttributes(noteId: noteId),
-                content: .init(state: state, staleDate: nil),
+                content: .init(state: state, staleDate: Date().addingTimeInterval(MeetingRecorder.activityStaleAfter)),
                 pushType: nil
             )
+            startStaleTimer()
         } catch {
             NSLog("[VoquillApp] Failed to start meeting Live Activity: %@", error.localizedDescription)
         }
@@ -247,14 +338,25 @@ final class MeetingRecorder: MicrophoneConsumer {
         guard #available(iOS 16.2, *),
               let activity = activityRef as? Activity<MeetingNoteAttributes>,
               let state = contentState() as? MeetingNoteAttributes.ContentState else { return }
-        Task { await activity.update(.init(state: state, staleDate: nil)) }
+        let staleDate = Date().addingTimeInterval(MeetingRecorder.activityStaleAfter)
+        Task { await activity.update(.init(state: state, staleDate: staleDate)) }
+    }
+
+    private func startStaleTimer() {
+        staleTimer?.invalidate()
+        staleTimer = Timer.scheduledTimer(withTimeInterval: MeetingRecorder.activityRefreshEvery, repeats: true) { [weak self] _ in
+            self?.updateLiveActivity()
+        }
     }
 
     private func endLiveActivities() {
+        staleTimer?.invalidate()
+        staleTimer = nil
         activityRef = nil
         guard #available(iOS 16.2, *) else { return }
+        let activities = Activity<MeetingNoteAttributes>.activities
         Task {
-            for activity in Activity<MeetingNoteAttributes>.activities {
+            for activity in activities {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
         }
@@ -289,21 +391,31 @@ final class NoteRecorderChannel {
 
     private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
         let recorder = MeetingRecorder.shared
+        let args = call.arguments as? [String: Any]
         switch call.method {
         case "start":
-            guard let args = call.arguments as? [String: Any],
-                  let noteId = args["noteId"] as? String,
-                  let segmentId = args["segmentId"] as? String,
-                  let path = args["path"] as? String else {
+            guard let noteId = args?["noteId"] as? String,
+                  let segmentId = args?["segmentId"] as? String,
+                  let path = args?["path"] as? String,
+                  let maxSegmentMs = (args?["maxSegmentMs"] as? NSNumber)?.intValue,
+                  let maxSegmentBytes = (args?["maxSegmentBytes"] as? NSNumber)?.int64Value,
+                  let maxNoteMs = (args?["maxNoteMs"] as? NSNumber)?.intValue else {
                 result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
                 return
             }
-            let prior = (args["priorElapsedMs"] as? NSNumber)?.intValue ?? 0
             do {
-                try recorder.start(noteId: noteId, segmentId: segmentId, path: path, priorElapsedMs: prior)
+                try recorder.start(
+                    noteId: noteId,
+                    segmentId: segmentId,
+                    path: path,
+                    priorElapsedMs: (args?["priorElapsedMs"] as? NSNumber)?.intValue ?? 0,
+                    maxSegmentMs: maxSegmentMs,
+                    maxSegmentBytes: maxSegmentBytes,
+                    maxNoteMs: maxNoteMs
+                )
                 result(nil)
             } catch {
-                result(FlutterError(code: "START_FAILED", message: error.localizedDescription, details: nil))
+                result(flutterError(error, code: "START_FAILED"))
             }
         case "pause":
             result(recorder.pause())
@@ -311,22 +423,49 @@ final class NoteRecorderChannel {
             do {
                 result(try recorder.resume())
             } catch {
-                result(FlutterError(code: "RESUME_FAILED", message: error.localizedDescription, details: nil))
+                result(flutterError(error, code: "RESUME_FAILED"))
             }
         case "stop":
             result(recorder.stop())
         case "getState":
             result(recorder.state())
+        case "freeBytes":
+            guard let path = args?["path"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+                return
+            }
+            result(NSNumber(value: MeetingRecorder.freeBytes(at: URL(fileURLWithPath: path))))
+        case "excludeFromBackup":
+            guard let path = args?["path"] as? String else {
+                result(FlutterError(code: "INVALID_ARGS", message: nil, details: nil))
+                return
+            }
+            var url = URL(fileURLWithPath: path, isDirectory: true)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            do {
+                try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+                try url.setResourceValues(values)
+                result(nil)
+            } catch {
+                result(FlutterError(code: "BACKUP_EXCLUSION_FAILED", message: error.localizedDescription, details: nil))
+            }
+        case "canShareMicrophone":
+            result(true)
         case "takePendingAction":
             result(pendingAction)
             pendingAction = nil
         case "setSyncActive":
-            let isActive = (call.arguments as? [String: Any])?["isActive"] as? Bool ?? false
-            setBackgroundTask(active: isActive)
+            setBackgroundTask(active: args?["isActive"] as? Bool ?? false)
             result(nil)
         default:
             result(FlutterMethodNotImplemented)
         }
+    }
+
+    private func flutterError(_ error: Error, code: String) -> FlutterError {
+        let isLowStorage = (error as? MeetingRecorderError) == .lowStorage
+        return FlutterError(code: isLowStorage ? "LOW_STORAGE" : code, message: error.localizedDescription, details: nil)
     }
 
     /// Asks iOS for extra time so an upload started in the foreground can
