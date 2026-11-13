@@ -20,7 +20,19 @@ export const useStartMeetingNote = () => {
 
   return useCallback(async () => {
     try {
-      const { noteId, alreadyActive } = await startMeetingNote();
+      const { noteId, alreadyActive, finishedNoteIds } =
+        await startMeetingNote();
+      if (finishedNoteIds.length > 0) {
+        showSnackbar(
+          intl.formatMessage(
+            {
+              defaultMessage:
+                "{count, plural, one {Your interrupted meeting was} other {# interrupted meetings were}} saved and queued for processing.",
+            },
+            { count: finishedNoteIds.length },
+          ),
+        );
+      }
       if (alreadyActive) {
         showSnackbar(
           intl.formatMessage({

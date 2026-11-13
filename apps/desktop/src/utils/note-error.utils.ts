@@ -127,6 +127,18 @@ const messages = defineMessages({
     defaultMessage:
       "A note can hold up to 8 hours of recording. Everything recorded is saved: Stop to write the notes, then start a new note to keep recording.",
   },
+  dictationWordsTitle: {
+    defaultMessage: "Not enough Voquill words for this meeting",
+  },
+  dictationWordsBody: {
+    defaultMessage:
+      "This meeting is kept on this device and its recording is safe. It's transcribed with your Voquill dictation words, and there aren't enough left. Switch post-processing to Voquill cloud to use your meeting allowance instead, upgrade, or retry when your words reset.",
+  },
+  recoveredAudioTitle: { defaultMessage: "Recovered audio was added" },
+  recoveredAudioBody: {
+    defaultMessage:
+      "Part of this meeting was found on this device after Voquill closed unexpectedly. Its recording is safe. Process the note again to include it.",
+  },
   genericTitle: { defaultMessage: "Processing didn't finish" },
   genericBody: { defaultMessage: "Retry to continue." },
 });
@@ -224,6 +236,17 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
   capture_write_failed: {
     title: messages.writeFailedTitle,
     body: messages.writeFailedBody,
+    explainsAudio: true,
+  },
+  dictation_words_exceeded: {
+    title: messages.dictationWordsTitle,
+    body: messages.dictationWordsBody,
+    upgrade: true,
+    explainsAudio: true,
+  },
+  recovered_audio: {
+    title: messages.recoveredAudioTitle,
+    body: messages.recoveredAudioBody,
     explainsAudio: true,
   },
   note_length_limit: {

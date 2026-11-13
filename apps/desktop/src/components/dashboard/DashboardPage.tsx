@@ -3,7 +3,6 @@ import { getVersion } from "@tauri-apps/api/app";
 import { Outlet } from "react-router-dom";
 import { useAsyncData } from "../../hooks/async.hooks";
 import { TranscriptionDetailsDialog } from "../transcriptions/TranscriptionDetailsDialog";
-import { NotesSideEffects } from "../notes/NotesSideEffects";
 import { DashboardMenu } from "./DashboardMenu";
 import { FeatureReleaseDialog } from "./FeatureReleaseDialog";
 import { PermissionsDialog } from "./PermissionsDialog";
@@ -18,7 +17,6 @@ export default function DashboardPage() {
       <PermissionsDialog />
       <TranscriptionDetailsDialog />
       <TrialEndedDialog />
-      <NotesSideEffects />
       <Stack
         direction="row"
         sx={{ height: "100%", width: "100%", overflow: "hidden" }}

@@ -150,6 +150,7 @@ const storedNote = (id: string, status: Note["status"]): Note => ({
   durationMs: 0,
   createdAt: NOW,
   updatedAt: NOW,
+  processedWith: null,
   cloud: null,
 });
 
@@ -294,7 +295,11 @@ describe("meeting capture actions", () => {
   it("returns the meeting in progress instead of starting another", async () => {
     const first = await startMeetingNote();
     const second = await startMeetingNote();
-    expect(second).toEqual({ noteId: first.noteId, alreadyActive: true });
+    expect(second).toEqual({
+      noteId: first.noteId,
+      alreadyActive: true,
+      finishedNoteIds: [],
+    });
 
     fakes.notes.set("other", storedNote("other", "paused"));
     setAppState((state) => ({
@@ -467,5 +472,130 @@ describe("unreferenced meeting audio", () => {
     });
     expect(state.noteById["other-account"]).toBeUndefined();
     expect(state.noteById.empty).toBeUndefined();
+  });
+});
+
+describe("recovered recordings and accounts", () => {
+  it("finishes an interrupted meeting when a new one starts, instead of blocking it", async () => {
+    const first = await startMeetingNote();
+    const capture = getAppState().notes.capture!;
+    handleMeetingCaptureProgress({ ...capture, interruption: "no-audio" });
+    await vi.waitFor(() =>
+      expect(getAppState().noteById[first.noteId].status).toBe("paused"),
+    );
+
+    const second = await startMeetingNote();
+
+    expect(second.alreadyActive).toBe(false);
+    expect(second.noteId).not.toBe(first.noteId);
+    expect(second.finishedNoteIds).toEqual([first.noteId]);
+    expect(getAppState().noteById[first.noteId].status).toBe("pending");
+    expect(fakes.processed).toContain(first.noteId);
+    expect(getAppState().notes.activeNoteId).toBe(second.noteId);
+  });
+
+  it("keeps one meeting at a time for a meeting the user paused", async () => {
+    const first = await startMeetingNote();
+    await pauseMeetingNote(first.noteId);
+    const second = await startMeetingNote();
+    expect(second).toMatchObject({
+      noteId: first.noteId,
+      alreadyActive: true,
+      finishedNoteIds: [],
+    });
+  });
+
+  it("stops a cloud meeting safely when its account signs out (S4)", async () => {
+    setAppState((state) => ({
+      ...state,
+      auth: { uid: "u1", email: null, displayName: null, providers: [] },
+      notes: { ...state.notes, loaded: true, loadedForUserId: "u1" },
+    }));
+    const { noteId } = await startMeetingNote();
+    setAppState((state) => ({
+      ...state,
+      noteById: {
+        ...state.noteById,
+        [noteId]: {
+          ...state.noteById[noteId],
+          storage: "cloud",
+          cloud: {
+            ownerUserId: "u1",
+            onServer: false,
+            unsyncedFields: [],
+            processRequestedAt: null,
+            serverUpdatedAt: null,
+            fetchedUpdatedAt: null,
+          },
+        },
+      },
+    }));
+    expect(fakes.nativeCapture).not.toBeNull();
+
+    setAppState((state) => ({ ...state, auth: null }));
+    await initializeNotes();
+    await flushWrites();
+
+    expect(fakes.nativeCapture).toBeNull();
+    expect(fakes.notes.get(noteId)).toMatchObject({ status: "pending" });
+    expect(
+      [...fakes.segments.values()].find((s) => s.noteId === noteId),
+    ).toMatchObject({ status: "recorded", durationMs: 42_000 });
+    expect(getAppState().notes.activeNoteId).toBeNull();
+    expect(getAppState().notes.capture).toBeNull();
+  });
+
+  it("keeps recording a local meeting when the account signs out", async () => {
+    setAppState((state) => ({
+      ...state,
+      auth: { uid: "u1", email: null, displayName: null, providers: [] },
+      notes: { ...state.notes, loaded: true, loadedForUserId: "u1" },
+    }));
+    const { noteId } = await startMeetingNote();
+    fakes.notes.set(noteId, getAppState().noteById[noteId]);
+    fakes.capture = fakes.nativeCapture;
+    setAppState((state) => ({ ...state, auth: null }));
+    await initializeNotes();
+    expect(fakes.nativeCapture?.noteId).toBe(noteId);
+    expect(getAppState().noteById[noteId].status).toBe("recording");
+  });
+
+  it("attaches found audio to a finished note, flagged, and adopts unknown audio as a local note (S9, N7)", async () => {
+    fakes.notes.set("done", storedNote("done", "ready"));
+    fakes.orphans = [
+      {
+        noteId: "done",
+        segmentId: "late",
+        audioPath: "/audio/late.wav",
+        durationMs: 4_000,
+        noteExists: true,
+      },
+      {
+        noteId: "unknown",
+        segmentId: "lost",
+        audioPath: "/audio/lost.wav",
+        durationMs: 4_000,
+        noteExists: false,
+      },
+    ];
+    setAppState((state) => ({
+      ...state,
+      auth: { uid: "u1", email: null, displayName: null, providers: [] },
+    }));
+
+    await initializeNotes();
+    await flushWrites();
+
+    const state = getAppState();
+    expect(state.noteById.done).toMatchObject({
+      status: "ready",
+      error: { code: "recovered_audio" },
+    });
+    expect(state.noteSegmentsByNoteId.done.map((s) => s.id)).toEqual(["late"]);
+    expect(state.noteById.unknown).toMatchObject({
+      storage: "local",
+      cloud: null,
+      status: "paused",
+    });
   });
 });

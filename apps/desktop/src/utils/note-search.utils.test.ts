@@ -25,6 +25,7 @@ const makeNote = (overrides: Partial<Note>): Note => ({
   durationMs: 0,
   createdAt: "2026-01-01T10:00:00.000Z",
   updatedAt: "2026-01-01T10:00:00.000Z",
+  processedWith: null,
   cloud: null,
   ...overrides,
 });

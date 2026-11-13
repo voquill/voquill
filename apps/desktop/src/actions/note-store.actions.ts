@@ -67,7 +67,7 @@ const removedNoteIds = new Set<string>();
 
 /** Resolves once every queued SQLite write has finished. */
 const waitForNoteWrites = () =>
-  Promise.all([...writeChainByNoteId.values()]).then(() => undefined);
+  Promise.all(writeChainByNoteId.values()).then(() => undefined);
 
 /**
  * Loads local notes plus the cloud notes of `cloudNotesUserId`, replacing
@@ -234,8 +234,20 @@ export const addNoteSegment = async (
   await persistSegment(segment.noteId, segment.id);
 };
 
-/** Waits for queued writes, then forgets this session's state (local data cleared). */
-export const resetNoteStore = async (): Promise<void> => {
+/**
+ * Forgets every note before local data is cleared: nothing in flight can
+ * write one back (they count as deleted), and queued writes finish first.
+ */
+export const clearNoteStore = async (): Promise<void> => {
+  produceAppState((draft) => {
+    for (const noteId of Object.keys(draft.noteById)) {
+      removedNoteIds.add(noteId);
+    }
+    draft.noteById = {};
+    draft.noteSegmentsByNoteId = {};
+    draft.notes.activeNoteId = null;
+    draft.notes.capture = null;
+    draft.notes.cloudActivityByNoteId = {};
+  });
   await waitForNoteWrites();
-  removedNoteIds.clear();
 };

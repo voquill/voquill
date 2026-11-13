@@ -268,6 +268,7 @@ export class CloudNotePipeline extends BaseNotePipeline {
         durationMs: 0,
         createdAt: now,
         updatedAt: now,
+        processedWith: null,
         cloud: {
           ownerUserId,
           onServer: false,

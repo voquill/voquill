@@ -1,35 +1,97 @@
 import type {
   NoteCloudSync,
+  NoteProcessedWith,
+  NoteProcessor,
   NoteSegment,
   NoteSource,
   NoteStorage,
 } from "@voquill/types";
 import type { AppState } from "../state/app.state";
 import { getIntl } from "../i18n";
-import { getIsVoquillCloudUser } from "./member.utils";
 import {
-  getEffectivePostProcessingMode,
-  getEffectiveTranscriptionMode,
-  getGenerativePrefs,
-} from "./user.utils";
+  getMemberExceedsLimitByState,
+  getMemberWordsRemaining,
+} from "./member.utils";
+import { getGenerativePrefs, getTranscriptionPrefs } from "./user.utils";
 
 /** The signed-in Voquill cloud account whose cloud notes this device shows. */
 export const getCloudNotesUserId = (state: AppState): string | null =>
   state.auth && !state.isEnterprise ? state.auth.uid : null;
 
 /**
+ * A mode as the user configured it: an unset mode means Voquill cloud for a
+ * signed-in Voquill account (the app's default), whether or not the member
+ * record has loaded yet.
+ */
+const getConfiguredNoteMode = <T extends string>(
+  state: AppState,
+  mode: T | null,
+): T | "cloud" | null => mode ?? (getCloudNotesUserId(state) ? "cloud" : null);
+
+/**
  * The storage a new note gets; it never changes afterwards. Cloud needs a
- * signed-in Voquill cloud member with both transcription and post-processing
- * set to Voquill cloud; anything else (API keys, local Whisper, enterprise,
- * signed out) is local.
+ * signed-in Voquill account with both transcription and post-processing set
+ * to Voquill cloud. Decided from sign-in and the configured modes only, so a
+ * meeting started before the member record loads is stored correctly.
+ * Anything else (an API key or local Whisper for either mode, enterprise,
+ * signed out) is local, processed with the user's modes.
  */
 export const selectNoteStorage = (state: AppState): NoteStorage =>
   getCloudNotesUserId(state) &&
-  getIsVoquillCloudUser(state) &&
-  getEffectiveTranscriptionMode(state) === "cloud" &&
-  getEffectivePostProcessingMode(state) === "cloud"
+  getConfiguredNoteMode(state, state.settings.aiTranscription.mode) ===
+    "cloud" &&
+  getConfiguredNoteMode(state, state.settings.aiPostProcessing.mode) === "cloud"
     ? "cloud"
     : "local";
+
+const toNoteProcessor = (
+  prefs:
+    | { mode: "cloud" }
+    | { mode: "api"; provider: string }
+    | { mode: string },
+): NoteProcessor | null => {
+  if (prefs.mode === "cloud") return { kind: "voquill" };
+  if (prefs.mode === "api" && "provider" in prefs) {
+    return { kind: "api", provider: prefs.provider };
+  }
+  if (prefs.mode === "local") return { kind: "device" };
+  return null;
+};
+
+/** Where a local note's transcript and AI notes are produced with the current settings. */
+export const getLocalNoteProcessedWith = (
+  state: AppState,
+): NoteProcessedWith => ({
+  transcription: toNoteProcessor(getTranscriptionPrefs(state)),
+  notes: toNoteProcessor(getGenerativePrefs(state)),
+});
+
+/** About this many words are spoken per minute of meeting audio. */
+export const NOTE_WORDS_PER_MINUTE = 150;
+
+export const estimateNoteWords = (audioMs: number): number =>
+  Math.ceil((audioMs / 60_000) * NOTE_WORDS_PER_MINUTE);
+
+/**
+ * Voquill dictation words a local note's transcription can still use, when
+ * it transcribes through Voquill cloud (metered like dictation); null when
+ * it is not metered (another provider) or the member is not loaded.
+ */
+export const getLocalNoteTranscriptionWordBudget = (
+  state: AppState,
+): number | null =>
+  getLocalNoteTranscribesWithVoquill(state)
+    ? getMemberWordsRemaining(state)
+    : null;
+
+/** The user chose Voquill cloud transcription (a local note's audio goes to Voquill). */
+export const getLocalNoteTranscribesWithVoquill = (state: AppState): boolean =>
+  getConfiguredNoteMode(state, state.settings.aiTranscription.mode) === "cloud";
+
+/** A local note would transcribe through Voquill cloud with the words used up. */
+export const getLocalNoteTranscriptionBlocked = (state: AppState): boolean =>
+  getLocalNoteTranscribesWithVoquill(state) &&
+  getMemberExceedsLimitByState(state);
 
 export const createNoteCloudSync = (
   storage: NoteStorage,

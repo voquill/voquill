@@ -317,6 +317,7 @@ const localNote = (overrides: Partial<Note> = {}): Note => ({
   durationMs: 2_000,
   createdAt: NOW,
   updatedAt: NOW,
+  processedWith: null,
   cloud: {
     ownerUserId: USER,
     onServer: false,

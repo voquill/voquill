@@ -4,6 +4,7 @@ import type {
   NoteCloudSync,
   NoteEditableField,
   NoteError,
+  NoteProcessedWith,
   NoteSegment,
   NoteSegmentKind,
   NoteSegmentStatus,
@@ -39,6 +40,8 @@ export type LocalNote = {
   cloudProcessRequestedAt: number | null;
   cloudServerUpdatedAt: number | null;
   cloudFetchedUpdatedAt: number | null;
+  /** JSON object. */
+  processedWith: string | null;
 };
 
 export type LocalNoteSegment = {
@@ -132,7 +135,17 @@ export const toLocalNote = (note: Note): LocalNote => ({
   cloudProcessRequestedAt: toTimestamp(note.cloud?.processRequestedAt ?? null),
   cloudServerUpdatedAt: toTimestamp(note.cloud?.serverUpdatedAt ?? null),
   cloudFetchedUpdatedAt: toTimestamp(note.cloud?.fetchedUpdatedAt ?? null),
+  processedWith: note.processedWith ? JSON.stringify(note.processedWith) : null,
 });
+
+const parseProcessedWith = (value: string | null): NoteProcessedWith | null => {
+  if (!value) return null;
+  try {
+    return JSON.parse(value) as NoteProcessedWith;
+  } catch {
+    return null;
+  }
+};
 
 const fromLocalCloudSync = (note: LocalNote): NoteCloudSync | null =>
   note.storage === "cloud"
@@ -164,6 +177,7 @@ export const fromLocalNote = (note: LocalNote): Note => {
     createdAt: dayjs(note.createdAt).toISOString(),
     updatedAt: dayjs(note.updatedAt).toISOString(),
     cloud: fromLocalCloudSync(note),
+    processedWith: parseProcessedWith(note.processedWith),
   };
 };
 

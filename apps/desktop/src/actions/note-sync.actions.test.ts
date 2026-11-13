@@ -82,6 +82,7 @@ const cloudNote = (id: string, owner = "u1"): Note => ({
   durationMs: 0,
   createdAt: NOW,
   updatedAt: NOW,
+  processedWith: null,
   cloud: {
     ownerUserId: owner,
     onServer: true,

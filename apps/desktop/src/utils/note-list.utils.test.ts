@@ -24,6 +24,7 @@ const note = (id: string, createdAt: Date): Note => ({
   durationMs: 0,
   createdAt: createdAt.toISOString(),
   updatedAt: createdAt.toISOString(),
+  processedWith: null,
   cloud: null,
 });
 

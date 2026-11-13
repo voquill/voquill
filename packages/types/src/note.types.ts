@@ -64,6 +64,27 @@ export type Note = {
   updatedAt: string;
   /** Null for local notes. */
   cloud: NoteCloudSync | null;
+  /**
+   * Where a local note's transcript and AI notes were produced, recorded
+   * when it is processed (settings can change later). Null for cloud notes
+   * (always Voquill) and local notes not processed yet.
+   */
+  processedWith: NoteProcessedWith | null;
+};
+
+/** Who produced part of a local note. */
+export type NoteProcessor =
+  /** Voquill's servers (the user chose Voquill cloud for that mode). */
+  | { kind: "voquill" }
+  /** A third-party or self-hosted API, with the provider's id. */
+  | { kind: "api"; provider: string }
+  /** This device (on-device Whisper). */
+  | { kind: "device" };
+
+export type NoteProcessedWith = {
+  transcription: NoteProcessor | null;
+  /** Null when no AI notes were written (post-processing off). */
+  notes: NoteProcessor | null;
 };
 
 export type NoteUtterance = {

@@ -75,6 +75,7 @@ export const noteFromServer = (
     durationMs: server.durationMs,
     createdAt: server.createdAt,
     updatedAt: server.updatedAt,
+    processedWith: null,
     cloud: {
       ownerUserId,
       onServer: true,

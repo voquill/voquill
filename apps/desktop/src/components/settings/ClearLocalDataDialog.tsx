@@ -1,3 +1,4 @@
+import { releaseNotesForLocalDataClear } from "../../actions/note.actions";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Alert,
@@ -44,6 +45,7 @@ export const ClearLocalDataDialog = () => {
     setErrorMessage(null);
 
     try {
+      await releaseNotesForLocalDataClear();
       await invoke("clear_local_data");
       handleClose();
       window.location.reload();

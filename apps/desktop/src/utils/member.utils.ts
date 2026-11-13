@@ -1,6 +1,7 @@
 import { Member, Nullable } from "@voquill/types";
 import {
   getMemberExceedsLimits,
+  getWordLimit,
   getRec,
   TRIAL_DURATION_DAYS,
 } from "@voquill/utilities";
@@ -78,6 +79,27 @@ export const getIsPro = (state: AppState): boolean => {
 
 export const getIsPaidSubscriber = (state: AppState): boolean => {
   return getIsPro(state) && !getIsOnTrial(state);
+};
+
+/**
+ * Voquill cloud words the member can still transcribe now (the tightest of
+ * the day, week and month limits); null while the member or config is not
+ * loaded.
+ */
+export const getMemberWordsRemaining = (state: AppState): number | null => {
+  const member = getMyMember(state);
+  if (!member || !state.config) {
+    return null;
+  }
+  const limits = getWordLimit(state.config, member.plan);
+  return Math.max(
+    0,
+    Math.min(
+      limits.perDay - member.wordsToday,
+      limits.perWeek - (member.wordsThisWeek ?? 0),
+      limits.perMonth - member.wordsThisMonth,
+    ),
+  );
 };
 
 export const getMemberExceedsLimitByState = (state: AppState): boolean => {

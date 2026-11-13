@@ -6,6 +6,7 @@ import type {
   NoteSegment,
 } from "@voquill/types";
 import dayjs from "dayjs";
+import type { NoteProcessedWith } from "@voquill/types";
 import type { BaseNoteRepo } from "../repos/note.repo";
 import type { MeetingAudioRepo } from "../repos/meeting-audio.repo";
 import { MEETING_AUDIO_SAMPLE_RATE } from "../repos/meeting-audio.repo";
@@ -36,6 +37,7 @@ import {
   type NoteSearchResult,
 } from "../utils/note-search.utils";
 import { transitionNote } from "../utils/note-state.utils";
+import { estimateNoteWords } from "../utils/note.utils";
 import {
   BaseNotePipeline,
   type NoteAskEvent,
@@ -110,6 +112,13 @@ export type LocalNotePipelineDeps = {
   getCloudNotesUserId(): string | null;
   /** Chunk sizes for the transcription mode in use. */
   getChunkLimits(): NoteChunkLimits;
+  /** Where transcription and AI notes run with the current settings (stored on the note). */
+  getProcessedWith(): NoteProcessedWith;
+  /**
+   * Words transcription may still use when it is metered (Voquill cloud
+   * transcription counts against dictation words); null when not metered.
+   */
+  getTranscriptionWordBudget(): number | null;
   /**
    * Resolves when no dictation is running. Called before each chunk and each
    * generation request, so dictation never waits behind a whole note.
@@ -120,14 +129,28 @@ export type LocalNotePipelineDeps = {
 export type NoteErrorCode =
   | "audio_missing"
   | "transcription_failed"
-  | "generation_failed";
+  | "generation_failed"
+  | typeof DICTATION_WORDS_EXCEEDED_ERROR_CODE;
+
+/**
+ * A local note transcribes through Voquill cloud (metered as dictation
+ * words) and the words left will not cover it. `details`: `neededWords`,
+ * `remainingWords`.
+ */
+export const DICTATION_WORDS_EXCEEDED_ERROR_CODE = "dictation_words_exceeded";
 
 export class NoteProcessingError extends Error {
   readonly code: NoteErrorCode;
+  readonly details: Record<string, unknown> | undefined;
 
-  constructor(code: NoteErrorCode, cause: unknown) {
+  constructor(
+    code: NoteErrorCode,
+    cause: unknown,
+    details?: Record<string, unknown>,
+  ) {
     super(cause instanceof Error ? cause.message : String(cause));
     this.code = code;
+    this.details = details;
   }
 }
 
@@ -140,7 +163,9 @@ const ASK_CONTEXT_CHARS = 16_000;
 
 const toNoteError = (error: unknown): NoteError => {
   if (error instanceof NoteProcessingError) {
-    return { code: error.code, message: error.message };
+    return error.details
+      ? { code: error.code, message: error.message, details: error.details }
+      : { code: error.code, message: error.message };
   }
   return {
     code: "unknown",
@@ -196,9 +221,19 @@ export class LocalNotePipeline extends BaseNotePipeline {
     this.runningNoteIds.add(noteId);
     try {
       await store.loadSegments(noteId);
+      this.checkTranscriptionBudget(noteId);
+      const processedWith = this.deps.getProcessedWith();
       await store.updateNote(noteId, (note) => {
         note.status = transitionNote(note.status, "start-processing");
         note.error = null;
+        note.processedWith = {
+          transcription: store
+            .getSegments(noteId)
+            .some((segment) => segment.kind === "audio")
+            ? processedWith.transcription
+            : null,
+          notes: processedWith.notes,
+        };
       });
       await this.transcribeSegments(noteId);
       await this.generate(noteId);
@@ -271,6 +306,7 @@ export class LocalNotePipeline extends BaseNotePipeline {
         durationMs: 0,
         createdAt: now,
         updatedAt: now,
+        processedWith: null,
         cloud: null,
       },
       [
@@ -409,6 +445,32 @@ export class LocalNotePipeline extends BaseNotePipeline {
     }
   }
 
+  /**
+   * Refuses to start when metered transcription clearly cannot cover the
+   * audio left, so a meeting never drains the dictation words half-way.
+   */
+  private checkTranscriptionBudget(noteId: string): void {
+    const remainingWords = this.deps.getTranscriptionWordBudget();
+    if (remainingWords === null) {
+      return;
+    }
+    const untranscribedMs = this.deps.store
+      .getSegments(noteId)
+      .filter((s) => s.kind === "audio" && s.status !== "transcribed")
+      .reduce(
+        (total, s) => total + Math.max(0, s.durationMs - s.transcribedMs),
+        0,
+      );
+    const neededWords = estimateNoteWords(untranscribedMs);
+    if (neededWords > remainingWords) {
+      throw new NoteProcessingError(
+        DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+        "Not enough dictation words for this meeting",
+        { neededWords, remainingWords },
+      );
+    }
+  }
+
   private async transcribeSegments(noteId: string): Promise<void> {
     const { store, audio } = this.deps;
     for (const segment of store.getSegments(noteId)) {
@@ -466,7 +528,10 @@ export class LocalNotePipeline extends BaseNotePipeline {
           });
         }
       } catch (error) {
-        if (error instanceof NoteDeletedError) {
+        if (
+          error instanceof NoteDeletedError ||
+          error instanceof NoteProcessingError
+        ) {
           throw error;
         }
         throw new NoteProcessingError("transcription_failed", error);

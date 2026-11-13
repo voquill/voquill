@@ -16,9 +16,17 @@ import { EMPTY_TRANSCRIPT_NOTES } from "../utils/note-prompt.utils";
 import type { NoteAskEvent } from "./base-note.pipeline";
 import { FakeNoteStore } from "./fake-note-store.test-utils";
 import {
+  DICTATION_WORDS_EXCEEDED_ERROR_CODE,
   LocalNotePipeline,
+  NoteProcessingError,
   type NoteChatGenerator,
 } from "./local-note.pipeline";
+
+const PROCESSED_ON_DEVICE = {
+  transcription: { kind: "device" as const },
+  notes: { kind: "device" as const },
+};
+let wordBudget: number | null = null;
 
 vi.mock("../utils/log.utils", () => ({
   getLogger: () => ({
@@ -47,6 +55,7 @@ const makeNote = (overrides: Partial<Note> = {}): Note => ({
   durationMs: 0,
   createdAt: NOW,
   updatedAt: NOW,
+  processedWith: null,
   cloud: null,
   ...overrides,
 });
@@ -77,7 +86,7 @@ type Harness = {
   transcribeCalls: number[];
   prompts: string[];
   deleted: string[];
-  setTranscribeFailure: (failAtCall: number | null) => void;
+  setTranscribeFailure: (failAtCall: number | null, error?: Error) => void;
   setGenerator: (enabled: boolean) => void;
 };
 
@@ -95,6 +104,7 @@ const createHarness = ({
   const prompts: string[] = [];
   const deleted: string[] = [];
   let failAtCall: number | null = null;
+  let failure: Error = new Error("network down");
   let generatorEnabled = true;
 
   const generator: NoteChatGenerator = {
@@ -129,7 +139,7 @@ const createHarness = ({
     transcribe: async ({ samples }) => {
       transcribeCalls.push(samples.length);
       if (failAtCall !== null && transcribeCalls.length === failAtCall) {
-        throw new Error("network down");
+        throw failure;
       }
       return `chunk ${transcribeCalls.length}`;
     },
@@ -138,6 +148,8 @@ const createHarness = ({
     getChatGenerator: () => (generatorEnabled ? generator : null),
     getCloudNotesUserId: () => null,
     getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+    getProcessedWith: () => PROCESSED_ON_DEVICE,
+    getTranscriptionWordBudget: () => wordBudget,
     yieldToDictation: async () => {},
   });
 
@@ -147,8 +159,9 @@ const createHarness = ({
     transcribeCalls,
     prompts,
     deleted,
-    setTranscribeFailure: (value) => {
+    setTranscribeFailure: (value, error) => {
       failAtCall = value;
+      if (error) failure = error;
     },
     setGenerator: (enabled) => {
       generatorEnabled = enabled;
@@ -262,6 +275,8 @@ describe("LocalNotePipeline.process", () => {
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      getProcessedWith: () => PROCESSED_ON_DEVICE,
+      getTranscriptionWordBudget: () => wordBudget,
       yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
@@ -308,6 +323,8 @@ describe("LocalNotePipeline.process", () => {
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      getProcessedWith: () => PROCESSED_ON_DEVICE,
+      getTranscriptionWordBudget: () => wordBudget,
       yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
@@ -346,6 +363,8 @@ describe("LocalNotePipeline.process", () => {
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+      getProcessedWith: () => PROCESSED_ON_DEVICE,
+      getTranscriptionWordBudget: () => wordBudget,
       yieldToDictation: async () => {},
     });
     await harness.pipeline.process("note");
@@ -572,6 +591,8 @@ describe("LocalNotePipeline and dictation", () => {
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
+      getProcessedWith: () => PROCESSED_ON_DEVICE,
+      getTranscriptionWordBudget: () => wordBudget,
       yieldToDictation: async () => {
         events.push("yield");
         if (dictating) {
@@ -599,5 +620,74 @@ describe("LocalNotePipeline and dictation", () => {
       "yield",
       "generate",
     ]);
+  });
+});
+
+describe("LocalNotePipeline metered transcription (B1)", () => {
+  it("does not start when the dictation words clearly will not cover the meeting", async () => {
+    wordBudget = 1_000;
+    try {
+      const harness = createHarness({
+        segments: [audioSegment(0, 20 * 60_000)],
+      });
+      await harness.pipeline.process("note");
+
+      expect(harness.transcribeCalls).toEqual([]);
+      expect(harness.store.getNote("note")).toMatchObject({
+        status: "failed",
+        error: {
+          code: DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+          details: { neededWords: 3_000, remainingWords: 1_000 },
+        },
+      });
+      expect(harness.deleted).toEqual([]);
+    } finally {
+      wordBudget = null;
+    }
+  });
+
+  it("starts when the words cover the meeting and records where it was processed", async () => {
+    wordBudget = 1_000;
+    try {
+      const harness = createHarness({ segments: [audioSegment(0, 60_000)] });
+      await harness.pipeline.process("note");
+      expect(harness.store.getNote("note")).toMatchObject({
+        status: "ready",
+        processedWith: PROCESSED_ON_DEVICE,
+      });
+    } finally {
+      wordBudget = null;
+    }
+  });
+
+  it("stops cleanly when the words run out half-way, and Retry continues where it stopped", async () => {
+    const harness = createHarness({
+      segments: [audioSegment(0, 10 * 60_000)],
+    });
+    harness.setTranscribeFailure(
+      2,
+      new NoteProcessingError(
+        DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+        "out of words",
+        { remainingWords: 0 },
+      ),
+    );
+    await harness.pipeline.process("note");
+
+    expect(harness.transcribeCalls).toHaveLength(2);
+    expect(harness.store.getNote("note")?.error?.code).toBe(
+      DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+    );
+    const done = harness.store.getSegments("note")[0].transcribedMs;
+    expect(done).toBeGreaterThan(0);
+    expect(harness.deleted).toEqual([]);
+
+    harness.setTranscribeFailure(null);
+    await harness.store.updateNote("note", (note) => {
+      note.status = "pending";
+    });
+    await harness.pipeline.process("note");
+    expect(harness.store.getNote("note")?.status).toBe("ready");
+    expect(harness.transcribeCalls.length).toBeGreaterThan(2);
   });
 });

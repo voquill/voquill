@@ -24,6 +24,8 @@ pub struct Note {
     pub cloud_process_requested_at: Option<i64>,
     pub cloud_server_updated_at: Option<i64>,
     pub cloud_fetched_updated_at: Option<i64>,
+    /// JSON object.
+    pub processed_with: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, specta::Type)]

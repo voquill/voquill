@@ -32,6 +32,7 @@ import {
   transitionNote,
 } from "../utils/note-state.utils";
 import { getMyPreferredMicrophone } from "../utils/user.utils";
+import { setPreferredPostProcessingMode } from "./user.actions";
 import {
   canAppendToNoteSegment,
   getNoteCaptureAction,
@@ -40,7 +41,12 @@ import {
 import { clearNotesAsk } from "./note-ask.actions";
 import { needsFullNoteFetch } from "../utils/note-sync.utils";
 import { syncCloudNotes } from "./note-sync.actions";
-import { addNoteSegment, loadNotes, noteStore } from "./note-store.actions";
+import {
+  addNoteSegment,
+  clearNoteStore,
+  loadNotes,
+  noteStore,
+} from "./note-store.actions";
 
 export const CAPTURE_INTERRUPTED_ERROR_CODE = "capture_interrupted";
 export const CAPTURE_WRITE_FAILED_ERROR_CODE = "capture_write_failed";
@@ -207,17 +213,59 @@ const stopSegmentCapture = async (): Promise<void> => {
 };
 
 /**
+ * A paused note whose recording stopped without the user (interrupted,
+ * recovered after a crash, or at the length limit). It never blocks a new
+ * meeting: starting one finishes it and queues it for processing.
+ */
+const isRecoveredRecording = (note: Note): boolean =>
+  note.status === "paused" &&
+  getAppState().notes.capture?.noteId !== note.id &&
+  RECOVERED_RECORDING_ERROR_CODES.has(note.error?.code ?? "");
+
+const RECOVERED_RECORDING_ERROR_CODES = new Set([
+  CAPTURE_INTERRUPTED_ERROR_CODE,
+  CAPTURE_WRITE_FAILED_ERROR_CODE,
+  NOTE_LENGTH_LIMIT_ERROR_CODE,
+]);
+
+/** Moves a recording or paused note to processing (it must not be capturing). */
+const finishNote = async (noteId: string) => {
+  produceAppState((draft) => {
+    if (draft.notes.activeNoteId === noteId) {
+      draft.notes.activeNoteId = null;
+    }
+  });
+  const note = noteStore.getNote(noteId);
+  if (note?.status !== "recording" && note?.status !== "paused") {
+    return;
+  }
+  await noteStore.updateNote(noteId, (draft) => {
+    draft.status = transitionNote(draft.status, "finish");
+    draft.error = null;
+  });
+  processNote(noteId);
+};
+
+/**
  * Creates a note and starts recording it, or returns the meeting already in
- * progress (only one note records at a time).
+ * progress (only one note records at a time). Recovered recordings are
+ * finished first; `finishedNoteIds` lists them.
  */
 export const startMeetingNote = (): Promise<{
   noteId: string;
   alreadyActive: boolean;
+  finishedNoteIds: string[];
 }> =>
   serializeCapture(async () => {
     const activeNoteId = getAppState().notes.activeNoteId;
-    if (activeNoteId && noteStore.getNote(activeNoteId)) {
-      return { noteId: activeNoteId, alreadyActive: true };
+    const active = activeNoteId ? noteStore.getNote(activeNoteId) : null;
+    if (active && !isRecoveredRecording(active)) {
+      return { noteId: active.id, alreadyActive: true, finishedNoteIds: [] };
+    }
+    const finishedNoteIds: string[] = [];
+    for (const recovered of noteStore.getNotes().filter(isRecoveredRecording)) {
+      await finishNote(recovered.id);
+      finishedNoteIds.push(recovered.id);
     }
 
     const now = dayjs().toISOString();
@@ -235,6 +283,7 @@ export const startMeetingNote = (): Promise<{
       durationMs: 0,
       createdAt: now,
       updatedAt: now,
+      processedWith: null,
       cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
     };
     await noteStore.insertNote(note, []);
@@ -247,7 +296,7 @@ export const startMeetingNote = (): Promise<{
     if (note.cloud) {
       scheduleSaveEdits(note.id, 0);
     }
-    return { noteId: note.id, alreadyActive: false };
+    return { noteId: note.id, alreadyActive: false, finishedNoteIds };
   });
 
 export const pauseMeetingNote = (noteId: string): Promise<void> =>
@@ -304,20 +353,7 @@ export const stopMeetingNote = (noteId: string): Promise<void> =>
     if (getAppState().notes.capture?.noteId === noteId) {
       await stopSegmentCapture();
     }
-    produceAppState((draft) => {
-      if (draft.notes.activeNoteId === noteId) {
-        draft.notes.activeNoteId = null;
-      }
-    });
-    const note = noteStore.getNote(noteId);
-    if (note?.status !== "recording" && note?.status !== "paused") {
-      return;
-    }
-    await noteStore.updateNote(noteId, (draft) => {
-      draft.status = transitionNote(draft.status, "finish");
-      draft.error = null;
-    });
-    processNote(noteId);
+    await finishNote(noteId);
   });
 
 /** The microphone stopped delivering audio: keep what was captured, pause. */
@@ -444,6 +480,9 @@ const RECOVERED_AUDIO_ERROR: NoteError = {
   message: "Recording was interrupted",
 };
 
+/** Audio found for a note that was already finished: process it again to include it. */
+export const RECOVERED_AUDIO_ERROR_CODE = "recovered_audio";
+
 /**
  * Meeting audio on disk that no segment references (a crash between the
  * native layer creating a file and the app storing its segment) becomes a
@@ -460,15 +499,11 @@ const adoptUnreferencedAudio = async (): Promise<void> => {
       // Another account's note: it adopts the file when that account is back.
       continue;
     }
-    if (note && note.status !== "paused" && note.status !== "recording") {
-      getLogger().warning(
-        "Meeting audio found for a note that is not recording",
-      );
-      continue;
-    }
     if (!note) {
+      // Never uploaded on its own: a recovered recording stays on this
+      // device until the user processes it.
       const now = dayjs().toISOString();
-      const storage = selectNoteStorage(getAppState());
+      const storage = "local";
       note = {
         id: orphan.noteId,
         storage,
@@ -482,10 +517,12 @@ const adoptUnreferencedAudio = async (): Promise<void> => {
         durationMs: 0,
         createdAt: now,
         updatedAt: now,
-        cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
+        processedWith: null,
+        cloud: null,
       };
       await noteStore.insertNote(note, []);
     }
+    const capturing = note.status === "paused" || note.status === "recording";
     await noteStore.loadSegments(note.id);
     await addNoteSegment({
       id: orphan.segmentId,
@@ -502,9 +539,62 @@ const adoptUnreferencedAudio = async (): Promise<void> => {
     });
     await noteStore.updateNote(note.id, (draft) => {
       draft.durationMs = sumSegmentDurations(noteStore.getSegments(draft.id));
-      draft.error = RECOVERED_AUDIO_ERROR;
+      // A finished note keeps its status; the user processes it again.
+      draft.error = capturing
+        ? RECOVERED_AUDIO_ERROR
+        : {
+            code: RECOVERED_AUDIO_ERROR_CODE,
+            message: "Recovered audio was added to this note",
+          };
     });
   }
+};
+
+/**
+ * The account a cloud meeting belongs to signed out (or switched) while it
+ * was recording: the recording stops and is saved on this device, and the
+ * note is processed when that account signs in again. A local meeting does
+ * not depend on the account and keeps recording.
+ */
+const finishMeetingOfOtherAccount = async (
+  userId: string | null,
+): Promise<boolean> => {
+  const activeNoteId = getAppState().notes.activeNoteId;
+  const active = activeNoteId ? noteStore.getNote(activeNoteId) : null;
+  if (!active?.cloud || active.cloud.ownerUserId === userId) {
+    return false;
+  }
+  await stopMeetingNote(active.id);
+  return true;
+};
+
+/** Whether signing out now would stop a meeting (it belongs to the account). */
+export const getSignOutStopsMeeting = (): boolean => {
+  const activeNoteId = getAppState().notes.activeNoteId;
+  return Boolean(
+    activeNoteId && noteStore.getNote(activeNoteId)?.storage === "cloud",
+  );
+};
+
+/**
+ * Before local data is cleared (or the account deleted): stop recording,
+ * cancel uploads and forget every note, so nothing in flight writes one back.
+ */
+export const releaseNotesForLocalDataClear = async (): Promise<void> => {
+  await serializeCapture(async () => {
+    if (getAppState().notes.capture) {
+      await getMeetingAudioRepo()
+        .stopCapture()
+        .catch(() => null);
+    }
+  });
+  const audio = getMeetingAudioRepo();
+  for (const segments of Object.values(getAppState().noteSegmentsByNoteId)) {
+    for (const segment of segments) {
+      void audio.cancelUpload(segment.id).catch(() => undefined);
+    }
+  }
+  await clearNoteStore();
 };
 
 /**
@@ -513,12 +603,17 @@ const adoptUnreferencedAudio = async (): Promise<void> => {
  * become paused notes with their partial audio, and interrupted processing
  * resumes where it stopped.
  */
-export const initializeNotes = async (): Promise<void> => {
+export const initializeNotes = async (): Promise<{
+  /** A cloud meeting stopped because its account signed out. */
+  stoppedMeetingOfOtherAccount: boolean;
+}> => {
   const userId = getCloudNotesUserId(getAppState());
   const { loaded, loadedForUserId } = getAppState().notes;
   if (loaded && loadedForUserId === userId) {
-    return;
+    return { stoppedMeetingOfOtherAccount: false };
   }
+  const stoppedMeetingOfOtherAccount =
+    await finishMeetingOfOtherAccount(userId);
   const notes = await loadNotes(userId);
   const capture = await getMeetingAudioRepo()
     .getCaptureStatus()
@@ -547,6 +642,7 @@ export const initializeNotes = async (): Promise<void> => {
     void runPipeline(note.id, (id) => pipeline.resumeAfterRestart(id));
   }
   void syncCloudNotes({ force: true });
+  return { stoppedMeetingOfOtherAccount };
 };
 
 /** Segments for display; a cloud note's are fetched when the cached copy is stale. */
@@ -629,6 +725,51 @@ export const saveUnsyncedNoteEdits = () => {
       scheduleSaveEdits(note.id, 0);
     }
   }
+};
+
+/**
+ * The way out when a local note's Voquill cloud transcription would use up
+ * the dictation words: switch post-processing to Voquill cloud too, which
+ * makes this a cloud note that uses the meeting allowance, and process it
+ * there. Its audio is sent whole (partial local transcripts are dropped).
+ */
+export const processNoteInVoquillCloud = async (noteId: string) => {
+  await setPreferredPostProcessingMode("cloud");
+  const state = getAppState();
+  const ownerUserId = getCloudNotesUserId(state);
+  const note = noteStore.getNote(noteId);
+  if (
+    !note ||
+    note.storage !== "local" ||
+    !ownerUserId ||
+    selectNoteStorage(state) !== "cloud"
+  ) {
+    return;
+  }
+  await noteStore.mergeSegments(noteId, (segments) =>
+    segments.map((segment) =>
+      segment.kind === "audio" && segment.audioPath
+        ? {
+            ...segment,
+            status: "recorded",
+            error: null,
+            transcript: null,
+            transcribedMs: 0,
+            upload: null,
+          }
+        : segment,
+    ),
+  );
+  await noteStore.updateNote(noteId, (draft) => {
+    draft.storage = "cloud";
+    draft.cloud = createNoteCloudSync("cloud", ownerUserId);
+    draft.processedWith = null;
+    draft.error = null;
+    if (canTransitionNote(draft.status, "retry")) {
+      draft.status = transitionNote(draft.status, "retry");
+    }
+  });
+  processNote(noteId);
 };
 
 export const retryNote = async (noteId: string) => {

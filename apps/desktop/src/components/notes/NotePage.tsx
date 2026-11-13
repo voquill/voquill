@@ -28,7 +28,13 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
-import type { Note, NoteError } from "@voquill/types";
+import {
+  API_KEY_PROVIDERS,
+  type ApiKeyProvider,
+  type Note,
+  type NoteError,
+  type NoteProcessor,
+} from "@voquill/types";
 import { useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
@@ -38,6 +44,8 @@ import {
   loadNoteSegments,
   NoteRecordingBlockedError,
   pauseMeetingNote,
+  processNoteInVoquillCloud,
+  RECOVERED_AUDIO_ERROR_CODE,
   regenerateNote,
   renameNote,
   resumeMeetingNote,
@@ -52,14 +60,19 @@ import { useAsyncEffect } from "../../hooks/async.hooks";
 import { getNotePath, useNoteTranscriptCopyText } from "../../hooks/note.hooks";
 import type { NoteView } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
+import { DICTATION_WORDS_EXCEEDED_ERROR_CODE } from "../../pipelines/local-note.pipeline";
 import { getNoteResumeBlocker } from "../../utils/note-audio.utils";
 import { describeNoteError } from "../../utils/note-error.utils";
 import {
   formatNoteDuration,
   getNoteElapsedMs,
   getNoteGenerationAvailableFor,
+  getCloudNotesUserId,
+  getLocalNoteProcessedWith,
+  getLocalNoteTranscribesWithVoquill,
   getNoteHasTranscript,
 } from "../../utils/note.utils";
+import { getProviderFormConfig } from "../settings/api-key-provider-config";
 import { ConfirmDialog } from "../common/ConfirmDialog";
 import { EditTypography } from "../common/EditTypography";
 import { SegmentedControl } from "../common/SegmentedControl";
@@ -151,29 +164,133 @@ const MetaChip = ({
   icon,
   label,
   color,
+  tooltip,
 }: {
   icon: ReactElement;
   label: ReactNode;
   color?: "error" | "default";
-}) => (
-  <Chip
-    size="small"
-    variant="outlined"
-    color={color}
-    icon={icon}
-    label={label}
-    sx={{
-      height: 26,
-      borderColor: color === "error" ? undefined : "divider",
-      color: color === "error" ? undefined : "text.secondary",
-      "& .MuiChip-icon": {
-        fontSize: 15,
+  tooltip?: ReactNode;
+}) => {
+  const chip = (
+    <Chip
+      size="small"
+      variant="outlined"
+      color={color}
+      icon={icon}
+      label={label}
+      sx={{
+        height: 26,
+        borderColor: color === "error" ? undefined : "divider",
         color: color === "error" ? undefined : "text.secondary",
-      },
-      "& .MuiChip-label": { fontVariantNumeric: "tabular-nums" },
-    }}
-  />
-);
+        "& .MuiChip-icon": {
+          fontSize: 15,
+          color: color === "error" ? undefined : "text.secondary",
+        },
+        "& .MuiChip-label": { fontVariantNumeric: "tabular-nums" },
+      }}
+      tabIndex={tooltip ? 0 : undefined}
+    />
+  );
+  return tooltip ? <Tooltip title={tooltip}>{chip}</Tooltip> : chip;
+};
+
+const useProcessorName = () => {
+  const intl = useIntl();
+  return (processor: NoteProcessor): string => {
+    switch (processor.kind) {
+      case "voquill":
+        return intl.formatMessage({ defaultMessage: "Voquill cloud" });
+      case "device":
+        return intl.formatMessage({ defaultMessage: "Whisper on this device" });
+      case "api": {
+        const provider = processor.provider as ApiKeyProvider;
+        const name = API_KEY_PROVIDERS.includes(provider)
+          ? getProviderFormConfig(provider, "post-processing").displayName
+          : processor.provider;
+        return intl.formatMessage(
+          { defaultMessage: "{provider} (your API key)" },
+          { provider: name },
+        );
+      }
+    }
+  };
+};
+
+/**
+ * Where the note lives and who produced it. A local note is "On this
+ * device" only when nothing left the device; otherwise the tooltip names
+ * each service (recorded when the note was processed, else the current
+ * settings it will use).
+ */
+const NoteStorageChip = ({ note }: { note: Note }) => {
+  const processorName = useProcessorName();
+  const current = useAppStore((state) =>
+    note.storage === "local" && !note.processedWith
+      ? getLocalNoteProcessedWith(state)
+      : null,
+  );
+  if (note.storage === "cloud") {
+    return (
+      <MetaChip
+        icon={<CloudOutlined />}
+        label={<FormattedMessage defaultMessage="Voquill Cloud" />}
+        tooltip={
+          <FormattedMessage defaultMessage="Stored in your Voquill account. Transcribed and written by Voquill." />
+        }
+      />
+    );
+  }
+  const routes = note.processedWith ?? current!;
+  const transcription =
+    note.source === "recording" ? routes.transcription : null;
+  const allOnDevice =
+    (!transcription || transcription.kind === "device") && !routes.notes;
+  const pending = !note.processedWith;
+  return (
+    <MetaChip
+      icon={<LaptopOutlined />}
+      label={
+        allOnDevice ? (
+          <FormattedMessage defaultMessage="On this device" />
+        ) : (
+          <FormattedMessage defaultMessage="Stored on this device" />
+        )
+      }
+      tooltip={
+        <Stack component="span">
+          <FormattedMessage defaultMessage="Stored on this device." />
+          {transcription &&
+            (pending ? (
+              <FormattedMessage
+                defaultMessage="Will be transcribed with {service}."
+                values={{ service: processorName(transcription) }}
+              />
+            ) : (
+              <FormattedMessage
+                defaultMessage="Transcribed with {service}."
+                values={{ service: processorName(transcription) }}
+              />
+            ))}
+          {routes.notes ? (
+            pending ? (
+              <FormattedMessage
+                defaultMessage="AI notes will be written with {service}."
+                values={{ service: processorName(routes.notes) }}
+              />
+            ) : (
+              <FormattedMessage
+                defaultMessage="AI notes written with {service}."
+                values={{ service: processorName(routes.notes) }}
+              />
+            )
+          ) : (
+            <FormattedMessage defaultMessage="No AI notes (post-processing is off)." />
+          )}
+        </Stack>
+      }
+    />
+  );
+};
 
 const NoteStateChip = ({ note }: { note: Note }) => {
   const isCapturing = useAppStore(
@@ -280,17 +397,7 @@ const NoteMetaChips = ({ note }: { note: Note }) => {
         )
       )}
       <NoteStateChip note={note} />
-      {note.storage === "cloud" ? (
-        <MetaChip
-          icon={<CloudOutlined />}
-          label={<FormattedMessage defaultMessage="Voquill Cloud" />}
-        />
-      ) : (
-        <MetaChip
-          icon={<LaptopOutlined />}
-          label={<FormattedMessage defaultMessage="On this device" />}
-        />
-      )}
+      <NoteStorageChip note={note} />
     </Stack>
   );
 };
@@ -452,7 +559,11 @@ const RecordingPanel = ({ note }: { note: Note }) => {
           onClick={() => stopMeetingNote(note.id).catch(showErrorSnackbar)}
           sx={{ px: 3 }}
         >
-          <FormattedMessage defaultMessage="Stop" />
+          {isCapturing ? (
+            <FormattedMessage defaultMessage="Stop" />
+          ) : (
+            <FormattedMessage defaultMessage="Finish" />
+          )}
         </Button>
       </Stack>
     </Stack>
@@ -781,6 +892,33 @@ const NoteViews = ({
   );
 };
 
+/** For a local note out of Voquill dictation words: process it as a cloud note instead. */
+const UseVoquillCloudAction = ({ note }: { note: Note }) => {
+  const available = useAppStore(
+    (state) =>
+      Boolean(getCloudNotesUserId(state)) &&
+      getLocalNoteTranscribesWithVoquill(state),
+  );
+  if (
+    note.storage !== "local" ||
+    note.error?.code !== DICTATION_WORDS_EXCEEDED_ERROR_CODE ||
+    !available
+  ) {
+    return null;
+  }
+  return (
+    <Button
+      color="inherit"
+      size="small"
+      onClick={() =>
+        processNoteInVoquillCloud(note.id).catch(showErrorSnackbar)
+      }
+    >
+      <FormattedMessage defaultMessage="Switch post-processing to Voquill cloud" />
+    </Button>
+  );
+};
+
 const MyNotesSection = ({ noteId }: { noteId: string }) => (
   <Stack spacing={1}>
     <Typography variant="subtitle2" color="text.secondary">
@@ -959,6 +1097,15 @@ export default function NotePage() {
               <NoteProblem
                 error={note.error}
                 hasAudio={note.source === "recording"}
+                onRetry={() => retryNote(note.id).catch(showErrorSnackbar)}
+                action={<UseVoquillCloudAction note={note} />}
+              />
+            )}
+            {isReady && note.error?.code === RECOVERED_AUDIO_ERROR_CODE && (
+              <NoteProblem
+                severity="warning"
+                error={note.error}
+                hasAudio
                 onRetry={() => retryNote(note.id).catch(showErrorSnackbar)}
               />
             )}

@@ -16,6 +16,10 @@ import {
 import { getTranscriptionPrefs } from "../utils/user.utils";
 import {
   getCloudNotesUserId,
+  getLocalNoteProcessedWith,
+  getLocalNoteTranscribesWithVoquill,
+  getLocalNoteTranscriptionBlocked,
+  getLocalNoteTranscriptionWordBudget,
   getNoteGenerationAvailable,
   getNoteGenerationContextTokens,
 } from "../utils/note.utils";
@@ -23,13 +27,27 @@ import { collectDictionaryEntries } from "../utils/prompt.utils";
 import { applyReplacements } from "../utils/string.utils";
 import type { BaseNotePipeline } from "./base-note.pipeline";
 import { CloudNotePipeline, type Connectivity } from "./cloud-note.pipeline";
-import { LocalNotePipeline } from "./local-note.pipeline";
+import {
+  DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+  LocalNotePipeline,
+  NoteProcessingError,
+} from "./local-note.pipeline";
 import { getTranscriptionAttemptTimeout } from "../sessions";
 import { runWithAttemptTimeout } from "../utils/abort.utils";
 
 export { selectNoteStorage } from "../utils/note.utils";
 
 const DICTATION_SETTLE_MS = 1_500;
+
+/** The error code Voquill's transcription service sends when the words run out. */
+const VOQUILL_WORD_QUOTA_ERROR = "QUOTA_EXCEEDED";
+
+const dictationWordsExceeded = () =>
+  new NoteProcessingError(
+    DICTATION_WORDS_EXCEEDED_ERROR_CODE,
+    "Voquill cloud transcription is out of words",
+    { remainingWords: 0 },
+  );
 
 /**
  * Resolves once no dictation is recording or transcribing (and a moment has
@@ -72,15 +90,34 @@ const getLocalNotePipeline = (): LocalNotePipeline => {
     repo: getNoteRepo(),
     audio: getMeetingAudioRepo(),
     transcribe: async ({ samples, sampleRate }) => {
+      const state = getAppState();
+      // Voquill cloud transcription out of words would fall back to
+      // on-device Whisper for dictation; a meeting stops instead, so it is
+      // never processed somewhere the user did not choose.
+      if (getLocalNoteTranscriptionBlocked(state)) {
+        throw dictationWordsExceeded();
+      }
       // Same per-request bound as dictation recovery: hosted providers get
       // a timeout, local and self-hosted inference none.
-      const transcriptionPrefs = getTranscriptionPrefs(getAppState());
+      const transcriptionPrefs = getTranscriptionPrefs(state);
+      if (
+        getLocalNoteTranscribesWithVoquill(state) &&
+        transcriptionPrefs.mode !== "cloud"
+      ) {
+        // Not signed in, or the plan has not loaded: retry later.
+        throw new Error("Voquill cloud transcription is not available now");
+      }
       const timeout = getTranscriptionAttemptTimeout(transcriptionPrefs);
       const { rawTranscript } = await runWithAttemptTimeout(
         (signal) =>
           transcribeAudio({ samples, sampleRate, transcriptionPrefs, signal }),
         timeout ? timeout((samples.length / sampleRate) * 1000) : null,
-      );
+      ).catch((error: unknown) => {
+        if (String(error).includes(VOQUILL_WORD_QUOTA_ERROR)) {
+          throw dictationWordsExceeded();
+        }
+        throw error;
+      });
       const replacements = collectDictionaryEntries(
         getAppState(),
       ).replacements.map((rule) => ({
@@ -100,6 +137,9 @@ const getLocalNotePipeline = (): LocalNotePipeline => {
     },
     getChatGenerator,
     getCloudNotesUserId: () => getCloudNotesUserId(getAppState()),
+    getProcessedWith: () => getLocalNoteProcessedWith(getAppState()),
+    getTranscriptionWordBudget: () =>
+      getLocalNoteTranscriptionWordBudget(getAppState()),
     getChunkLimits: () =>
       getTranscriptionPrefs(getAppState()).mode === "local"
         ? LOCAL_WHISPER_NOTE_CHUNK_LIMITS

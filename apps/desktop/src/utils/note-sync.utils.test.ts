@@ -39,6 +39,7 @@ const local = (overrides: Partial<Note> = {}): Note => ({
   durationMs: 5_000,
   createdAt: "2026-05-01T12:00:00.000Z",
   updatedAt: "2026-05-01T12:30:00.000Z",
+  processedWith: null,
   cloud: {
     ownerUserId: "u1",
     onServer: true,

@@ -20,6 +20,7 @@ const note: Note = {
   durationMs: 61_000,
   createdAt: "2026-03-04T05:06:07.000Z",
   updatedAt: "2026-03-04T05:16:07.000Z",
+  processedWith: null,
   cloud: null,
 };
 

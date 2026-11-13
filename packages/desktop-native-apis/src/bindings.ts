@@ -1197,7 +1197,11 @@ export type Note = { id: string; storage: string; status: string; title: string;
 /**
  * JSON object.
  */
-errorDetails: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null }
+errorDetails: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null; 
+/**
+ * JSON object.
+ */
+processedWith: string | null }
 export type NoteDeletion = { noteId: string; ownerUserId: string; createdAt: number }
 export type NoteSearchCandidate = { note: Note; 
 /**

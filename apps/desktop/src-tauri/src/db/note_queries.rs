@@ -6,7 +6,7 @@ use crate::domain::{Note, NoteDeletion, NoteSearchCandidate, NoteSegment};
 const NOTE_COLUMNS: &str = "id, storage, status, title, title_source, source, personal_notes,
      generated_notes, duration_ms, error_code, error_message, created_at, updated_at,
      cloud_owner_user_id, cloud_on_server, cloud_unsynced_fields, cloud_process_requested_at,
-     cloud_server_updated_at, cloud_fetched_updated_at, error_details";
+     cloud_server_updated_at, cloud_fetched_updated_at, error_details, processed_with";
 
 const SEGMENT_COLUMNS: &str = "id, note_id, segment_index, kind, status, duration_ms, audio_path,
      transcribed_ms, transcript_text, transcript_utterances, created_at, error_code,
@@ -34,6 +34,7 @@ fn row_to_note(row: &SqliteRow) -> Note {
         cloud_server_updated_at: row.get("cloud_server_updated_at"),
         cloud_fetched_updated_at: row.get("cloud_fetched_updated_at"),
         error_details: row.get("error_details"),
+        processed_with: row.get("processed_with"),
     }
 }
 
@@ -62,7 +63,7 @@ fn row_to_segment(row: &SqliteRow) -> NoteSegment {
 pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Error> {
     sqlx::query(&format!(
         "INSERT INTO notes ({NOTE_COLUMNS})
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
          ON CONFLICT(id) DO UPDATE SET
              storage = excluded.storage,
              status = excluded.status,
@@ -82,7 +83,8 @@ pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Er
              cloud_process_requested_at = excluded.cloud_process_requested_at,
              cloud_server_updated_at = excluded.cloud_server_updated_at,
              cloud_fetched_updated_at = excluded.cloud_fetched_updated_at,
-             error_details = excluded.error_details"
+             error_details = excluded.error_details,
+             processed_with = excluded.processed_with"
     ))
     .bind(&note.id)
     .bind(&note.storage)
@@ -104,6 +106,7 @@ pub async fn upsert_note(pool: SqlitePool, note: &Note) -> Result<Note, sqlx::Er
     .bind(note.cloud_server_updated_at)
     .bind(note.cloud_fetched_updated_at)
     .bind(&note.error_details)
+    .bind(&note.processed_with)
     .execute(&pool)
     .await?;
 
@@ -193,7 +196,7 @@ pub async fn fetch_segments(
     let rows = sqlx::query(&format!(
         "SELECT {SEGMENT_COLUMNS} FROM note_segments
          WHERE note_id = ?1
-         ORDER BY segment_index ASC"
+         ORDER BY segment_index ASC, created_at ASC, id ASC"
     ))
     .bind(note_id)
     .fetch_all(&pool)
@@ -448,6 +451,7 @@ mod tests {
         for sql in [
             crate::db::NOTES_MIGRATION_SQL,
             crate::db::NOTE_CLOUD_SYNC_MIGRATION_SQL,
+            crate::db::NOTE_PROCESSED_WITH_MIGRATION_SQL,
         ] {
             sqlx::raw_sql(sql).execute(&pool).await.unwrap();
         }
@@ -475,6 +479,7 @@ mod tests {
             cloud_process_requested_at: None,
             cloud_server_updated_at: None,
             cloud_fetched_updated_at: None,
+            processed_with: None,
             error_details: None,
         }
     }
