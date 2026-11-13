@@ -74,6 +74,13 @@ export const getNoteGenerationAvailableFor = (
   state.noteById[noteId]?.storage === "cloud" ||
   getNoteGenerationAvailable(state);
 
+/**
+ * A meeting is being captured right now. Dictation's chimes and volume
+ * dimming stay off meanwhile, so they are not recorded into the meeting.
+ */
+export const getIsMeetingCapturing = (state: AppState): boolean =>
+  state.notes.capture !== null;
+
 /** Newest first, with the meeting in progress pinned on top. */
 export const getSortedNoteIds = (state: AppState): string[] => {
   const activeNoteId = state.notes.activeNoteId;

@@ -51,6 +51,7 @@ import {
 } from "../../utils/analytics.utils";
 import { getIsAssistantModeEnabled } from "../../utils/assistant-mode.utils";
 import { playAlertSound, tryPlayAudioChime } from "../../utils/audio.utils";
+import { getIsMeetingCapturing } from "../../utils/note.utils";
 import {
   DEFAULT_DICTATION_LIMIT_MINUTES,
   getDictationRecordingTimerDurations,
@@ -174,7 +175,7 @@ export const DictationSideEffects = () => {
 
   const dimSystemVolume = useCallback(async () => {
     const dimLevel = getAppState().userPrefs?.dictationAudioDim ?? 1.0;
-    if (dimLevel >= 1.0) return;
+    if (dimLevel >= 1.0 || getIsMeetingCapturing(getAppState())) return;
 
     try {
       const currentVolume = await invoke<number>("get_system_volume");
