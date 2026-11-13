@@ -94,9 +94,10 @@ fn paste_via_clipboard(text: &str, skip_clipboard_restore: bool) -> Result<(), S
         simulate_cmd_v()?;
 
         if !skip_clipboard_restore {
+            let pasted = trimmed_text.to_string();
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(800));
-                previous.restore();
+                previous.restore_unless_replaced(&pasted);
             });
         }
     }
