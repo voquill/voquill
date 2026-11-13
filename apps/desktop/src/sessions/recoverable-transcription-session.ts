@@ -7,7 +7,8 @@ import {
   TranscriptionSessionFinalizeOptions,
   TranscriptionSessionResult,
 } from "../types/transcription-session.types";
-import { abortable, abortableDelay } from "../utils/abort.utils";
+import { TranscriptionUnsupportedError } from "../repos/transcribe-audio.repo";
+import { abortableDelay, runWithAttemptTimeout } from "../utils/abort.utils";
 import { getLogger } from "../utils/log.utils";
 import { toErrorMessage } from "./streaming-session.utils";
 
@@ -191,6 +192,15 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
           return this.cancelled(context.metadata, warnings);
         }
         failureReason = toErrorMessage(error);
+        if (error instanceof TranscriptionUnsupportedError) {
+          return {
+            rawTranscript: null,
+            metadata: context.metadata,
+            warnings,
+            failureReason,
+            failureCode: "provider_unsupported",
+          };
+        }
         warnings.push(
           `Transcription attempt ${attempt} failed: ${failureReason}`,
         );
@@ -219,40 +229,21 @@ export class RecoverableTranscriptionSession implements TranscriptionSession {
     };
   }
 
-  private async runAttempt(
+  private runAttempt(
     audio: StopRecordingResponse,
     sampleRate: number,
     timeoutMs: number | undefined,
   ): Promise<TranscribeAudioResult> {
-    const attempt = new AbortController();
-    const cancel = () => attempt.abort();
-    this.lifetime.signal.addEventListener("abort", cancel, { once: true });
-    let timedOut = false;
-    const timer = timeoutMs
-      ? setTimeout(() => {
-          timedOut = true;
-          attempt.abort();
-        }, timeoutMs)
-      : null;
-
-    try {
-      return await abortable(
+    return runWithAttemptTimeout(
+      (signal) =>
         this.options.transcribe({
           samples: audio.samples,
           sampleRate,
-          signal: attempt.signal,
+          signal,
         }),
-        attempt.signal,
-      );
-    } catch (error) {
-      if (timedOut && timeoutMs) {
-        throw new Error(`Timed out after ${Math.round(timeoutMs / 1000)}s`);
-      }
-      throw error;
-    } finally {
-      if (timer) clearTimeout(timer);
-      this.lifetime.signal.removeEventListener("abort", cancel);
-    }
+      timeoutMs || null,
+      this.lifetime.signal,
+    );
   }
 
   private cancelled(

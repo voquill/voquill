@@ -4,9 +4,6 @@ export const createAbortError = (): Error => {
   return error;
 };
 
-export const isAbortError = (error: unknown): boolean =>
-  error instanceof Error && error.name === "AbortError";
-
 /** Rejects as soon as `signal` aborts, even if `promise` cannot be cancelled. */
 export const abortable = <T>(
   promise: Promise<T>,
@@ -68,15 +65,21 @@ export const withTimeout = <T>(
   );
 
 /**
- * Runs a cancellable task, aborting it after `timeoutMs` (no limit when
- * null) so a hung request ends with a timeout error instead of waiting
- * forever.
+ * Runs one cancellable attempt, aborting it after `timeoutMs` (no limit
+ * when null) or when `parent` aborts, so a hung request ends with a timeout
+ * error instead of waiting forever.
  */
 export const runWithAttemptTimeout = async <T>(
   run: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number | null,
+  parent?: AbortSignal,
 ): Promise<T> => {
   const attempt = new AbortController();
+  const cancel = () => attempt.abort();
+  parent?.addEventListener("abort", cancel, { once: true });
+  if (parent?.aborted) {
+    attempt.abort();
+  }
   let timedOut = false;
   const timer =
     timeoutMs === null
@@ -94,5 +97,6 @@ export const runWithAttemptTimeout = async <T>(
     throw error;
   } finally {
     if (timer) clearTimeout(timer);
+    parent?.removeEventListener("abort", cancel);
   }
 };
