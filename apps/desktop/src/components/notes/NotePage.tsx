@@ -56,7 +56,11 @@ import {
 } from "../../actions/note.actions";
 import { openUpgradePlanDialog } from "../../actions/pricing.actions";
 import { useAsyncEffect } from "../../hooks/async.hooks";
-import { getNotePath, useNoteTranscriptCopyText } from "../../hooks/note.hooks";
+import {
+  getNotePath,
+  NOTES_PATH,
+  useNoteTranscriptCopyText,
+} from "../../hooks/note.hooks";
 import type { NoteView } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
 import { DICTATION_WORDS_EXCEEDED_ERROR_CODE } from "../../pipelines/local-note.pipeline";
@@ -64,6 +68,8 @@ import { getNoteResumeBlocker } from "../../utils/note-audio.utils";
 import { describeNoteError } from "../../utils/note-error.utils";
 import {
   formatNoteDuration,
+  getDisplayNote,
+  getIsNoteCapturing,
   getNoteElapsedMs,
   getNoteGenerationAvailableFor,
   getCloudNotesUserId,
@@ -82,8 +88,6 @@ import { NoteColumn } from "./NoteLayout";
 import { NoteMarkdown } from "./NoteMarkdown";
 import { NoteTranscript } from "./NoteTranscript";
 import { PersonalNotesEditor } from "./PersonalNotesEditor";
-
-const NOTES_PATH = "/dashboard/notes";
 
 const openPostProcessingSettings = () => {
   produceAppState((draft) => {
@@ -294,8 +298,8 @@ const NoteStorageChip = ({ note }: { note: Note }) => {
 };
 
 const NoteStateChip = ({ note }: { note: Note }) => {
-  const isCapturing = useAppStore(
-    (state) => state.notes.capture?.noteId === note.id,
+  const isCapturing = useAppStore((state) =>
+    getIsNoteCapturing(state, note.id),
   );
   const activityKind = useAppStore(
     (state) => state.notes.cloudActivityByNoteId[note.id]?.kind ?? null,
@@ -481,8 +485,8 @@ const NoteProblem = ({
 
 const RecordingPanel = ({ note }: { note: Note }) => {
   const intl = useIntl();
-  const isCapturing = useAppStore(
-    (state) => state.notes.capture?.noteId === note.id,
+  const isCapturing = useAppStore((state) =>
+    getIsNoteCapturing(state, note.id),
   );
   const level = useAppStore((state) =>
     state.notes.capture?.noteId === note.id ? state.notes.capture.level : 0,
@@ -970,7 +974,7 @@ export default function NotePage() {
   const intl = useIntl();
   const navigate = useNavigate();
   const { noteId = "" } = useParams();
-  const note = useAppStore((state) => state.noteById[noteId]);
+  const note = useAppStore((state) => getDisplayNote(state, noteId));
   const loaded = useAppStore((state) => state.notes.loaded);
   const generationAvailable = useAppStore((state) =>
     getNoteGenerationAvailableFor(state, noteId),
@@ -981,6 +985,8 @@ export default function NotePage() {
   const resumeNote = useResumeNote();
   const canResume = useCanResumeNote(noteId);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // The request to regenerate is out; the note turns to processing once accepted.
+  const [regenerating, setRegenerating] = useState(false);
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
 
   useAsyncEffect(async () => {
@@ -1084,15 +1090,26 @@ export default function NotePage() {
                       })
                 }
                 onClick={async () => {
-                  const refusal = await regenerateNote(note.id);
-                  if (refusal) {
-                    const problem = describeNoteError(intl, refusal);
-                    showSnackbar(`${problem.title}. ${problem.body}`);
+                  setRegenerating(true);
+                  try {
+                    const refusal = await regenerateNote(note.id);
+                    if (refusal) {
+                      const problem = describeNoteError(intl, refusal);
+                      showSnackbar(`${problem.title}. ${problem.body}`);
+                    }
+                  } finally {
+                    setRegenerating(false);
                   }
                 }}
-                disabled={!generationAvailable || !hasTranscript}
+                disabled={
+                  !generationAvailable || !hasTranscript || regenerating
+                }
               >
-                <AutorenewRounded />
+                {regenerating ? (
+                  <CircularProgress size={20} color="inherit" />
+                ) : (
+                  <AutorenewRounded />
+                )}
               </IconAction>
             )}
             <IconAction

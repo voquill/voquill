@@ -247,6 +247,7 @@ export const clearNoteStore = async (): Promise<void> => {
     draft.noteSegmentsByNoteId = {};
     draft.notes.activeNoteId = null;
     draft.notes.capture = null;
+    draft.notes.captureIntentByNoteId = {};
     draft.notes.cloudActivityByNoteId = {};
   });
   await waitForNoteWrites();

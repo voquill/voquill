@@ -36,6 +36,12 @@ export type NoteCloudActivity =
   | { kind: "server-busy" }
   | { kind: "processing" };
 
+/**
+ * What the user last asked a meeting to do. The note shows this from the
+ * click, until the microphone and the stored note have caught up.
+ */
+export type NoteCaptureIntent = "recording" | "paused" | "finished";
+
 export const ALL_NOTES_ASK_KEY = "all";
 
 export const getNoteAskKey = (noteId: Nullable<string>): string =>
@@ -49,6 +55,8 @@ export type NotesState = {
   /** The meeting in progress this session, recording or paused. */
   activeNoteId: Nullable<string>;
   capture: Nullable<MeetingCaptureStatus>;
+  /** Capture requests still being carried out, by note id (not persisted). */
+  captureIntentByNoteId: Record<string, NoteCaptureIntent>;
   importDialogOpen: boolean;
   /** Session Ask threads by note id, or `ALL_NOTES_ASK_KEY` for the list. */
   askThreadByKey: Record<string, NoteAskThread>;
@@ -67,6 +75,7 @@ export const INITIAL_NOTES_STATE: NotesState = {
   cloudActivityByNoteId: {},
   activeNoteId: null,
   capture: null,
+  captureIntentByNoteId: {},
   importDialogOpen: false,
   askThreadByKey: {},
   askLimitResetsAt: null,

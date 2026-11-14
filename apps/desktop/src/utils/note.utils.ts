@@ -1,9 +1,11 @@
 import type {
+  Note,
   NoteCloudSync,
   NoteProcessedWith,
   NoteProcessor,
   NoteSegment,
   NoteSource,
+  NoteStatus,
   NoteStorage,
 } from "@voquill/types";
 import type { AppState } from "../state/app.state";
@@ -141,6 +143,57 @@ export const getNoteGenerationAvailableFor = (
  */
 export const getIsMeetingCapturing = (state: AppState): boolean =>
   state.notes.capture !== null;
+
+/**
+ * Whether the note shows as recording. While a request is being carried out
+ * this is what the user asked for, so buttons respond at once.
+ */
+export const getIsNoteCapturing = (
+  state: AppState,
+  noteId: string,
+): boolean => {
+  const intent = state.notes.captureIntentByNoteId[noteId];
+  return intent
+    ? intent === "recording"
+    : state.notes.capture?.noteId === noteId;
+};
+
+/** The note's status as shown: a meeting being started or stopped shows where it is going. */
+export const getNoteDisplayStatus = (
+  state: AppState,
+  noteId: string,
+): NoteStatus | null => {
+  const note = state.noteById[noteId];
+  if (!note) {
+    return null;
+  }
+  const intent = state.notes.captureIntentByNoteId[noteId];
+  if (intent === "recording") {
+    return "recording";
+  }
+  const isMeeting = note.status === "recording" || note.status === "paused";
+  return intent === "finished" && isMeeting ? "pending" : note.status;
+};
+
+/** The note with the status the user sees. */
+export const getDisplayNote = (
+  state: AppState,
+  noteId: string,
+): Note | undefined => {
+  const note = state.noteById[noteId];
+  const status = getNoteDisplayStatus(state, noteId);
+  return note && status && status !== note.status ? { ...note, status } : note;
+};
+
+/** The meeting in progress as shown; one being stopped no longer counts. */
+export const getActiveNoteId = (state: AppState): string | null => {
+  const noteId = state.notes.activeNoteId;
+  return noteId &&
+    state.noteById[noteId] &&
+    state.notes.captureIntentByNoteId[noteId] !== "finished"
+    ? noteId
+    : null;
+};
 
 /** Recorded audio so far, including the segment being captured now. */
 export const getNoteElapsedMs = (state: AppState, noteId: string): number => {

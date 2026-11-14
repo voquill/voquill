@@ -16,12 +16,13 @@ import type {
   MeetingCaptureStatus,
   ResumableUploadProgress,
 } from "../repos/meeting-audio.repo";
-import type { NoteView } from "../state/notes.state";
+import type { NoteCaptureIntent, NoteView } from "../state/notes.state";
 import { getAppState, produceAppState } from "../store";
 import { createId } from "../utils/id.utils";
 import { getLogger } from "../utils/log.utils";
 import {
   createNoteCloudSync,
+  getActiveNoteId,
   getCloudNotesUserId,
   getDefaultNoteTitle,
   getNoteElapsedMs,
@@ -69,6 +70,34 @@ const serializeCapture = <T>(task: () => Promise<T>): Promise<T> => {
   const run = captureQueue.then(task);
   captureQueue = run.catch(() => undefined);
   return run;
+};
+
+const captureIntentTokenByNoteId = new Map<string, number>();
+let nextCaptureIntentToken = 0;
+
+/**
+ * Shows the note as `intent` from the click, then does the capture work in
+ * turn. The note shows its real state again once the latest request for it
+ * has finished, whether it worked or not.
+ */
+const withCaptureIntent = <T>(
+  noteId: string,
+  intent: NoteCaptureIntent,
+  task: () => Promise<T>,
+): Promise<T> => {
+  const token = ++nextCaptureIntentToken;
+  captureIntentTokenByNoteId.set(noteId, token);
+  produceAppState((draft) => {
+    draft.notes.captureIntentByNoteId[noteId] = intent;
+  });
+  return serializeCapture(task).finally(() => {
+    if (captureIntentTokenByNoteId.get(noteId) === token) {
+      captureIntentTokenByNoteId.delete(noteId);
+      produceAppState((draft) => {
+        delete draft.notes.captureIntentByNoteId[noteId];
+      });
+    }
+  });
 };
 
 const runPipeline = (noteId: string, task: (noteId: string) => Promise<void>) =>
@@ -248,59 +277,80 @@ const finishNote = async (noteId: string) => {
 
 /**
  * Creates a note and starts recording it, or returns the meeting already in
- * progress (only one note records at a time). Recovered recordings are
- * finished first; `finishedNoteIds` lists them.
+ * progress (only one note records at a time). The note exists, and shows as
+ * recording, as soon as this returns; `started` settles once the microphone
+ * is open, and rejects (with the note removed) if it could not be opened.
+ * Recovered recordings are finished first; `finishedNoteIds` lists them.
  */
-export const startMeetingNote = (): Promise<{
+export const startMeetingNote = (): {
   noteId: string;
   alreadyActive: boolean;
   finishedNoteIds: string[];
-}> =>
-  serializeCapture(async () => {
-    const activeNoteId = getAppState().notes.activeNoteId;
-    const active = activeNoteId ? noteStore.getNote(activeNoteId) : null;
-    if (active && !isRecoveredRecording(active)) {
-      return { noteId: active.id, alreadyActive: true, finishedNoteIds: [] };
-    }
-    const finishedNoteIds: string[] = [];
-    for (const recovered of noteStore.getNotes().filter(isRecoveredRecording)) {
-      await finishNote(recovered.id);
-      finishedNoteIds.push(recovered.id);
-    }
-
-    const now = dayjs().toISOString();
-    const storage = selectNoteStorage(getAppState());
-    const note: Note = {
-      id: createId(),
-      storage,
-      status: "recording",
-      title: getDefaultNoteTitle("recording", now),
-      titleSource: "default",
-      error: null,
-      source: "recording",
-      personalNotes: "",
-      generatedNotes: null,
-      durationMs: 0,
-      createdAt: now,
-      updatedAt: now,
-      processedWith: null,
-      cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
+  started: Promise<void>;
+} => {
+  const activeNoteId = getActiveNoteId(getAppState());
+  const active = activeNoteId ? noteStore.getNote(activeNoteId) : null;
+  if (active && !isRecoveredRecording(active)) {
+    return {
+      noteId: active.id,
+      alreadyActive: true,
+      finishedNoteIds: [],
+      started: Promise.resolve(),
     };
-    await noteStore.insertNote(note, []);
+  }
+  const finishedNoteIds = noteStore
+    .getNotes()
+    .filter(isRecoveredRecording)
+    .map((note) => note.id);
+
+  const now = dayjs().toISOString();
+  const storage = selectNoteStorage(getAppState());
+  const note: Note = {
+    id: createId(),
+    storage,
+    status: "recording",
+    title: getDefaultNoteTitle("recording", now),
+    titleSource: "default",
+    error: null,
+    source: "recording",
+    personalNotes: "",
+    generatedNotes: null,
+    durationMs: 0,
+    createdAt: now,
+    updatedAt: now,
+    processedWith: null,
+    cloud: createNoteCloudSync(storage, getCloudNotesUserId(getAppState())),
+  };
+  const inserted = noteStore.insertNote(note, []);
+  produceAppState((draft) => {
+    draft.notes.activeNoteId = note.id;
+  });
+
+  const started = withCaptureIntent(note.id, "recording", async () => {
     try {
+      await inserted;
+      for (const noteId of finishedNoteIds) {
+        await finishNote(noteId);
+      }
       await startSegmentCapture(note.id);
     } catch (error) {
+      produceAppState((draft) => {
+        if (draft.notes.activeNoteId === note.id) {
+          draft.notes.activeNoteId = null;
+        }
+      });
       await noteStore.deleteNote(note.id, { deleteAudio: true });
       throw error;
     }
     if (note.cloud) {
       scheduleSaveEdits(note.id, 0);
     }
-    return { noteId: note.id, alreadyActive: false, finishedNoteIds };
   });
+  return { noteId: note.id, alreadyActive: false, finishedNoteIds, started };
+};
 
 export const pauseMeetingNote = (noteId: string): Promise<void> =>
-  serializeCapture(async () => {
+  withCaptureIntent(noteId, "paused", async () => {
     if (getAppState().notes.capture?.noteId !== noteId) {
       return;
     }
@@ -314,8 +364,12 @@ export const pauseMeetingNote = (noteId: string): Promise<void> =>
  * Records more audio into a paused or ready note. Returns the id of another
  * meeting that is in progress instead of starting, if there is one.
  */
-export const resumeMeetingNote = (noteId: string): Promise<string | null> =>
-  serializeCapture(async () => {
+export const resumeMeetingNote = (noteId: string): Promise<string | null> => {
+  const shownActiveNoteId = getActiveNoteId(getAppState());
+  if (shownActiveNoteId && shownActiveNoteId !== noteId) {
+    return Promise.resolve(shownActiveNoteId);
+  }
+  return withCaptureIntent(noteId, "recording", async () => {
     const activeNoteId = getAppState().notes.activeNoteId;
     if (
       activeNoteId &&
@@ -346,10 +400,11 @@ export const resumeMeetingNote = (noteId: string): Promise<string | null> =>
     });
     return null;
   });
+};
 
 /** Ends the meeting and hands it to the pipeline. */
 export const stopMeetingNote = (noteId: string): Promise<void> =>
-  serializeCapture(async () => {
+  withCaptureIntent(noteId, "finished", async () => {
     if (getAppState().notes.capture?.noteId === noteId) {
       await stopSegmentCapture();
     }

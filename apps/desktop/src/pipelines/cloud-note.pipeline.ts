@@ -299,9 +299,10 @@ export class CloudNotePipeline extends BaseNotePipeline {
   }
 
   /**
-   * Deletes on the server, then here. The delete is remembered until a sync
-   * sees the server without the note, so a request that was still in flight
-   * (an upload session creates a draft) cannot bring it back.
+   * Deletes here at once, then on the server. The delete is remembered
+   * first and kept until a sync sees the server without the note, so it is
+   * sent again if this request fails, and a request that was still in flight
+   * (an upload session creates a draft) cannot bring the note back.
    */
   async deleteNote(noteId: string): Promise<void> {
     const { store, repo, audio } = this.deps;
@@ -316,12 +317,14 @@ export class CloudNotePipeline extends BaseNotePipeline {
         ownerUserId,
         createdAt: this.deps.now(),
       });
+    }
+    await store.deleteNote(noteId, { deleteAudio: true });
+    if (ownerUserId) {
       await this.deps
         .api(ownerUserId)
         .deleteNote(noteId)
         .catch(() => undefined);
     }
-    await store.deleteNote(noteId, { deleteAudio: true });
   }
 
   /**

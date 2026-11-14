@@ -1,5 +1,6 @@
 import type { Note } from "@voquill/types";
 import type { AppState } from "../state/app.state";
+import { getActiveNoteId } from "./note.utils";
 
 export type NoteListEntry = Pick<Note, "id" | "createdAt">;
 
@@ -7,16 +8,12 @@ export type NoteListEntry = Pick<Note, "id" | "createdAt">;
 export const getNoteList = (
   state: AppState,
 ): { activeNoteId: string | null; entries: NoteListEntry[] } => {
-  const activeNoteId = state.notes.activeNoteId;
+  const activeNoteId = getActiveNoteId(state);
   const entries = Object.values(state.noteById)
     .filter((note) => note.id !== activeNoteId)
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .map(({ id, createdAt }) => ({ id, createdAt }));
-  return {
-    activeNoteId:
-      activeNoteId && state.noteById[activeNoteId] ? activeNoteId : null,
-    entries,
-  };
+  return { activeNoteId, entries };
 };
 
 export type NoteDayGroup = {

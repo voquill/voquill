@@ -5,7 +5,12 @@ import { useIntl } from "react-intl";
 import { useNavigate } from "react-router-dom";
 import { getNotePath } from "../../hooks/note.hooks";
 import { useAppStore } from "../../store";
-import { formatNoteDuration, getNoteElapsedMs } from "../../utils/note.utils";
+import {
+  formatNoteDuration,
+  getActiveNoteId,
+  getIsNoteCapturing,
+  getNoteElapsedMs,
+} from "../../utils/note.utils";
 
 const pulse = keyframes`
   0%, 100% { opacity: 1; }
@@ -34,13 +39,13 @@ export const MeetingIndicatorChip = () => {
   const intl = useIntl();
   const navigate = useNavigate();
   const meeting = useAppStore((state) => {
-    const noteId = state.notes.activeNoteId;
-    if (!noteId || !state.noteById[noteId]) {
+    const noteId = getActiveNoteId(state);
+    if (!noteId) {
       return null;
     }
     return {
       noteId,
-      isCapturing: state.notes.capture?.noteId === noteId,
+      isCapturing: getIsNoteCapturing(state, noteId),
       elapsed: formatNoteDuration(getNoteElapsedMs(state, noteId)),
     };
   });

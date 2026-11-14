@@ -4,7 +4,12 @@ import { Fragment, memo } from "react";
 import { FormattedMessage, useIntl } from "react-intl";
 import { getNotePath } from "../../hooks/note.hooks";
 import { useAppStore } from "../../store";
-import { formatNoteDuration, getNoteElapsedMs } from "../../utils/note.utils";
+import {
+  formatNoteDuration,
+  getIsNoteCapturing,
+  getNoteDisplayStatus,
+  getNoteElapsedMs,
+} from "../../utils/note.utils";
 import { splitHighlights } from "../../utils/note-search.utils";
 import { ListTile } from "../common/ListTile";
 import { RecordingDot } from "./MeetingIndicatorChip";
@@ -40,7 +45,7 @@ const HighlightedText = ({
 
 /** The row's second line when not searching: length, plus the state until ready. */
 const NoteRowState = ({ noteId }: { noteId: string }) => {
-  const status = useAppStore((state) => state.noteById[noteId]?.status);
+  const status = useAppStore((state) => getNoteDisplayStatus(state, noteId));
   const durationMs = useAppStore(
     (state) => state.noteById[noteId]?.durationMs ?? 0,
   );
@@ -56,9 +61,7 @@ const NoteRowState = ({ noteId }: { noteId: string }) => {
         : 0;
     return `uploading:${percent}`;
   });
-  const isCapturing = useAppStore(
-    (state) => state.notes.capture?.noteId === noteId,
-  );
+  const isCapturing = useAppStore((state) => getIsNoteCapturing(state, noteId));
   const elapsed = useAppStore((state) =>
     formatNoteDuration(getNoteElapsedMs(state, noteId)),
   );

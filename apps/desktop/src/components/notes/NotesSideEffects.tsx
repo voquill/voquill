@@ -25,7 +25,9 @@ import { getIsOnboarded } from "../../utils/user.utils";
 import { getLogger } from "../../utils/log.utils";
 import {
   formatNoteDuration,
+  getActiveNoteId,
   getCloudNotesUserId,
+  getIsNoteCapturing,
   getNoteElapsedMs,
 } from "../../utils/note.utils";
 import { surfaceMainWindow } from "../../utils/window.utils";
@@ -118,8 +120,8 @@ export const NotesSideEffects = () => {
   });
 
   const trayMenu = useAppStore((state): TrayMeetingMenu => {
-    const activeNoteId = state.notes.activeNoteId;
-    if (!activeNoteId || !state.noteById[activeNoteId]) {
+    const activeNoteId = getActiveNoteId(state);
+    if (!activeNoteId) {
       if (!getIsOnboarded(state)) {
         // Nothing to start before sign-in and onboarding.
         return { startLabel: null, statusLabel: null, stopLabel: null };
@@ -133,7 +135,7 @@ export const NotesSideEffects = () => {
       };
     }
     const elapsed = formatNoteDuration(getNoteElapsedMs(state, activeNoteId));
-    const isCapturing = state.notes.capture?.noteId === activeNoteId;
+    const isCapturing = getIsNoteCapturing(state, activeNoteId);
     return {
       startLabel: null,
       statusLabel: isCapturing

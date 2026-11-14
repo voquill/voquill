@@ -13,6 +13,9 @@ const fakes = vi.hoisted(() => ({
   processed: [] as string[],
   resumed: [] as string[],
   rolls: [] as string[],
+  /** The native layer answers start and stop only once this resolves. */
+  nativeGate: null as Promise<void> | null,
+  startFails: false,
   orphans: [] as {
     noteId: string;
     segmentId: string;
@@ -78,6 +81,10 @@ vi.mock("../repos", () => ({
       segmentId: string;
       append: boolean;
     }) => {
+      await fakes.nativeGate;
+      if (fakes.startFails) {
+        throw new Error("no microphone");
+      }
       const existing = append
         ? (fakes.segments.get(segmentId)?.durationMs ?? 0)
         : 0;
@@ -94,6 +101,7 @@ vi.mock("../repos", () => ({
       return fakes.nativeCapture;
     },
     stopCapture: async () => {
+      await fakes.nativeGate;
       const capture = fakes.nativeCapture;
       fakes.nativeCapture = null;
       return capture
@@ -135,6 +143,27 @@ const {
 
 const { NOTE_RECORDING_LIMIT_MS, NOTE_SEGMENT_ROLL_MS } =
   await import("../utils/note-audio.utils");
+const { getActiveNoteId, getIsNoteCapturing, getNoteDisplayStatus } =
+  await import("../utils/note.utils");
+
+/** Starts a meeting and waits until the microphone is open. */
+const startMeeting = async () => {
+  const result = startMeetingNote();
+  await result.started;
+  return result;
+};
+
+/** Holds the native layer's answers until the returned function is called. */
+const holdNativeCapture = () => {
+  let release = () => {};
+  fakes.nativeGate = new Promise<void>((resolve) => {
+    release = () => {
+      fakes.nativeGate = null;
+      resolve();
+    };
+  });
+  return release;
+};
 
 const NOW = "2026-05-01T12:00:00.000Z";
 
@@ -186,6 +215,8 @@ beforeEach(() => {
   fakes.processed = [];
   fakes.resumed = [];
   fakes.rolls = [];
+  fakes.nativeGate = null;
+  fakes.startFails = false;
   fakes.orphans = [];
   setAppState(structuredClone(INITIAL_APP_STATE));
 });
@@ -268,7 +299,7 @@ describe("initializeNotes", () => {
 
 describe("meeting capture actions", () => {
   it("records segments across pause and resume, then hands off on stop", async () => {
-    const { noteId, alreadyActive } = await startMeetingNote();
+    const { noteId, alreadyActive } = await startMeeting();
     expect(alreadyActive).toBe(false);
     expect(getAppState().notes.activeNoteId).toBe(noteId);
 
@@ -295,12 +326,13 @@ describe("meeting capture actions", () => {
   });
 
   it("returns the meeting in progress instead of starting another", async () => {
-    const first = await startMeetingNote();
-    const second = await startMeetingNote();
+    const first = await startMeeting();
+    const second = await startMeeting();
     expect(second).toEqual({
       noteId: first.noteId,
       alreadyActive: true,
       finishedNoteIds: [],
+      started: expect.any(Promise),
     });
 
     fakes.notes.set("other", storedNote("other", "paused"));
@@ -312,7 +344,7 @@ describe("meeting capture actions", () => {
   });
 
   it("pauses with the audio kept when the microphone stops delivering", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
 
     handleMeetingCaptureProgress({ ...capture, durationMs: 9_000 });
@@ -329,7 +361,7 @@ describe("meeting capture actions", () => {
   });
 
   it("recovers the segment duration when the native capture is gone", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     fakes.nativeCapture = null;
 
     await stopMeetingNote(noteId);
@@ -340,7 +372,7 @@ describe("meeting capture actions", () => {
   });
 
   it("ignores progress from a capture that already stopped", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
     await pauseMeetingNote(noteId);
 
@@ -351,9 +383,110 @@ describe("meeting capture actions", () => {
   });
 });
 
+describe("meeting capture responds at once", () => {
+  it("shows a new meeting as recording before the microphone is open", async () => {
+    const release = holdNativeCapture();
+
+    const { noteId, started } = startMeetingNote();
+
+    const state = getAppState();
+    expect(state.noteById[noteId].status).toBe("recording");
+    expect(getActiveNoteId(state)).toBe(noteId);
+    expect(getIsNoteCapturing(state, noteId)).toBe(true);
+    expect(state.notes.capture).toBeNull();
+
+    release();
+    await started;
+    expect(getAppState().notes.capture?.noteId).toBe(noteId);
+    expect(getAppState().notes.captureIntentByNoteId).toEqual({});
+    expect(getIsNoteCapturing(getAppState(), noteId)).toBe(true);
+  });
+
+  it("removes the note again when the microphone cannot be opened", async () => {
+    fakes.startFails = true;
+
+    const { noteId, started } = startMeetingNote();
+    expect(getAppState().noteById[noteId]).toBeDefined();
+
+    await expect(started).rejects.toThrow("no microphone");
+    await flushWrites();
+    const state = getAppState();
+    expect(state.noteById[noteId]).toBeUndefined();
+    expect(state.notes.activeNoteId).toBeNull();
+    expect(state.notes.captureIntentByNoteId).toEqual({});
+    expect(fakes.notes.has(noteId)).toBe(false);
+  });
+
+  it("shows a stopped meeting as processing while the recording is still being closed", async () => {
+    const { noteId } = await startMeeting();
+    const release = holdNativeCapture();
+
+    const stopped = stopMeetingNote(noteId);
+
+    const state = getAppState();
+    expect(getNoteDisplayStatus(state, noteId)).toBe("pending");
+    expect(getIsNoteCapturing(state, noteId)).toBe(false);
+    expect(getActiveNoteId(state)).toBeNull();
+    // The stored note only moves on once its audio is closed.
+    expect(state.noteById[noteId].status).toBe("recording");
+    expect(fakes.processed).toEqual([]);
+
+    release();
+    await stopped;
+    expect(getAppState().noteById[noteId].status).toBe("pending");
+    expect(getAppState().notes.captureIntentByNoteId).toEqual({});
+    expect(fakes.processed).toEqual([noteId]);
+  });
+
+  it("lets a new meeting start while the last one is still being closed", async () => {
+    const first = await startMeeting();
+    const release = holdNativeCapture();
+    const stopped = stopMeetingNote(first.noteId);
+
+    const second = startMeetingNote();
+
+    expect(second.alreadyActive).toBe(false);
+    expect(getActiveNoteId(getAppState())).toBe(second.noteId);
+    release();
+    await Promise.all([stopped, second.started]);
+    const state = getAppState();
+    expect(state.noteById[first.noteId].status).toBe("pending");
+    expect(state.notes.activeNoteId).toBe(second.noteId);
+    expect(state.notes.capture?.noteId).toBe(second.noteId);
+  });
+
+  it("follows the last button pressed when pause and resume are pressed quickly", async () => {
+    const { noteId } = await startMeeting();
+    const release = holdNativeCapture();
+
+    const paused = pauseMeetingNote(noteId);
+    expect(getIsNoteCapturing(getAppState(), noteId)).toBe(false);
+    const resumed = resumeMeetingNote(noteId);
+    expect(getIsNoteCapturing(getAppState(), noteId)).toBe(true);
+
+    release();
+    await Promise.all([paused, resumed]);
+    const state = getAppState();
+    expect(state.noteById[noteId].status).toBe("recording");
+    expect(state.notes.capture?.noteId).toBe(noteId);
+    expect(state.notes.captureIntentByNoteId).toEqual({});
+  });
+
+  it("shows the real state again when a request does not go through", async () => {
+    const { noteId } = await startMeeting();
+    await pauseMeetingNote(noteId);
+    fakes.startFails = true;
+
+    await expect(resumeMeetingNote(noteId)).rejects.toThrow("no microphone");
+
+    expect(getIsNoteCapturing(getAppState(), noteId)).toBe(false);
+    expect(getAppState().noteById[noteId].status).toBe("paused");
+  });
+});
+
 describe("recording limits", () => {
   it("rolls to a new segment before the file grows past the smallest segment cap", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
     fakes.nativeCapture = {
       ...fakes.nativeCapture!,
@@ -382,7 +515,7 @@ describe("recording limits", () => {
   });
 
   it("stops at the note limit with the audio kept, and refuses to resume", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
     fakes.nativeCapture = {
       ...fakes.nativeCapture!,
@@ -409,7 +542,7 @@ describe("recording limits", () => {
   });
 
   it("pauses at once when the disk refuses writes", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
     handleMeetingCaptureProgress({ ...capture, interruption: "write-failed" });
     await vi.waitFor(() =>
@@ -479,7 +612,7 @@ describe("unreferenced meeting audio", () => {
 
 describe("recovered recordings and accounts", () => {
   it("reopens the microphone in the same segment when the device changes its format", async () => {
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     const capture = getAppState().notes.capture!;
     handleMeetingCaptureProgress({
       ...capture,
@@ -501,14 +634,14 @@ describe("recovered recordings and accounts", () => {
   });
 
   it("finishes an interrupted meeting when a new one starts, instead of blocking it", async () => {
-    const first = await startMeetingNote();
+    const first = await startMeeting();
     const capture = getAppState().notes.capture!;
     handleMeetingCaptureProgress({ ...capture, interruption: "no-audio" });
     await vi.waitFor(() =>
       expect(getAppState().noteById[first.noteId].status).toBe("paused"),
     );
 
-    const second = await startMeetingNote();
+    const second = await startMeeting();
 
     expect(second.alreadyActive).toBe(false);
     expect(second.noteId).not.toBe(first.noteId);
@@ -519,9 +652,9 @@ describe("recovered recordings and accounts", () => {
   });
 
   it("keeps one meeting at a time for a meeting the user paused", async () => {
-    const first = await startMeetingNote();
+    const first = await startMeeting();
     await pauseMeetingNote(first.noteId);
-    const second = await startMeetingNote();
+    const second = await startMeeting();
     expect(second).toMatchObject({
       noteId: first.noteId,
       alreadyActive: true,
@@ -535,7 +668,7 @@ describe("recovered recordings and accounts", () => {
       auth: { uid: "u1", email: null, displayName: null, providers: [] },
       notes: { ...state.notes, loaded: true, loadedForUserId: "u1" },
     }));
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     setAppState((state) => ({
       ...state,
       noteById: {
@@ -575,7 +708,7 @@ describe("recovered recordings and accounts", () => {
       auth: { uid: "u1", email: null, displayName: null, providers: [] },
       notes: { ...state.notes, loaded: true, loadedForUserId: "u1" },
     }));
-    const { noteId } = await startMeetingNote();
+    const { noteId } = await startMeeting();
     fakes.notes.set(noteId, getAppState().noteById[noteId]);
     fakes.capture = fakes.nativeCapture;
     setAppState((state) => ({ ...state, auth: null }));
