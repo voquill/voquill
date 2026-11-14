@@ -15,6 +15,18 @@ export type MeetingCaptureInterruption =
   | "write-failed"
   | "device-changed";
 
+/**
+ * Whether the computer's audio is mixed into the meeting, and if not, why:
+ * still starting or waiting for the permission prompt, an OS that cannot,
+ * permission refused, or the output device failed.
+ */
+export type MeetingSystemAudio =
+  | "pending"
+  | "recording"
+  | "unsupported"
+  | "denied"
+  | "failed";
+
 export type MeetingCaptureStatus = {
   noteId: string;
   segmentId: string;
@@ -26,8 +38,9 @@ export type MeetingCaptureStatus = {
   level: number;
   /** Why audio stopped arriving; everything captured so far is on disk. */
   interruption: MeetingCaptureInterruption | null;
-  /** Only silence has arrived for a while (muted, blocked or wrong microphone). */
+  /** Only silence has arrived from the microphone for a while (muted, blocked or wrong microphone). */
   silent: boolean;
+  systemAudio: MeetingSystemAudio;
 };
 
 export type MeetingCaptureRolled = {
@@ -85,7 +98,7 @@ export const decodePcm16Base64 = (base64: string): Float32Array => {
   return samples;
 };
 
-/** Meeting microphone capture and the segment audio files it writes. */
+/** Meeting capture (microphone and computer audio) and the segment audio files it writes. */
 export class MeetingAudioRepo extends BaseRepo {
   /** Starts capturing into a new segment, or `append`s to an existing one. */
   async startCapture(args: {
@@ -119,6 +132,11 @@ export class MeetingAudioRepo extends BaseRepo {
 
   async getCaptureStatus(): Promise<Nullable<MeetingCaptureStatus>> {
     return invoke<Nullable<MeetingCaptureStatus>>("meeting_capture_status");
+  }
+
+  /** Opens the System Settings pane that allows recording computer audio (macOS). */
+  async openSystemAudioSettings(): Promise<void> {
+    await invoke<void>("open_system_audio_settings");
   }
 
   /** Makes an interrupted segment file valid again; returns its duration. */

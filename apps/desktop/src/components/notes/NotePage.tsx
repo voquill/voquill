@@ -7,6 +7,7 @@ import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded";
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
 import ErrorOutlineRounded from "@mui/icons-material/ErrorOutlineRounded";
 import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
+import GraphicEqRounded from "@mui/icons-material/GraphicEqRounded";
 import HourglassEmptyRounded from "@mui/icons-material/HourglassEmptyRounded";
 import LaptopOutlined from "@mui/icons-material/LaptopOutlined";
 import MicRounded from "@mui/icons-material/MicRounded";
@@ -42,6 +43,7 @@ import {
   dropNoteSegment,
   loadNoteSegments,
   NoteRecordingBlockedError,
+  openSystemAudioSettings,
   pauseMeetingNote,
   processNoteInVoquillCloud,
   RECOVERED_AUDIO_ERROR_CODE,
@@ -61,10 +63,12 @@ import {
   NOTES_PATH,
   useNoteTranscriptCopyText,
 } from "../../hooks/note.hooks";
+import type { MeetingSystemAudio } from "../../repos/meeting-audio.repo";
 import type { NoteView } from "../../state/notes.state";
 import { produceAppState, useAppStore } from "../../store";
 import { DICTATION_WORDS_EXCEEDED_ERROR_CODE } from "../../pipelines/local-note.pipeline";
 import { getNoteResumeBlocker } from "../../utils/note-audio.utils";
+import { getPlatform } from "../../utils/platform.utils";
 import { describeNoteError } from "../../utils/note-error.utils";
 import {
   formatNoteDuration,
@@ -173,11 +177,14 @@ const MetaChip = ({
   label,
   color,
   tooltip,
+  onPanel,
 }: {
   icon: ReactElement;
   label: ReactNode;
   color?: "error" | "default";
   tooltip?: ReactNode;
+  /** Sits on a panel's fill, so it takes the next level up. */
+  onPanel?: boolean;
 }) => {
   const chip = (
     <Chip
@@ -187,7 +194,7 @@ const MetaChip = ({
       sx={{
         height: 28,
         px: 0.5,
-        bgcolor: "level1",
+        bgcolor: onPanel ? "level2" : "level1",
         color: color === "error" ? "error.main" : "text.secondary",
         fontWeight: 500,
         "& .MuiChip-icon": { fontSize: 16, color: "inherit" },
@@ -483,6 +490,61 @@ const NoteProblem = ({
   );
 };
 
+/** What the meeting records: the microphone, and the computer's audio when it can. */
+const CaptureSourcesChip = ({
+  systemAudio,
+}: {
+  systemAudio: MeetingSystemAudio;
+}) => {
+  if (systemAudio === "pending") {
+    // Starting, or the permission prompt is on screen and speaks for itself.
+    return null;
+  }
+  if (systemAudio === "recording") {
+    return (
+      <MetaChip
+        onPanel
+        icon={<GraphicEqRounded />}
+        label={
+          <FormattedMessage defaultMessage="Microphone and computer audio" />
+        }
+      />
+    );
+  }
+  const reason =
+    systemAudio === "denied" ? (
+      <FormattedMessage defaultMessage="Voquill isn't allowed to record your computer's audio, so the other side of a call is only heard through your microphone." />
+    ) : systemAudio === "unsupported" ? (
+      getPlatform() === "macos" ? (
+        <FormattedMessage defaultMessage="Recording your computer's audio needs macOS 14.4 or later." />
+      ) : (
+        <FormattedMessage defaultMessage="This computer can't record its own audio." />
+      )
+    ) : (
+      <FormattedMessage defaultMessage="Your computer's audio couldn't be recorded. The microphone is still recording." />
+    );
+  return (
+    <Stack direction="row" alignItems="center" spacing={1} useFlexGap>
+      <MetaChip
+        onPanel
+        icon={<MicRounded />}
+        label={<FormattedMessage defaultMessage="Microphone only" />}
+        tooltip={reason}
+      />
+      {systemAudio === "denied" && getPlatform() === "macos" && (
+        <Button
+          variant="flat"
+          size="small"
+          sx={panelButtonSx}
+          onClick={() => openSystemAudioSettings().catch(showErrorSnackbar)}
+        >
+          <FormattedMessage defaultMessage="Open System Settings" />
+        </Button>
+      )}
+    </Stack>
+  );
+};
+
 const RecordingPanel = ({ note }: { note: Note }) => {
   const intl = useIntl();
   const isCapturing = useAppStore((state) =>
@@ -499,6 +561,11 @@ const RecordingPanel = ({ note }: { note: Note }) => {
   const silent = useAppStore(
     (state) =>
       state.notes.capture?.noteId === note.id && state.notes.capture.silent,
+  );
+  const systemAudio = useAppStore((state) =>
+    state.notes.capture?.noteId === note.id
+      ? state.notes.capture.systemAudio
+      : null,
   );
 
   return (
@@ -562,6 +629,11 @@ const RecordingPanel = ({ note }: { note: Note }) => {
               <FormattedMessage defaultMessage="Paused. Stop to write the notes." />
             )}
           </Typography>
+          {isCapturing && systemAudio && (
+            <Box sx={{ pt: 0.5 }}>
+              <CaptureSourcesChip systemAudio={systemAudio} />
+            </Box>
+          )}
         </Stack>
         {isCapturing ? (
           <Button

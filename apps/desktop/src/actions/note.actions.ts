@@ -349,6 +349,10 @@ export const startMeetingNote = (): {
   return { noteId: note.id, alreadyActive: false, finishedNoteIds, started };
 };
 
+/** Where the user allows Voquill to record the computer's audio (macOS). */
+export const openSystemAudioSettings = (): Promise<void> =>
+  getMeetingAudioRepo().openSystemAudioSettings();
+
 export const pauseMeetingNote = (noteId: string): Promise<void> =>
   withCaptureIntent(noteId, "paused", async () => {
     if (getAppState().notes.capture?.noteId !== noteId) {

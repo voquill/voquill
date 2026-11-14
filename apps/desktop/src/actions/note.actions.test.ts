@@ -97,6 +97,7 @@ vi.mock("../repos", () => ({
         level: 0,
         interruption: null,
         silent: false,
+        systemAudio: "recording",
       };
       return fakes.nativeCapture;
     },
@@ -284,6 +285,7 @@ describe("initializeNotes", () => {
       level: 0,
       interruption: null,
       silent: false,
+      systemAudio: "recording",
     };
     fakes.segments.set("live-0", storedSegment("live", 0, "recording", 0));
 
@@ -358,6 +360,18 @@ describe("meeting capture actions", () => {
       "capture_interrupted",
     );
     expect(getAppState().notes.activeNoteId).toBe(noteId);
+  });
+
+  it("keeps recording the microphone whatever happens to the computer's audio", async () => {
+    const { noteId } = await startMeeting();
+    const capture = getAppState().notes.capture!;
+
+    for (const systemAudio of ["denied", "failed", "unsupported"] as const) {
+      handleMeetingCaptureProgress({ ...capture, systemAudio });
+      expect(getAppState().notes.capture?.systemAudio).toBe(systemAudio);
+    }
+    expect(getAppState().noteById[noteId].status).toBe("recording");
+    expect(getAppState().noteById[noteId].error).toBeNull();
   });
 
   it("recovers the segment duration when the native capture is gone", async () => {
