@@ -273,7 +273,7 @@ jobs:
       matrix:
         include:
           - label: macOS (universal)
-            os: macos-14
+            os: macos-15
             args: "--target universal-apple-darwin"
             rust_targets: "aarch64-apple-darwin,x86_64-apple-darwin"
             tauri_platform: macos
@@ -445,12 +445,12 @@ jobs:
           Write-Host "Updated tauri.conf.json with bundle.resources"
 
       - name: Set macOS sidecar build environment
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           echo "CMAKE_TOOLCHAIN_FILE=${GITHUB_WORKSPACE}/packages/rust_transcription/cmake/macos-ci-toolchain.cmake" >> "$GITHUB_ENV"
 
       - name: Import Apple signing certificate
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         id: import-macos-cert
         uses: apple-actions/import-codesign-certs@v2
         with:
@@ -463,12 +463,12 @@ jobs:
           p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
       - name: Allow codesign access to private keys (CI keychain)
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           security set-key-partition-list -S apple-tool:,apple: -s -k "${{ secrets.KEYCHAIN_PASSWORD }}" build.keychain-db
 
       - name: Assert Developer ID Application identity is present
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           set -euo pipefail
           out="$(security find-identity -v -p codesigning)"
@@ -479,7 +479,7 @@ jobs:
           }
 
       - name: Assert Developer ID Installer identity is present
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           set -euo pipefail
           out="$(security find-identity -v -p basic)"
@@ -490,7 +490,7 @@ jobs:
           }
 
       - name: Prepare Apple notary API key
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           set -euo pipefail
           echo "$APPLE_API_KEY_BASE64" | base64 -d > AuthKey.p8
@@ -498,7 +498,7 @@ jobs:
         shell: bash
 
       - name: Verify Apple signing identity
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           set -euo pipefail
           keychain_path="${{ steps.import-macos-cert.outputs['keychain-path'] }}"
@@ -519,7 +519,7 @@ jobs:
           fi
 
       - name: Notary connectivity probe
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         run: |
           xcrun notarytool history \
             --key "${GITHUB_WORKSPACE}/AuthKey.p8" \
@@ -638,7 +638,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: pnpm --filter desktop run tauri
-          args: ${{ matrix.os == 'macos-14' && format('{0} --bundles app', steps.tauri-cli-args.outputs.args) || steps.tauri-cli-args.outputs.args }}
+          args: ${{ matrix.os == 'macos-15' && format('{0} --bundles app', steps.tauri-cli-args.outputs.args) || steps.tauri-cli-args.outputs.args }}
           tagName: ${{ needs.metadata.outputs.tag_name }}
           releaseName: ${{ format('desktop{0} v{1}', needs.metadata.outputs.release_suffix, needs.metadata.outputs.version) }}
           releaseBody: ${{ needs.metadata.outputs.release_body }}
@@ -647,7 +647,7 @@ jobs:
           includeUpdaterJson: true
 
       - name: Build and upload macOS DMG
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -690,7 +690,7 @@ jobs:
           gh release upload "${RELEASE_TAG}" "${dmg_path}" --clobber
 
       - name: Build, sign, notarize, and upload macOS PKG
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
