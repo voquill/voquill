@@ -33,8 +33,12 @@ One contiguous piece of a note's audio, one file on disk. Pausing, resuming and 
 _Avoid_: chunk (a chunk is a slice of a segment sent to transcription)
 
 **Meeting capture**:
-The microphone recording that feeds a note's segments. Independent of the dictation recorder, so dictation keeps working while a meeting records.
+The microphone recording, mixed with the system audio where the platform allows, that feeds a note's segments. Independent of the dictation recorder, so dictation keeps working while a meeting records.
 _Avoid_: recording (ambiguous with dictation)
+
+**System audio**:
+What the computer plays (the other people on a call), captured apart from any microphone so a meeting hears them even through headphones. It only ever adds to the microphone's recording; the UI calls it "computer audio".
+_Avoid_: loopback, desktop audio
 
 **Note pipeline**:
 Where a note's network-bound work runs once the user stops: transcription, AI notes and title, search and Ask. The local pipeline uses the user's transcription and post-processing modes.
