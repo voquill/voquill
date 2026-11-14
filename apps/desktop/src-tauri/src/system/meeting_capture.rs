@@ -1,7 +1,8 @@
-//! Meeting capture: records the microphone into meeting audio segments on a
+//! Meeting capture: records the microphone, mixed with system audio when the
+//! platform allows it, into meeting audio segments. The microphone uses a
 //! dedicated recorder instance, independent of dictation (its own device
-//! stream, state and lock). The microphone is the only source today; another
-//! source (system audio) would feed the same writer thread.
+//! stream, state and lock); system audio comes from its own source and only
+//! ever adds to the microphone's timeline (see `meeting_mixer`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -12,10 +13,13 @@ use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter};
 
-use crate::platform::{ChunkCallback, Recorder};
-use crate::system::meeting_audio::{
-    rms_level, samples_to_ms, Downsampler, SegmentWriter, MEETING_SAMPLE_RATE,
+use crate::platform::system_audio::{
+    SystemAudioChunk, SystemAudioChunkCallback, SystemAudioSource, SystemAudioState,
+    SystemAudioStateCallback,
 };
+use crate::platform::{ChunkCallback, Recorder};
+use crate::system::meeting_audio::{rms_level, samples_to_ms, SegmentWriter, MEETING_SAMPLE_RATE};
+use crate::system::meeting_mixer::MeetingMixer;
 
 pub const EVT_MEETING_CAPTURE_PROGRESS: &str = "meeting_capture_progress";
 
@@ -30,6 +34,12 @@ const ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 /// longer than this fills the queue: the capture is marked write-failed
 /// (the app pauses it) instead of buffering without limit or dropping audio.
 const CHUNK_QUEUE_CAPACITY: usize = 300;
+/// System audio buffers (about 10 ms each) queued for the writer. When full,
+/// system audio is skipped; it never counts against the microphone.
+const SYSTEM_QUEUE_CAPACITY: usize = 1_000;
+/// A source that delivers silence while nothing plays and has delivered
+/// nothing for this long has stalled.
+const SYSTEM_STALL_TIMEOUT: Duration = Duration::from_secs(3);
 /// Input below this level for this long is reported as "no audio detected"
 /// (a muted or permission-blocked microphone delivers digital silence).
 const SILENCE_LEVEL: f32 = 1e-4;
@@ -85,8 +95,11 @@ pub struct MeetingCaptureStatus {
     pub initial_duration_ms: u64,
     pub level: f32,
     pub interruption: Option<CaptureInterruption>,
-    /// Only silence has arrived for a while (muted, blocked or wrong microphone).
+    /// Only silence has arrived from the microphone for a while (muted,
+    /// blocked or wrong microphone).
     pub silent: bool,
+    /// Whether the computer's audio is mixed in, and if not, why.
+    pub system_audio: SystemAudioState,
 }
 
 #[derive(Clone, Debug, serde::Serialize, specta::Type)]
@@ -117,6 +130,12 @@ struct CaptureShared {
     level_bits: AtomicU32,
     interruption: AtomicU32,
     silent: AtomicBool,
+    /// As the system audio source last reported it.
+    system_state: AtomicU32,
+    system_chunks: AtomicU64,
+    /// The source reports recording but has delivered nothing for a while.
+    system_stalled: AtomicBool,
+    system_delivers_silence: bool,
     stop: AtomicBool,
     /// The writer has finished; the progress monitor ends.
     finished: AtomicBool,
@@ -141,6 +160,15 @@ impl CaptureShared {
         CaptureInterruption::from_code(self.interruption.load(Ordering::SeqCst))
     }
 
+    fn system_audio(&self) -> SystemAudioState {
+        match SystemAudioState::from_code(self.system_state.load(Ordering::SeqCst)) {
+            SystemAudioState::Recording if self.system_stalled.load(Ordering::Relaxed) => {
+                SystemAudioState::Failed
+            }
+            state => state,
+        }
+    }
+
     fn status(&self, note_id: &str) -> MeetingCaptureStatus {
         let target = self.target.lock().unwrap_or_else(|p| p.into_inner());
         let (segment_id, audio_path, initial_samples) = target
@@ -162,8 +190,21 @@ impl CaptureShared {
             level: f32::from_bits(self.level_bits.load(Ordering::Relaxed)),
             interruption: self.interruption(),
             silent: self.silent.load(Ordering::Relaxed),
+            system_audio: self.system_audio(),
         }
     }
+}
+
+/// Microphone audio and when it reached the capture.
+struct MicrophoneChunk {
+    at: Instant,
+    samples: Vec<f32>,
+}
+
+/// System audio and when it reached the capture.
+struct SystemChunk {
+    at: Instant,
+    audio: SystemAudioChunk,
 }
 
 /// Swaps the writer thread onto a new segment file between two chunks.
@@ -221,6 +262,7 @@ fn open_writer(path: &Path, append: bool) -> std::io::Result<SegmentWriter> {
 
 pub struct MeetingCapture {
     recorder: Arc<dyn Recorder>,
+    system: Arc<dyn SystemAudioSource>,
     active: Mutex<Option<ActiveCapture>>,
 }
 
@@ -232,12 +274,16 @@ impl Default for MeetingCapture {
 
 impl MeetingCapture {
     pub fn new() -> Self {
-        Self::with_recorder(crate::platform::audio::new_streaming_recorder())
+        Self::with_sources(
+            crate::platform::audio::new_streaming_recorder(),
+            crate::platform::system_audio::new_system_audio_source(),
+        )
     }
 
-    fn with_recorder(recorder: Arc<dyn Recorder>) -> Self {
+    fn with_sources(recorder: Arc<dyn Recorder>, system: Arc<dyn SystemAudioSource>) -> Self {
         Self {
             recorder,
+            system,
             active: Mutex::new(None),
         }
     }
@@ -299,9 +345,14 @@ impl MeetingCapture {
         let writer = open_writer(&audio_path, append).map_err(|err| err.to_string())?;
         let initial_samples = writer.samples_written();
 
-        let shared = Arc::new(CaptureShared::default());
-        let (sender, receiver) = mpsc::sync_channel::<Vec<f32>>(CHUNK_QUEUE_CAPACITY);
+        let shared = Arc::new(CaptureShared {
+            system_delivers_silence: self.system.delivers_silence(),
+            ..CaptureShared::default()
+        });
+        let (sender, receiver) = mpsc::sync_channel::<MicrophoneChunk>(CHUNK_QUEUE_CAPACITY);
         let chunk_callback = queue_chunks(sender, Arc::clone(&shared));
+        let (system_sender, system_receiver) =
+            mpsc::sync_channel::<SystemChunk>(SYSTEM_QUEUE_CAPACITY);
 
         self.recorder
             .set_preferred_input_device(preferred_microphone);
@@ -328,7 +379,15 @@ impl MeetingCapture {
         let thread_shared = Arc::clone(&shared);
         let writer_thread = std::thread::Builder::new()
             .name("meeting-capture-writer".into())
-            .spawn(move || run_writer(writer, receiver, input_rate, &thread_shared))
+            .spawn(move || {
+                run_writer(
+                    writer,
+                    receiver,
+                    system_receiver,
+                    input_rate,
+                    &thread_shared,
+                )
+            })
             .map_err(|err| {
                 let _ = self.recorder.stop();
                 err.to_string()
@@ -350,6 +409,14 @@ impl MeetingCapture {
                 let _ = self.recorder.stop();
                 err.to_string()
             })?;
+
+        // Started last and never waited for: the microphone is already
+        // recording, and system audio joins whenever it is ready (after a
+        // permission prompt, say) or not at all.
+        self.system.start(
+            queue_system_chunks(system_sender, Arc::clone(&shared)),
+            track_system_state(Arc::clone(&shared)),
+        );
 
         log::info!("Meeting capture started (input rate {input_rate} Hz)");
         let capture = ActiveCapture {
@@ -433,6 +500,7 @@ impl MeetingCapture {
         if let Err(err) = self.recorder.stop() {
             log::warn!("Meeting recorder stop reported: {err}");
         }
+        self.system.stop();
         capture.shared.stop.store(true, Ordering::SeqCst);
 
         let samples = match capture.writer_thread.join() {
@@ -465,12 +533,100 @@ impl MeetingCapture {
 }
 
 /// The audio callback's side of the queue: never blocks the device thread.
-fn queue_chunks(sender: SyncSender<Vec<f32>>, shared: Arc<CaptureShared>) -> ChunkCallback {
+fn queue_chunks(sender: SyncSender<MicrophoneChunk>, shared: Arc<CaptureShared>) -> ChunkCallback {
     Arc::new(move |samples: Vec<f32>| {
-        if let Err(TrySendError::Full(_)) = sender.try_send(samples) {
+        let chunk = MicrophoneChunk {
+            at: Instant::now(),
+            samples,
+        };
+        if let Err(TrySendError::Full(_)) = sender.try_send(chunk) {
             shared.interrupt(CaptureInterruption::WriteFailed);
         }
     })
+}
+
+/// Like `queue_chunks`, except that a full queue only skips system audio.
+fn queue_system_chunks(
+    sender: SyncSender<SystemChunk>,
+    shared: Arc<CaptureShared>,
+) -> SystemAudioChunkCallback {
+    let overflow_logged = AtomicBool::new(false);
+    Arc::new(move |audio: SystemAudioChunk| {
+        shared.system_chunks.fetch_add(1, Ordering::Relaxed);
+        let chunk = SystemChunk {
+            at: Instant::now(),
+            audio,
+        };
+        if let Err(TrySendError::Full(_)) = sender.try_send(chunk) {
+            if !overflow_logged.swap(true, Ordering::Relaxed) {
+                log::warn!("Meeting system audio queue is full; skipping system audio");
+            }
+        }
+    })
+}
+
+fn track_system_state(shared: Arc<CaptureShared>) -> SystemAudioStateCallback {
+    Arc::new(move |state: SystemAudioState| {
+        let previous = shared.system_state.swap(state.code(), Ordering::SeqCst);
+        if previous != state.code() {
+            log::info!("Meeting system audio: {state:?}");
+        }
+    })
+}
+
+/// System audio waiting to be mixed, handed to the mixer in arrival order.
+struct SystemFeed {
+    receiver: Receiver<SystemChunk>,
+    /// The first chunk that arrived after the microphone audio mixed so far.
+    pending: Option<SystemChunk>,
+}
+
+impl SystemFeed {
+    fn feed_until(&mut self, until: Instant, mixer: &mut MeetingMixer) {
+        loop {
+            let Some(chunk) = self
+                .pending
+                .take()
+                .or_else(|| self.receiver.try_recv().ok())
+            else {
+                return;
+            };
+            if chunk.at > until {
+                self.pending = Some(chunk);
+                return;
+            }
+            mixer.push_system(&chunk.audio.samples, chunk.audio.sample_rate);
+        }
+    }
+}
+
+/// Notices a source that says it is recording but has stopped delivering.
+struct SystemStallWatch {
+    chunks: u64,
+    progressed_at: Instant,
+}
+
+impl SystemStallWatch {
+    fn new() -> Self {
+        Self {
+            chunks: 0,
+            progressed_at: Instant::now(),
+        }
+    }
+
+    fn check(&mut self, shared: &CaptureShared, now: Instant) {
+        let chunks = shared.system_chunks.load(Ordering::Relaxed);
+        let recording = SystemAudioState::from_code(shared.system_state.load(Ordering::SeqCst))
+            == SystemAudioState::Recording;
+        if chunks != self.chunks || !recording {
+            self.chunks = chunks;
+            self.progressed_at = now;
+        }
+        let stalled = shared.system_delivers_silence
+            && recording
+            && now.duration_since(self.progressed_at) >= SYSTEM_STALL_TIMEOUT;
+        shared.system_stalled.store(stalled, Ordering::Relaxed);
+    }
 }
 
 /// Measures how fast the device actually delivers samples.
@@ -506,11 +662,17 @@ impl RateCheck {
 
 fn run_writer(
     mut writer: SegmentWriter,
-    receiver: Receiver<Vec<f32>>,
+    receiver: Receiver<MicrophoneChunk>,
+    system: Receiver<SystemChunk>,
     input_rate: u32,
     shared: &CaptureShared,
 ) -> std::io::Result<u64> {
-    let mut downsampler = Downsampler::new(input_rate);
+    let mut mixer = MeetingMixer::new(input_rate);
+    let mut system = SystemFeed {
+        receiver: system,
+        pending: None,
+    };
+    let mut stall_watch = SystemStallWatch::new();
     let mut converted = Vec::new();
     let mut rate_check = RateCheck::new(input_rate);
     let mut last_audio = Instant::now();
@@ -518,7 +680,8 @@ fn run_writer(
     let silence_warning_samples = SILENCE_WARNING_AFTER.as_secs() * u64::from(input_rate.max(1));
     let mut last_commit = Instant::now();
 
-    let mut write = |samples: &[f32], writer: &mut SegmentWriter| -> std::io::Result<()> {
+    let mut write = |chunk: &MicrophoneChunk, writer: &mut SegmentWriter| -> std::io::Result<()> {
+        let samples = chunk.samples.as_slice();
         let level = rms_level(samples);
         shared.level_bits.store(level.to_bits(), Ordering::Relaxed);
         if level < SILENCE_LEVEL {
@@ -534,8 +697,9 @@ fn run_writer(
             log::warn!("Meeting input rate no longer matches {input_rate} Hz");
             shared.interrupt(CaptureInterruption::DeviceChanged);
         }
+        system.feed_until(chunk.at, &mut mixer);
         converted.clear();
-        downsampler.process(samples, &mut converted);
+        mixer.mix_microphone(samples, &mut converted);
         writer.append(&converted)?;
         shared
             .samples_written
@@ -563,8 +727,8 @@ fn run_writer(
         }
 
         match receiver.recv_timeout(RECEIVE_TIMEOUT) {
-            Ok(samples) => {
-                if let Err(err) = write(&samples, &mut writer) {
+            Ok(chunk) => {
+                if let Err(err) = write(&chunk, &mut writer) {
                     break Err(err);
                 }
                 last_audio = Instant::now();
@@ -581,9 +745,11 @@ fn run_writer(
         if shared.stop.load(Ordering::SeqCst) {
             let drained: Result<(), std::io::Error> = receiver
                 .try_iter()
-                .try_for_each(|samples| write(&samples, &mut writer));
+                .try_for_each(|chunk| write(&chunk, &mut writer));
             break drained;
         }
+
+        stall_watch.check(shared, Instant::now());
 
         if last_audio.elapsed() >= SILENT_DEVICE_TIMEOUT {
             shared.interrupt(CaptureInterruption::NoAudio);
@@ -599,7 +765,7 @@ fn run_writer(
 
     let result = result.and_then(|()| {
         converted.clear();
-        downsampler.flush(&mut converted);
+        mixer.flush(&mut converted);
         writer.append(&converted)
     });
     if let Err(err) = &result {
@@ -617,6 +783,18 @@ mod tests {
     use crate::domain::{RecordedAudio, RecordingMetrics, RecordingResult};
     use crate::platform::LevelCallback;
 
+    fn microphone_chunk(samples: Vec<f32>) -> MicrophoneChunk {
+        MicrophoneChunk {
+            at: Instant::now(),
+            samples,
+        }
+    }
+
+    /// A system audio queue whose source is gone, as when none ever started.
+    fn no_system() -> Receiver<SystemChunk> {
+        mpsc::channel().1
+    }
+
     fn temp_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -627,17 +805,18 @@ mod tests {
         path
     }
 
-
     #[test]
     fn writer_marks_a_vanished_source_as_interrupted_and_keeps_audio() {
         let path = temp_path("vanished");
         let writer = SegmentWriter::create(&path).unwrap();
         let (sender, receiver) = mpsc::channel();
-        sender.send(vec![0.25f32; 48_000]).unwrap();
+        sender
+            .send(microphone_chunk(vec![0.25f32; 48_000]))
+            .unwrap();
         drop(sender);
 
         let shared = CaptureShared::default();
-        let samples = run_writer(writer, receiver, 48_000, &shared).unwrap();
+        let samples = run_writer(writer, receiver, no_system(), 48_000, &shared).unwrap();
 
         assert_eq!(samples, 16_000);
         assert_eq!(shared.interruption(), Some(CaptureInterruption::NoAudio));
@@ -656,10 +835,10 @@ mod tests {
         let shared = CaptureShared::default();
         shared.stop.store(true, Ordering::SeqCst);
         for _ in 0..3 {
-            sender.send(vec![0.1f32; 16_000]).unwrap();
+            sender.send(microphone_chunk(vec![0.1f32; 16_000])).unwrap();
         }
 
-        let samples = run_writer(writer, receiver, 16_000, &shared).unwrap();
+        let samples = run_writer(writer, receiver, no_system(), 16_000, &shared).unwrap();
 
         assert_eq!(samples, 48_000);
         assert_eq!(shared.interruption(), None);
@@ -709,7 +888,10 @@ mod tests {
         for _ in 0..3 {
             callback(vec![0.1; 1_600]);
         }
-        assert_eq!(shared.interruption(), Some(CaptureInterruption::WriteFailed));
+        assert_eq!(
+            shared.interruption(),
+            Some(CaptureInterruption::WriteFailed)
+        );
     }
 
     #[test]
@@ -735,19 +917,26 @@ mod tests {
         let writer = SegmentWriter::create(&path).unwrap();
         let (sender, receiver) = mpsc::channel();
         for _ in 0..160 {
-            sender.send(vec![0.0f32; 1_600]).unwrap();
+            sender.send(microphone_chunk(vec![0.0f32; 1_600])).unwrap();
         }
         drop(sender);
         let shared = CaptureShared::default();
-        run_writer(writer, receiver, 16_000, &shared).unwrap();
+        run_writer(writer, receiver, no_system(), 16_000, &shared).unwrap();
         assert!(shared.silent.load(Ordering::SeqCst));
         std::fs::remove_file(path).unwrap();
     }
 
-    /// A recorder that delivers `chunks` of 16 kHz audio from a thread, the
-    /// way the platform recorders call the chunk callback.
+    const MICROPHONE_LEVEL: f32 = 0.2;
+    /// Wall time between the fakes' 100 ms chunks: they run 50 times faster
+    /// than real time, both at the same pace so their audio lines up.
+    const FAST_PACE: Duration = Duration::from_millis(2);
+
+    /// A recorder that delivers `chunks` of 16 kHz audio (100 ms each, every
+    /// `pace`) from a thread, the way the platform recorders call the chunk
+    /// callback.
     struct FakeRecorder {
         chunks: usize,
+        pace: Duration,
         thread: Mutex<Option<JoinHandle<()>>>,
         stop: Arc<AtomicBool>,
     }
@@ -760,6 +949,7 @@ mod tests {
         ) -> Result<(), Box<dyn std::error::Error>> {
             let chunk = chunk.unwrap();
             let chunks = self.chunks;
+            let pace = self.pace;
             let stop = Arc::clone(&self.stop);
             stop.store(false, Ordering::SeqCst);
             *self.thread.lock().unwrap() = Some(std::thread::spawn(move || {
@@ -767,8 +957,8 @@ mod tests {
                     if stop.load(Ordering::SeqCst) {
                         return;
                     }
-                    chunk(vec![0.2f32; 1_600]);
-                    std::thread::sleep(Duration::from_millis(2));
+                    chunk(vec![MICROPHONE_LEVEL; 1_600]);
+                    std::thread::sleep(pace);
                 }
                 while !stop.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(2));
@@ -799,23 +989,124 @@ mod tests {
         }
     }
 
-    fn fake_capture(chunks: usize) -> MeetingCapture {
-        MeetingCapture::with_recorder(Arc::new(FakeRecorder {
+    fn fake_recorder(chunks: usize, pace: Duration) -> Arc<FakeRecorder> {
+        Arc::new(FakeRecorder {
             chunks,
+            pace,
             thread: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
-        }))
+        })
+    }
+
+    fn fake_capture(chunks: usize) -> MeetingCapture {
+        MeetingCapture::with_sources(
+            fake_recorder(chunks, FAST_PACE),
+            FakeSystemSource::new(&[], FAST_PACE),
+        )
+    }
+
+    /// What a fake system source does, step by step, once started.
+    #[derive(Clone, Copy)]
+    enum SystemStep {
+        State(SystemAudioState),
+        /// Delivers this many 100 ms buffers of a constant, at 48 kHz.
+        Audio(usize, f32),
+        /// Delivers nothing for this long.
+        Quiet(Duration),
+    }
+
+    /// A system source that plays `steps` from a thread (a buffer every
+    /// `pace`) and, once they are done, idles until stopped.
+    struct FakeSystemSource {
+        steps: Vec<SystemStep>,
+        pace: Duration,
+        stop: Arc<AtomicBool>,
+        started: AtomicU32,
+    }
+
+    impl FakeSystemSource {
+        fn new(steps: &[SystemStep], pace: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                steps: steps.to_vec(),
+                pace,
+                stop: Arc::new(AtomicBool::new(false)),
+                started: AtomicU32::new(0),
+            })
+        }
+    }
+
+    impl SystemAudioSource for FakeSystemSource {
+        fn start(&self, on_chunk: SystemAudioChunkCallback, on_state: SystemAudioStateCallback) {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            self.stop.store(false, Ordering::SeqCst);
+            let steps = self.steps.clone();
+            let pace = self.pace;
+            let stop = Arc::clone(&self.stop);
+            std::thread::spawn(move || {
+                for step in steps {
+                    if stop.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    match step {
+                        SystemStep::State(state) => on_state(state),
+                        SystemStep::Audio(buffers, value) => {
+                            for _ in 0..buffers {
+                                if stop.load(Ordering::SeqCst) {
+                                    return;
+                                }
+                                on_chunk(SystemAudioChunk {
+                                    samples: vec![value; 4_800],
+                                    sample_rate: 48_000,
+                                });
+                                std::thread::sleep(pace);
+                            }
+                        }
+                        SystemStep::Quiet(duration) => std::thread::sleep(duration),
+                    }
+                }
+            });
+        }
+
+        fn stop(&self) {
+            self.stop.store(true, Ordering::SeqCst);
+        }
+
+        fn delivers_silence(&self) -> bool {
+            true
+        }
     }
 
     fn wait_for(condition: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        wait_within(Duration::from_secs(5), condition);
+    }
+
+    fn wait_within(timeout: Duration, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + timeout;
         while !condition() {
             assert!(
                 Instant::now() < deadline,
-                "timed out after 5 s waiting for the capture"
+                "timed out after {timeout:?} waiting for the capture"
             );
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    fn read_samples(path: &Path) -> Vec<f32> {
+        crate::system::meeting_audio::repair_segment(path).unwrap();
+        hound::WavReader::open(path)
+            .unwrap()
+            .samples::<i16>()
+            .map(|sample| sample.unwrap() as f32 / i16::MAX as f32)
+            .collect()
+    }
+
+    /// The share of samples at `level` (microphone alone, or with system audio).
+    fn share_at(samples: &[f32], level: f32) -> f64 {
+        samples
+            .iter()
+            .filter(|sample| (**sample - level).abs() < 0.01)
+            .count() as f64
+            / samples.len() as f64
     }
 
     #[test]
@@ -831,9 +1122,7 @@ mod tests {
         let rolled = capture.roll("b".into(), second.clone()).unwrap();
         assert_eq!(rolled.finished.segment_id, "a");
         assert_eq!(rolled.status.segment_id, "b");
-        wait_for(|| {
-            capture.status().unwrap().duration_ms + rolled.finished.duration_ms >= 10_000
-        });
+        wait_for(|| capture.status().unwrap().duration_ms + rolled.finished.duration_ms >= 10_000);
         let stopped = capture.stop().unwrap().unwrap();
 
         assert_eq!(stopped.segment_id, "b");
@@ -903,6 +1192,7 @@ mod tests {
             .unwrap();
         let dictation = FakeRecorder {
             chunks: 5,
+            pace: FAST_PACE,
             thread: Mutex::new(None),
             stop: Arc::new(AtomicBool::new(false)),
         };
@@ -915,5 +1205,217 @@ mod tests {
         assert_eq!(stopped.duration_ms, 5_000);
         assert_eq!(capture.status().map(|s| s.duration_ms), None);
         std::fs::remove_file(path).unwrap();
+    }
+
+    const SYSTEM_LEVEL: f32 = 0.1;
+
+    fn system_capture(
+        chunks: usize,
+        steps: &[SystemStep],
+    ) -> (MeetingCapture, Arc<FakeSystemSource>) {
+        let system = FakeSystemSource::new(steps, FAST_PACE);
+        let capture = MeetingCapture::with_sources(
+            fake_recorder(chunks, FAST_PACE),
+            Arc::clone(&system) as Arc<dyn SystemAudioSource>,
+        );
+        (capture, system)
+    }
+
+    #[test]
+    fn writer_mixes_queued_system_audio_and_drains_both_when_stopped() {
+        let path = temp_path("mixed-drain");
+        let writer = SegmentWriter::create(&path).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let (system_sender, system_receiver) = mpsc::channel();
+        let shared = CaptureShared::default();
+        shared.stop.store(true, Ordering::SeqCst);
+        let start = Instant::now();
+        for second in 0..3u64 {
+            let at = start + Duration::from_secs(second);
+            system_sender
+                .send(SystemChunk {
+                    at,
+                    audio: SystemAudioChunk {
+                        samples: vec![SYSTEM_LEVEL; 16_000],
+                        sample_rate: 16_000,
+                    },
+                })
+                .unwrap();
+            sender
+                .send(MicrophoneChunk {
+                    at: at + Duration::from_millis(1),
+                    samples: vec![MICROPHONE_LEVEL; 16_000],
+                })
+                .unwrap();
+        }
+
+        let samples = run_writer(writer, receiver, system_receiver, 16_000, &shared).unwrap();
+
+        assert_eq!(samples, 48_000, "the microphone sets the length");
+        let mixed = read_samples(&path);
+        assert!(
+            share_at(&mixed[1_000..], MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.99,
+            "queued system audio is mixed in"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn system_audio_is_mixed_into_the_segment() {
+        let path = temp_path("system-mixed");
+        let (capture, _) = system_capture(
+            100,
+            &[
+                SystemStep::State(SystemAudioState::Recording),
+                SystemStep::Audio(100, SYSTEM_LEVEL),
+            ],
+        );
+        capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+            .unwrap();
+        wait_for(|| capture.status().unwrap().system_audio == SystemAudioState::Recording);
+        wait_for(|| capture.status().unwrap().duration_ms >= 10_000);
+        let stopped = capture.stop().unwrap().unwrap();
+
+        assert_eq!(stopped.duration_ms, 10_000);
+        let mixed = read_samples(&path);
+        assert_eq!(mixed.len(), 100 * 1_600);
+        assert!(
+            share_at(&mixed, MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.5,
+            "most of the meeting has both sources"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_system_source_that_cannot_start_leaves_the_microphone_recording() {
+        for state in [
+            SystemAudioState::Failed,
+            SystemAudioState::Denied,
+            SystemAudioState::Unsupported,
+        ] {
+            let path = temp_path("system-unavailable");
+            let (capture, _) = system_capture(10, &[SystemStep::State(state)]);
+            capture
+                .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+                .unwrap();
+            wait_for(|| capture.status().unwrap().duration_ms >= 1_000);
+            assert_eq!(capture.status().unwrap().system_audio, state);
+            let stopped = capture.stop().unwrap().unwrap();
+
+            assert_eq!(stopped.duration_ms, 1_000);
+            assert!(share_at(&read_samples(&path), MICROPHONE_LEVEL) > 0.999);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_system_source_that_never_reports_is_pending_and_harmless() {
+        let path = temp_path("system-pending");
+        let capture = fake_capture(10);
+        let status = capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+            .unwrap();
+        assert_eq!(status.system_audio, SystemAudioState::Pending);
+        wait_for(|| capture.status().unwrap().duration_ms >= 1_000);
+        assert_eq!(capture.stop().unwrap().unwrap().duration_ms, 1_000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn a_stalled_system_source_is_reported_and_recovers() {
+        let pace = Duration::from_millis(20);
+        let path = temp_path("system-stall");
+        let system = FakeSystemSource::new(
+            &[
+                SystemStep::State(SystemAudioState::Recording),
+                SystemStep::Audio(10, SYSTEM_LEVEL),
+                SystemStep::Quiet(SYSTEM_STALL_TIMEOUT + Duration::from_millis(700)),
+                SystemStep::Audio(100, SYSTEM_LEVEL),
+            ],
+            pace,
+        );
+        let capture = MeetingCapture::with_sources(fake_recorder(400, pace), system);
+        capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+            .unwrap();
+        wait_for(|| capture.status().unwrap().system_audio == SystemAudioState::Recording);
+        wait_within(SYSTEM_STALL_TIMEOUT * 2, || {
+            capture.status().unwrap().system_audio == SystemAudioState::Failed
+        });
+        assert_eq!(capture.status().unwrap().interruption, None);
+        wait_within(SYSTEM_STALL_TIMEOUT, || {
+            capture.status().unwrap().system_audio == SystemAudioState::Recording
+        });
+        let stopped = capture.stop().unwrap().unwrap();
+
+        let samples = read_samples(&path);
+        assert_eq!(samples.len() as u64, stopped.duration_ms * 16);
+        assert!(
+            share_at(&samples, MICROPHONE_LEVEL) > 0.3,
+            "microphone alone in the stall"
+        );
+        assert!(
+            share_at(&samples, MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.05,
+            "both before and after it"
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn pause_and_resume_restart_the_system_source_and_keep_mixing() {
+        let path = temp_path("system-resume");
+        let steps = [
+            SystemStep::State(SystemAudioState::Recording),
+            SystemStep::Audio(1_000, SYSTEM_LEVEL),
+        ];
+        let (capture, system) = system_capture(10, &steps);
+        capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+            .unwrap();
+        wait_for(|| capture.status().unwrap().duration_ms >= 1_000);
+        capture.stop().unwrap();
+
+        let status = capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), true, None, |_| {})
+            .unwrap();
+        assert_eq!(status.initial_duration_ms, 1_000);
+        wait_for(|| capture.status().unwrap().duration_ms >= 2_000);
+        let stopped = capture.stop().unwrap().unwrap();
+
+        assert_eq!(system.started.load(Ordering::SeqCst), 2);
+        assert_eq!(stopped.duration_ms, 2_000);
+        let samples = read_samples(&path);
+        assert_eq!(samples.len(), 32_000);
+        assert!(share_at(&samples[16_000..], MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.5);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rolling_with_system_audio_loses_no_microphone_audio() {
+        let first = temp_path("system-roll-a");
+        let second = temp_path("system-roll-b");
+        let (capture, _) = system_capture(
+            100,
+            &[
+                SystemStep::State(SystemAudioState::Recording),
+                SystemStep::Audio(1_000, SYSTEM_LEVEL),
+            ],
+        );
+        capture
+            .start_with_progress("n".into(), "a".into(), first.clone(), false, None, |_| {})
+            .unwrap();
+        wait_for(|| capture.status().unwrap().duration_ms >= 3_000);
+        let rolled = capture.roll("b".into(), second.clone()).unwrap();
+        wait_for(|| capture.status().unwrap().duration_ms + rolled.finished.duration_ms >= 10_000);
+        capture.stop().unwrap();
+
+        let before = read_samples(&first);
+        let after = read_samples(&second);
+        assert_eq!(before.len() + after.len(), 100 * 1_600);
+        assert!(share_at(&before, MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.5);
+        assert!(share_at(&after, MICROPHONE_LEVEL + SYSTEM_LEVEL) > 0.5);
+        std::fs::remove_file(first).unwrap();
+        std::fs::remove_file(second).unwrap();
     }
 }

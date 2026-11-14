@@ -46,6 +46,24 @@ pub fn list_input_devices() -> Vec<InputDeviceDescriptor> {
     }
 }
 
+/// Averages interleaved frames of `channels` samples into mono f32.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn downmix_to_mono<T>(data: &[T], channels: usize) -> Vec<f32>
+where
+    T: cpal::Sample,
+    f32: cpal::FromSample<T>,
+{
+    data.chunks(channels.max(1))
+        .map(|frame| {
+            frame
+                .iter()
+                .map(|sample| sample.to_sample::<f32>())
+                .sum::<f32>()
+                / frame.len() as f32
+        })
+        .collect()
+}
+
 // ── CPAL backend (macOS, Windows) ──────────────────────────────────────
 
 #[cfg(not(target_os = "linux"))]
@@ -987,33 +1005,7 @@ mod cpal_impl {
             .build_input_stream(
                 config,
                 move |data: &[T], _| {
-                    let mut mono_samples = Vec::with_capacity(data.len() / channel_count + 1);
-
-                    if channel_count == 1 {
-                        for sample in data {
-                            let value = (*sample).to_sample::<f32>();
-                            mono_samples.push(value);
-                        }
-                    } else {
-                        let mut index = 0;
-                        while index < data.len() {
-                            let mut sum = 0.0f32;
-                            let mut samples_in_frame = 0usize;
-                            for channel in 0..channel_count {
-                                let sample_index = index + channel;
-                                if sample_index >= data.len() {
-                                    break;
-                                }
-                                let sample_value = data[sample_index].to_sample::<f32>();
-                                sum += sample_value;
-                                samples_in_frame += 1;
-                            }
-                            if samples_in_frame > 0 {
-                                mono_samples.push(sum / samples_in_frame as f32);
-                            }
-                            index += channel_count;
-                        }
-                    }
+                    let mono_samples = super::downmix_to_mono(data, channel_count);
 
                     if let Some(ref level_emitter) = level_emitter_ref {
                         level_emitter.emit(&mono_samples);
