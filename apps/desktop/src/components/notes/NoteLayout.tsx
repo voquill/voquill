@@ -1,12 +1,13 @@
 import { Container, type SxProps, type Theme } from "@mui/material";
 import type { ReactNode } from "react";
 
-/** The open note fills the window, so its column is wider than the dashboard's but keeps a readable line length. */
-const NOTE_PAGE_MAX_WIDTH = 728;
-
 export type NoteColumnScope = "list" | "note";
 
-/** The centred column shared by a page's content and its Ask dock, so both keep the same edges. */
+/**
+ * The column shared by a page's content and its Ask dock, so both keep the
+ * same edges. The list is a centred column like the other dashboard pages; an
+ * open note stretches to the edges of the area beside the sidebar.
+ */
 export const NoteColumn = ({
   scope,
   sx,
@@ -19,7 +20,7 @@ export const NoteColumn = ({
   <Container
     maxWidth={scope === "list" ? "sm" : false}
     sx={[
-      scope === "note" && { maxWidth: NOTE_PAGE_MAX_WIDTH },
+      scope === "note" && { px: { xs: 3, md: 5 } },
       ...(Array.isArray(sx) ? sx : [sx]),
     ]}
   >
