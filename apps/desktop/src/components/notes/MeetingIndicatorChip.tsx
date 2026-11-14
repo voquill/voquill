@@ -65,7 +65,6 @@ export const MeetingIndicatorChip = () => {
     >
       <Chip
         size="small"
-        variant="outlined"
         clickable
         onClick={() => navigate(getNotePath(meeting.noteId))}
         icon={
@@ -79,7 +78,15 @@ export const MeetingIndicatorChip = () => {
         }
         label={label}
         aria-label={label}
-        sx={{ height: 22, fontVariantNumeric: "tabular-nums" }}
+        sx={{
+          height: 24,
+          bgcolor: "level1",
+          color: "text.secondary",
+          fontWeight: 500,
+          fontVariantNumeric: "tabular-nums",
+          "&:hover": { bgcolor: "level2" },
+          "& .MuiChip-icon": { color: "inherit", fontSize: 16 },
+        }}
       />
     </Tooltip>
   );
