@@ -141,6 +141,8 @@ pub mod audio;
 
 pub mod paste_keybind;
 
+pub mod system_audio;
+
 #[cfg(desktop)]
 pub mod keyboard;
 
