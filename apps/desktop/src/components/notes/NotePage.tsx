@@ -999,7 +999,7 @@ export default function NotePage() {
 
   if (!note) {
     return (
-      <NoteColumn scope="note" sx={{ pt: 1 }}>
+      <NoteColumn sx={{ pt: 1 }}>
         <Button
           startIcon={<ArrowBackRounded />}
           onClick={goBack}
@@ -1049,7 +1049,6 @@ export default function NotePage() {
       >
         <NoteColumn
           key={note.id}
-          scope="note"
           sx={{ pt: 1, pb: `${NOTE_ASK_DOCK_CLEARANCE}px` }}
         >
           <Stack

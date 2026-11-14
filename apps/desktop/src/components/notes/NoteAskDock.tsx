@@ -338,7 +338,7 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
         }
       }}
     >
-      <NoteColumn scope={noteId ? "note" : "list"} sx={shrinkColumn}>
+      <NoteColumn sx={shrinkColumn}>
         <Box
           sx={{
             ...shrinkColumn,

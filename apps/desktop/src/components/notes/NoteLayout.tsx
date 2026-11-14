@@ -1,28 +1,20 @@
 import { Container, type SxProps, type Theme } from "@mui/material";
 import type { ReactNode } from "react";
 
-export type NoteColumnScope = "list" | "note";
-
 /**
- * The column shared by a page's content and its Ask dock, so both keep the
- * same edges. The list is a centred column like the other dashboard pages; an
- * open note stretches to the edges of the area beside the sidebar.
+ * The column shared by a Notes page and its Ask dock, so both keep the same
+ * edges. It stretches across the area beside the sidebar.
  */
 export const NoteColumn = ({
-  scope,
   sx,
   children,
 }: {
-  scope: NoteColumnScope;
   sx?: SxProps<Theme>;
   children: ReactNode;
 }) => (
   <Container
-    maxWidth={scope === "list" ? "sm" : false}
-    sx={[
-      scope === "note" && { px: { xs: 3, md: 5 } },
-      ...(Array.isArray(sx) ? sx : [sx]),
-    ]}
+    maxWidth={false}
+    sx={[{ px: { xs: 3, md: 5 } }, ...(Array.isArray(sx) ? sx : [sx])]}
   >
     {children}
   </Container>

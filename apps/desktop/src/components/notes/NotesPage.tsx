@@ -66,7 +66,7 @@ const useToday = (): Date => {
 
 const ListItem = ({ children }: { children: ReactNode }) => (
   <Box sx={{ pr: 2 }}>
-    <NoteColumn scope="list">{children}</NoteColumn>
+    <NoteColumn>{children}</NoteColumn>
   </Box>
 );
 
@@ -285,7 +285,7 @@ export default function NotesPage() {
       }}
     >
       <Box sx={{ pr: 2, flexShrink: 0 }}>
-        <NoteColumn scope="list" sx={{ pt: 1, pb: 1 }}>
+        <NoteColumn sx={{ pt: 1, pb: 1 }}>
           <Stack direction="row" alignItems="flex-start" spacing={1}>
             <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.5}>
               <Typography variant="h4" fontWeight={700}>
