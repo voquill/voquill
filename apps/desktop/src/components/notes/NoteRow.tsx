@@ -197,7 +197,7 @@ export const NoteRow = memo(function NoteRow({
         </Tooltip>
       }
       trailingOnClick={() => onDelete(noteId)}
-      sx={{ mx: -2 }}
+      sx={{ mx: -2, width: "auto" }}
     />
   );
 });

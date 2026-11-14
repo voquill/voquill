@@ -7,7 +7,6 @@ import {
   Box,
   Button,
   CircularProgress,
-  Container,
   IconButton,
   InputAdornment,
   Link,
@@ -43,7 +42,8 @@ import {
 } from "../../utils/note-search.utils";
 import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { ImportTranscriptDialog } from "./ImportTranscriptDialog";
-import { NOTE_CONTENT_MIN_HEIGHT, NoteAskDock } from "./NoteAskDock";
+import { NOTE_ASK_DOCK_CLEARANCE, NoteAskDock } from "./NoteAskDock";
+import { flatFieldSx, NoteColumn } from "./NoteLayout";
 import { NoteRow } from "./NoteRow";
 
 const SEARCH_DEBOUNCE_MS = 350;
@@ -66,9 +66,11 @@ const useToday = (): Date => {
 
 const ListItem = ({ children }: { children: ReactNode }) => (
   <Box sx={{ pr: 2 }}>
-    <Container maxWidth="sm">{children}</Container>
+    <NoteColumn scope="list">{children}</NoteColumn>
   </Box>
 );
+
+const ListFooter = () => <Box sx={{ height: NOTE_ASK_DOCK_CLEARANCE }} />;
 
 const DayHeader = ({ group }: { group: NoteDayGroup }) => {
   const intl = useIntl();
@@ -257,7 +259,7 @@ export default function NotesPage() {
           data={results}
           computeItemKey={(_, result) => result.note.id}
           itemContent={(_, result) => renderRow(result.note.id, result)}
-          components={{ Footer: () => <Box sx={{ height: 16 }} /> }}
+          components={{ Footer: ListFooter }}
         />
       );
     }
@@ -267,17 +269,23 @@ export default function NotesPage() {
         groupCounts={groups.map((group) => group.noteIds.length)}
         groupContent={(index) => <DayHeader group={groups[index]} />}
         itemContent={(index) => renderRow(groupedIds[index])}
-        components={{ Footer: () => <Box sx={{ height: 16 }} /> }}
+        components={{ Footer: ListFooter }}
       />
     );
   })();
 
   return (
     <Box
-      sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+      sx={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        position: "relative",
+      }}
     >
       <Box sx={{ pr: 2, flexShrink: 0 }}>
-        <Container maxWidth="sm" sx={{ pt: 1, pb: 1 }}>
+        <NoteColumn scope="list" sx={{ pt: 1, pb: 1 }}>
           <Stack direction="row" alignItems="flex-start" spacing={1}>
             <Stack sx={{ flex: 1, minWidth: 0 }} spacing={0.5}>
               <Typography variant="h4" fontWeight={700}>
@@ -340,7 +348,7 @@ export default function NotesPage() {
                   ),
                 },
               }}
-              sx={{ mt: 2 }}
+              sx={[flatFieldSx, { mt: 2 }]}
             />
           )}
           {showOffline && (
@@ -358,16 +366,7 @@ export default function NotesPage() {
             </Stack>
           )}
           {activeNoteId && !searching && (
-            <Box
-              sx={{
-                mt: 2,
-                px: 2,
-                border: 1,
-                borderColor: "divider",
-                borderRadius: 1,
-                bgcolor: "level1",
-              }}
-            >
+            <Box sx={{ mt: 2, px: 2, borderRadius: 1, bgcolor: "level1" }}>
               <NoteRow
                 noteId={activeNoteId}
                 snippet={null}
@@ -377,15 +376,16 @@ export default function NotesPage() {
               />
             </Box>
           )}
-        </Container>
+        </NoteColumn>
       </Box>
 
       <Box
         sx={{
           flex: 1,
-          minHeight: NOTE_CONTENT_MIN_HEIGHT,
+          minHeight: 0,
           display: "flex",
           flexDirection: "column",
+          isolation: "isolate",
         }}
       >
         {body}

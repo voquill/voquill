@@ -8,7 +8,6 @@ import {
   Button,
   ButtonBase,
   Chip,
-  Container,
   IconButton,
   InputBase,
   Link,
@@ -36,13 +35,17 @@ import {
   getNoteAskAvailability,
   type NoteAskAvailability,
 } from "../../utils/note.utils";
+import { NoteColumn } from "./NoteLayout";
 import { NoteMarkdown } from "./NoteMarkdown";
 
-/** The thread can't grow past this share of the window, so the note stays readable. */
-const THREAD_MAX_HEIGHT = "45vh";
+/** The dock, open or not, never covers more of the page than this. */
+const DOCK_MAX_HEIGHT = "65%";
 
-/** Content above the dock keeps this height when an open thread needs room. */
-export const NOTE_CONTENT_MIN_HEIGHT = 160;
+/**
+ * Bottom padding the page's content needs so its last lines scroll clear of
+ * the collapsed dock (fade, last-question row, input bar and window margin).
+ */
+export const NOTE_ASK_DOCK_CLEARANCE = 136;
 
 /** Lets the thread give up height when the window is short. */
 const shrinkColumn = {
@@ -50,6 +53,16 @@ const shrinkColumn = {
   flexDirection: "column",
   minHeight: 0,
   flexShrink: 1,
+} as const;
+
+/** Send and stop: a small filled circle at the end of the input row. */
+const roundActionSx = {
+  width: 32,
+  height: 32,
+  bgcolor: "level3",
+  color: "text.primary",
+  "&:hover": { bgcolor: "level3", opacity: 0.85 },
+  "&.Mui-disabled": { bgcolor: "level2", color: "text.disabled" },
 } as const;
 
 const openPostProcessingSettings = () => {
@@ -173,11 +186,14 @@ const AskAnswer = ({
             <Chip
               key={source.noteId}
               size="small"
-              variant="outlined"
               clickable
               label={`${index + 1}. ${source.title}`}
               onClick={() => navigate(getNotePath(source.noteId))}
-              sx={{ maxWidth: "100%" }}
+              sx={{
+                maxWidth: "100%",
+                bgcolor: "level2",
+                "&:hover": { bgcolor: "level3" },
+              }}
             />
           ))}
         </Stack>
@@ -240,8 +256,9 @@ const useUnavailableReason = (
 };
 
 /**
- * Ask, docked under a note (noteId) or the notes list (null). The thread opens
- * above the box and scrolls on its own, so the note above stays readable.
+ * Ask, floating over the bottom of a note (noteId) or the notes list (null).
+ * The parent must be positioned. Opening the thread never moves the page
+ * under it; the thread scrolls on its own within the dock's maximum height.
  */
 export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
   const intl = useIntl();
@@ -300,7 +317,20 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
 
   return (
     <Box
-      sx={{ ...shrinkColumn, pr: 2, pb: 2, pt: 1 }}
+      sx={{
+        ...shrinkColumn,
+        position: "absolute",
+        left: 0,
+        right: 0,
+        bottom: 0,
+        maxHeight: DOCK_MAX_HEIGHT,
+        pt: 3,
+        pb: 2,
+        pr: 2,
+        pointerEvents: "none",
+        background: (theme) =>
+          `linear-gradient(to bottom, transparent, ${theme.vars?.palette.level0} ${theme.spacing(3)})`,
+      }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && expanded) {
           event.stopPropagation();
@@ -308,17 +338,14 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
         }
       }}
     >
-      <Container maxWidth="sm" sx={shrinkColumn}>
+      <NoteColumn scope={noteId ? "note" : "list"} sx={shrinkColumn}>
         <Box
           sx={{
             ...shrinkColumn,
-            border: 1,
-            borderColor: "divider",
-            borderRadius: 1,
             bgcolor: "level1",
+            borderRadius: 1,
             overflow: "hidden",
-            transition: "border-color 0.15s ease",
-            "&:focus-within": { borderColor: "text.secondary" },
+            pointerEvents: "auto",
           }}
         >
           {expanded && (
@@ -326,16 +353,17 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
               <Stack
                 direction="row"
                 alignItems="center"
-                spacing={0.5}
-                sx={{ pl: 2, pr: 1, pt: 0.75, flexShrink: 0 }}
+                spacing={1}
+                sx={{ pl: 2, pr: 1, pt: 1, flexShrink: 0 }}
               >
                 <AutoAwesomeOutlined
-                  sx={{ fontSize: 16, color: "text.secondary" }}
+                  sx={{ fontSize: 18, color: "text.secondary" }}
                 />
                 <Typography
                   variant="subtitle2"
+                  fontWeight={600}
                   color="text.secondary"
-                  sx={{ flex: 1, pl: 0.5 }}
+                  sx={{ flex: 1 }}
                 >
                   <FormattedMessage defaultMessage="Ask" />
                 </Typography>
@@ -349,7 +377,11 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                   sx={{
                     color: "text.secondary",
                     minWidth: 0,
+                    px: 1.25,
+                    py: 0.5,
                     typography: "body2",
+                    fontWeight: 500,
+                    "&:hover": { bgcolor: "action.hover" },
                   }}
                 >
                   <FormattedMessage defaultMessage="Clear" />
@@ -360,6 +392,7 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                     onClick={() => setNotesAskExpanded(noteId, false)}
                     aria-label={collapseLabel}
                     aria-expanded
+                    sx={{ color: "text.secondary" }}
                   >
                     <ExpandMoreRounded fontSize="small" />
                   </IconButton>
@@ -374,14 +407,11 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                 sx={{
                   flex: "0 1 auto",
                   minHeight: 0,
-                  maxHeight: THREAD_MAX_HEIGHT,
                   overflowY: "auto",
                   overscrollBehavior: "contain",
                   px: 2,
-                  pt: 1,
-                  pb: 2,
-                  borderBottom: 1,
-                  borderColor: "divider",
+                  pt: 1.5,
+                  pb: 1,
                 }}
               >
                 <Stack spacing={2}>
@@ -432,16 +462,15 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                 flexShrink: 0,
                 justifyContent: "flex-start",
                 gap: 1,
-                px: 2,
-                py: 0.75,
-                borderBottom: 1,
-                borderColor: "divider",
+                pl: 2,
+                pr: 2,
+                pt: 1.25,
+                pb: 0.5,
                 color: "text.secondary",
-                "&:hover": { bgcolor: "action.hover" },
-                "&.Mui-focusVisible": { bgcolor: "action.focus" },
+                "&:hover, &.Mui-focusVisible": { color: "text.primary" },
               }}
             >
-              <ExpandLessRounded fontSize="small" />
+              <ExpandLessRounded sx={{ fontSize: 18 }} />
               <Typography
                 variant="body2"
                 noWrap
@@ -501,45 +530,45 @@ export const NoteAskDock = ({ noteId }: { noteId: string | null }) => {
                   "aria-label": placeholder,
                   maxLength: NOTE_ASK_LIMITS.maxQuestionChars,
                 }}
-                sx={{ flex: 1, py: 0.5, typography: "body2" }}
+                sx={{ flex: 1, py: 0.75, typography: "body2" }}
               />
             )}
             {streaming ? (
               <Tooltip title={stopLabel}>
                 <IconButton
-                  size="small"
                   onClick={() => stopAskingNotes(noteId)}
                   aria-label={stopLabel}
-                  sx={{ bgcolor: "action.selected" }}
+                  sx={roundActionSx}
                 >
-                  <StopRounded fontSize="small" />
+                  <StopRounded sx={{ fontSize: 18 }} />
                 </IconButton>
               </Tooltip>
             ) : (
-              <Tooltip title={sendLabel}>
-                <span>
-                  <IconButton
-                    size="small"
-                    onClick={handleSend}
-                    disabled={disabled || !question.trim()}
-                    aria-label={sendLabel}
-                    sx={{
-                      bgcolor: "primary.main",
-                      color: "primary.contrastText",
-                      "&:hover": { bgcolor: "primary.main", opacity: 0.85 },
-                      "&.Mui-disabled": {
-                        bgcolor: "action.disabledBackground",
-                      },
-                    }}
-                  >
-                    <ArrowUpwardRounded fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
+              !disabled && (
+                <Tooltip title={sendLabel}>
+                  <span>
+                    <IconButton
+                      onClick={handleSend}
+                      disabled={!question.trim()}
+                      aria-label={sendLabel}
+                      sx={[
+                        roundActionSx,
+                        {
+                          bgcolor: "primary.main",
+                          color: "primary.contrastText",
+                          "&:hover": { bgcolor: "primary.main", opacity: 0.85 },
+                        },
+                      ]}
+                    >
+                      <ArrowUpwardRounded sx={{ fontSize: 18 }} />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              )
             )}
           </Stack>
         </Box>
-      </Container>
+      </NoteColumn>
     </Box>
   );
 };

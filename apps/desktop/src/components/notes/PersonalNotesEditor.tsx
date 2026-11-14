@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useIntl } from "react-intl";
 import { setNotePersonalNotes } from "../../actions/note.actions";
 import { useAppStore } from "../../store";
+import { flatFieldSx } from "./NoteLayout";
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -67,6 +68,7 @@ export const PersonalNotesEditor = ({
           "aria-label": intl.formatMessage({ defaultMessage: "My notes" }),
         },
       }}
+      sx={flatFieldSx}
     />
   );
 };

@@ -20,7 +20,6 @@ import {
   Button,
   Chip,
   CircularProgress,
-  Container,
   IconButton,
   LinearProgress,
   Link,
@@ -78,7 +77,8 @@ import { EditTypography } from "../common/EditTypography";
 import { SegmentedControl } from "../common/SegmentedControl";
 import { DeleteNoteDialog } from "./DeleteNoteDialog";
 import { RecordingDot } from "./MeetingIndicatorChip";
-import { NOTE_CONTENT_MIN_HEIGHT, NoteAskDock } from "./NoteAskDock";
+import { NOTE_ASK_DOCK_CLEARANCE, NoteAskDock } from "./NoteAskDock";
+import { NoteColumn } from "./NoteLayout";
 import { NoteMarkdown } from "./NoteMarkdown";
 import { NoteTranscript } from "./NoteTranscript";
 import { PersonalNotesEditor } from "./PersonalNotesEditor";
@@ -92,11 +92,15 @@ const openPostProcessingSettings = () => {
 };
 
 const panelSx = {
-  border: 1,
-  borderColor: "divider",
   borderRadius: 1,
   bgcolor: "level1",
   p: 2,
+} as const;
+
+/** A flat button sitting on a panel's fill. */
+const panelButtonSx = {
+  bgcolor: "level2",
+  "&:hover": { bgcolor: "level3" },
 } as const;
 
 const IconAction = ({
@@ -174,18 +178,15 @@ const MetaChip = ({
   const chip = (
     <Chip
       size="small"
-      variant="outlined"
-      color={color}
       icon={icon}
       label={label}
       sx={{
-        height: 26,
-        borderColor: color === "error" ? undefined : "divider",
-        color: color === "error" ? undefined : "text.secondary",
-        "& .MuiChip-icon": {
-          fontSize: 15,
-          color: color === "error" ? undefined : "text.secondary",
-        },
+        height: 28,
+        px: 0.5,
+        bgcolor: "level1",
+        color: color === "error" ? "error.main" : "text.secondary",
+        fontWeight: 500,
+        "& .MuiChip-icon": { fontSize: 16, color: "inherit" },
         "& .MuiChip-label": { fontVariantNumeric: "tabular-nums" },
       }}
       tabIndex={tooltip ? 0 : undefined}
@@ -447,8 +448,14 @@ const NoteProblem = ({
           flexWrap="wrap"
           sx={{
             mt: 1,
-            ml: -0.75,
-            "& .MuiButton-root": { whiteSpace: "nowrap" },
+            ml: -1,
+            "& .MuiButton-root": {
+              whiteSpace: "nowrap",
+              typography: "body2",
+              fontWeight: 600,
+              px: 1,
+              py: 0.5,
+            },
           }}
         >
           {showRetry && (
@@ -554,9 +561,10 @@ const RecordingPanel = ({ note }: { note: Note }) => {
         </Stack>
         {isCapturing ? (
           <Button
-            variant="outlined"
+            variant="flat"
             size="large"
             startIcon={<PauseRounded />}
+            sx={panelButtonSx}
             onClick={() => pauseMeetingNote(note.id).catch(showErrorSnackbar)}
           >
             <FormattedMessage defaultMessage="Pause" />
@@ -564,9 +572,10 @@ const RecordingPanel = ({ note }: { note: Note }) => {
         ) : (
           canResume && (
             <Button
-              variant="outlined"
+              variant="flat"
               size="large"
               startIcon={<MicRounded />}
+              sx={panelButtonSx}
               onClick={() => resumeNote(note.id)}
             >
               <FormattedMessage defaultMessage="Resume" />
@@ -876,8 +885,8 @@ const NoteViews = ({
   ];
 
   return (
-    <Stack spacing={2.5}>
-      <Stack direction="row" alignItems="center" spacing={1}>
+    <Stack spacing={2.5} useFlexGap>
+      <Stack direction="row" alignItems="center" spacing={1} sx={{ mr: -1.5 }}>
         <Box sx={{ flex: 1, minWidth: 0 }}>
           <SegmentedControl<NoteView>
             value={view}
@@ -890,9 +899,16 @@ const NoteViews = ({
           <Button
             variant="text"
             size="small"
-            startIcon={<ContentCopyRounded fontSize="small" />}
+            startIcon={<ContentCopyRounded />}
             onClick={copyAction.run}
-            sx={{ flexShrink: 0, color: "text.secondary" }}
+            sx={{
+              flexShrink: 0,
+              px: 1.5,
+              color: "text.secondary",
+              typography: "body2",
+              fontWeight: 500,
+              "& .MuiButton-startIcon > .MuiSvgIcon-root": { fontSize: 18 },
+            }}
           >
             {copyAction.label}
           </Button>
@@ -983,11 +999,11 @@ export default function NotePage() {
 
   if (!note) {
     return (
-      <Container maxWidth="sm" sx={{ pt: 1 }}>
+      <NoteColumn scope="note" sx={{ pt: 1 }}>
         <Button
           startIcon={<ArrowBackRounded />}
           onClick={goBack}
-          sx={{ ml: -1 }}
+          sx={{ ml: -1.5, px: 1.5 }}
         >
           <FormattedMessage defaultMessage="Notes" />
         </Button>
@@ -999,7 +1015,7 @@ export default function NotePage() {
             <FormattedMessage defaultMessage="This note no longer exists." />
           </Typography>
         )}
-      </Container>
+      </NoteColumn>
     );
   }
 
@@ -1013,31 +1029,37 @@ export default function NotePage() {
 
   return (
     <Box
-      sx={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}
+      sx={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        position: "relative",
+      }}
     >
       <Box
         ref={setScroller}
         sx={{
           flex: 1,
-          minHeight: NOTE_CONTENT_MIN_HEIGHT,
+          minHeight: 0,
           overflowY: "auto",
           pr: 2,
           overscrollBehavior: "contain",
         }}
       >
-        <Container key={note.id} maxWidth="sm" sx={{ pt: 1, pb: 4 }}>
+        <NoteColumn
+          key={note.id}
+          scope="note"
+          sx={{ pt: 1, pb: `${NOTE_ASK_DOCK_CLEARANCE}px` }}
+        >
           <Stack
             direction="row"
             alignItems="center"
             spacing={0.5}
-            sx={{ mb: 1 }}
+            sx={{ mb: 1, mx: -1.5 }}
           >
             <Tooltip title={backLabel}>
-              <IconButton
-                onClick={goBack}
-                aria-label={backLabel}
-                sx={{ ml: -1 }}
-              >
+              <IconButton onClick={goBack} aria-label={backLabel}>
                 <ArrowBackRounded />
               </IconButton>
             </Tooltip>
@@ -1083,6 +1105,7 @@ export default function NotePage() {
           </Stack>
 
           <EditTypography
+            sx={{ ml: -0.5 }}
             value={note.title}
             onChange={(next) => renameNote(note.id, String(next))}
             validate={(next) => String(next).trim().length > 0}
@@ -1138,7 +1161,7 @@ export default function NotePage() {
               <MyNotesSection noteId={note.id} />
             )}
           </Stack>
-        </Container>
+        </NoteColumn>
       </Box>
 
       <NoteAskDock noteId={note.id} />
