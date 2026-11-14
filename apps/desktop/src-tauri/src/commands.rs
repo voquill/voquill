@@ -2816,8 +2816,7 @@ pub async fn resumable_upload(
     args: crate::system::resumable_upload::ResumableUploadArgs,
 ) -> Result<crate::system::resumable_upload::ResumableUploadOutcome, String> {
     use crate::system::resumable_upload::{
-        build_client, run_upload, ResumableUploadProgress, EVT_RESUMABLE_UPLOAD_PROGRESS,
-        UPLOAD_CHUNK_BYTES,
+        run_upload, ResumableUploadProgress, EVT_RESUMABLE_UPLOAD_PROGRESS, UPLOAD_CHUNK_BYTES,
     };
 
     let path = crate::system::meeting_audio::managed_segment_path(&app, &args.file_path)
@@ -2834,28 +2833,23 @@ pub async fn resumable_upload(
             let total = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let progress_app = app.clone();
             let progress_id = upload_id.clone();
-            let result = build_client()
-                .map_err(|err| err.to_string())
-                .and_then(|client| {
-                    run_upload(
-                        &client,
-                        &path,
-                        &args.url,
-                        &args.headers,
-                        UPLOAD_CHUNK_BYTES,
-                        args.max_bytes,
-                        cancel,
-                        move |uploaded_bytes| {
-                            let payload = ResumableUploadProgress {
-                                upload_id: progress_id.clone(),
-                                uploaded_bytes,
-                                total_bytes: total,
-                            };
-                            let _ = progress_app.emit(EVT_RESUMABLE_UPLOAD_PROGRESS, payload);
-                        },
-                    )
-                    .map_err(|err| err.to_string())
-                });
+            let result = run_upload(
+                &path,
+                &args.url,
+                &args.headers,
+                UPLOAD_CHUNK_BYTES,
+                args.max_bytes,
+                cancel,
+                move |uploaded_bytes| {
+                    let payload = ResumableUploadProgress {
+                        upload_id: progress_id.clone(),
+                        uploaded_bytes,
+                        total_bytes: total,
+                    };
+                    let _ = progress_app.emit(EVT_RESUMABLE_UPLOAD_PROGRESS, payload);
+                },
+            )
+            .map_err(|err| err.to_string());
             let _ = sender.send(result);
         })
         .map_err(|err| err.to_string())?;

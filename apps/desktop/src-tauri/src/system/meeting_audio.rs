@@ -330,9 +330,11 @@ pub fn segment_envelope(path: &Path, window_ms: u64) -> io::Result<Vec<f32>> {
             break;
         }
         let sum_squares: f64 = window[..samples * 2]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|pair| {
-                let value = i16::from_le_bytes([pair[0], pair[1]]) as f64 / i16::MAX as f64;
+                let value = i16::from_le_bytes(*pair) as f64 / i16::MAX as f64;
                 value * value
             })
             .sum();

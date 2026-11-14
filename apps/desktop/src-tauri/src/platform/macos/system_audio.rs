@@ -177,9 +177,12 @@ unsafe fn symbol(handle: *mut c_void, name: &str) -> Option<*mut c_void> {
 /// before macOS 14.2, and linking them directly would stop Voquill from
 /// launching on older versions.
 struct ProcessTapApi {
-    create: unsafe extern "C" fn(id, *mut AudioObjectId) -> OsStatus,
-    destroy: unsafe extern "C" fn(AudioObjectId) -> OsStatus,
+    create: CreateProcessTap,
+    destroy: DestroyProcessTap,
 }
+
+type CreateProcessTap = unsafe extern "C" fn(id, *mut AudioObjectId) -> OsStatus;
+type DestroyProcessTap = unsafe extern "C" fn(AudioObjectId) -> OsStatus;
 
 fn process_tap_api() -> Option<&'static ProcessTapApi> {
     static API: OnceLock<Option<ProcessTapApi>> = OnceLock::new();
@@ -187,8 +190,8 @@ fn process_tap_api() -> Option<&'static ProcessTapApi> {
         let create = symbol(RTLD_DEFAULT, "AudioHardwareCreateProcessTap")?;
         let destroy = symbol(RTLD_DEFAULT, "AudioHardwareDestroyProcessTap")?;
         Some(ProcessTapApi {
-            create: std::mem::transmute::<*mut c_void, _>(create),
-            destroy: std::mem::transmute::<*mut c_void, _>(destroy),
+            create: std::mem::transmute::<*mut c_void, CreateProcessTap>(create),
+            destroy: std::mem::transmute::<*mut c_void, DestroyProcessTap>(destroy),
         })
     })
     .as_ref()
@@ -237,9 +240,12 @@ const AUDIO_CAPTURE_SERVICE: &str = "kTCCServiceAudioCapture";
 /// shows the prompt when it first starts (blocking this module's thread until
 /// it is answered), and a refusal records silence.
 struct Tcc {
-    preflight: unsafe extern "C" fn(CFStringRef, CFDictionaryRef) -> c_int,
-    request: unsafe extern "C" fn(CFStringRef, CFDictionaryRef, *const c_void),
+    preflight: TccPreflight,
+    request: TccRequest,
 }
+
+type TccPreflight = unsafe extern "C" fn(CFStringRef, CFDictionaryRef) -> c_int;
+type TccRequest = unsafe extern "C" fn(CFStringRef, CFDictionaryRef, *const c_void);
 
 fn tcc() -> Option<&'static Tcc> {
     static TCC: OnceLock<Option<Tcc>> = OnceLock::new();
@@ -253,8 +259,8 @@ fn tcc() -> Option<&'static Tcc> {
         let preflight = symbol(handle, "TCCAccessPreflight")?;
         let request = symbol(handle, "TCCAccessRequest")?;
         Some(Tcc {
-            preflight: std::mem::transmute::<*mut c_void, _>(preflight),
-            request: std::mem::transmute::<*mut c_void, _>(request),
+            preflight: std::mem::transmute::<*mut c_void, TccPreflight>(preflight),
+            request: std::mem::transmute::<*mut c_void, TccRequest>(request),
         })
     })
     .as_ref()

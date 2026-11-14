@@ -256,8 +256,10 @@ pub(crate) fn read_samples(simple: &psimple::Simple) -> Result<Vec<f32>, String>
     let mut read_buf = vec![0u8; READ_CHUNK_FRAMES * std::mem::size_of::<f32>()];
     simple.read(&mut read_buf).map_err(|err| format!("{err}"))?;
     Ok(read_buf
-        .chunks_exact(4)
-        .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect())
 }
 

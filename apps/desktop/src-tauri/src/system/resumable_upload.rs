@@ -255,7 +255,7 @@ fn reply_outcome(reply: Reply, uploaded: u64, total: u64) -> ResumableUploadOutc
     }
 }
 
-pub fn build_client() -> reqwest::Result<Client> {
+fn build_client() -> reqwest::Result<Client> {
     Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
@@ -265,7 +265,6 @@ pub fn build_client() -> reqwest::Result<Client> {
 /// One pass over the upload: query what the session has, then send the rest
 /// in `chunk_bytes` pieces.
 pub fn run_upload<F: Fn(u64) + Send + Sync + 'static>(
-    client: &Client,
     path: &Path,
     url: &str,
     headers: &[UploadHeader],
@@ -274,10 +273,11 @@ pub fn run_upload<F: Fn(u64) + Send + Sync + 'static>(
     cancel: Arc<AtomicBool>,
     on_progress: F,
 ) -> io::Result<ResumableUploadOutcome> {
+    let client = build_client().map_err(io::Error::other)?;
     let mut file = File::open(path)?;
     let total = file.metadata()?.len();
     let session = Session {
-        client,
+        client: &client,
         url,
         headers,
         total,
@@ -482,22 +482,11 @@ mod tests {
         cancel: Arc<AtomicBool>,
         on_progress: impl Fn(u64) + Send + Sync + 'static,
     ) -> ResumableUploadOutcome {
-        let client = build_client().unwrap();
         let headers = [UploadHeader {
             name: "Content-Type".to_string(),
             value: "audio/wav".to_string(),
         }];
-        run_upload(
-            &client,
-            path,
-            url,
-            &headers,
-            CHUNK,
-            None,
-            cancel,
-            on_progress,
-        )
-        .unwrap()
+        run_upload(path, url, &headers, CHUNK, None, cancel, on_progress).unwrap()
     }
 
     #[test]
@@ -580,10 +569,8 @@ mod tests {
         let (path, bytes) = temp_file("partial", (CHUNK * 3) as usize);
         let fake = session(None);
         let url = serve(Arc::clone(&fake));
-        let client = build_client().unwrap();
 
         let first = run_upload(
-            &client,
             &path,
             &url,
             &[],
@@ -597,7 +584,6 @@ mod tests {
         assert_eq!(first.uploaded_bytes, CHUNK);
 
         let second = run_upload(
-            &client,
             &path,
             &url,
             &[],
@@ -641,9 +627,7 @@ mod tests {
     fn smoke_uploads_to_a_real_session() {
         let url = std::env::var("NOTES_SMOKE_UPLOAD_URL").unwrap();
         let path = std::env::var("NOTES_SMOKE_UPLOAD_FILE").unwrap();
-        let client = build_client().unwrap();
         let first = run_upload(
-            &client,
             Path::new(&path),
             &url,
             &[],
@@ -655,7 +639,6 @@ mod tests {
         .unwrap();
         assert_eq!(first.outcome, UploadOutcomeKind::Partial);
         let second = run_upload(
-            &client,
             Path::new(&path),
             &url,
             &[],
