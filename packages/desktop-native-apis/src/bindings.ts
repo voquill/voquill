@@ -97,6 +97,18 @@ async requestAccessibilityPermission() : Promise<Result<PermissionStatus, string
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Opens the System Settings pane where the user allows Voquill to record
+ * the computer's audio (macOS only).
+ */
+async openSystemAudioSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_system_audio_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getCurrentAppInfo() : Promise<Result<CurrentAppInfoResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_current_app_info") };
@@ -308,9 +320,24 @@ async transcriptionAudioLoad(id: string) : Promise<Result<TranscriptionAudioData
     else return { status: "error", error: e  as any };
 }
 },
-async purgeStaleTranscriptionAudio() : Promise<Result<string[], string>> {
+/**
+ * Deletes stored audio beyond the most recent entries. `keep_ids` are never
+ * purged and do not count towards the retained entries.
+ */
+async purgeStaleTranscriptionAudio(keepIds: string[] | null) : Promise<Result<string[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("purge_stale_transcription_audio") };
+    return { status: "ok", data: await TAURI_INVOKE("purge_stale_transcription_audio", { keepIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Transcriptions that still have stored audio, newest first.
+ */
+async transcriptionAudioEntries() : Promise<Result<TranscriptionAudioEntry[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcription_audio_entries") };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -694,70 +721,6 @@ async getKeyboardLanguage() : Promise<Result<string, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async conversationCreate(conversation: Conversation) : Promise<Result<Conversation, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_create", { conversation }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationList() : Promise<Result<Conversation[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_list") };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationUpdate(conversation: Conversation) : Promise<Result<Conversation, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_update", { conversation }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async conversationDelete(id: string) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("conversation_delete", { id }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageCreate(message: ChatMessage) : Promise<Result<ChatMessage, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_create", { message }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageList(conversationId: string) : Promise<Result<ChatMessage[], string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_list", { conversationId }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageUpdate(message: ChatMessage) : Promise<Result<ChatMessage, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_update", { message }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-async chatMessageDeleteMany(ids: string[]) : Promise<Result<null, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("chat_message_delete_many", { ids }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
 /**
  * Returns `true` when the running app bundle can be updated in-place.
  * On macOS this checks whether the process can write to the directory that
@@ -872,6 +835,206 @@ async floatingWindowList() : Promise<Result<FloatingWindowInfo[], string>> {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async noteUpsert(note: Note) : Promise<Result<Note, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_upsert", { note }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteList(cloudOwnerUserId: string | null) : Promise<Result<Note[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_list", { cloudOwnerUserId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Deletes the note's rows. With `delete_audio` (the user deleted the note)
+ * every audio file recorded for it goes too; otherwise audio files stay on
+ * disk and are offered for recovery at the next launch.
+ */
+async noteDelete(id: string, deleteAudio: boolean) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_delete", { id, deleteAudio }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentUpsert(segment: NoteSegment) : Promise<Result<NoteSegment, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_upsert", { segment }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentList(noteId: string) : Promise<Result<NoteSegment[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_list", { noteId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSearch(terms: string[], matchAll: boolean, limit: number, cloudOwnerUserId: string | null) : Promise<Result<NoteSearchCandidate[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_search", { terms, matchAll, limit, cloudOwnerUserId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteSegmentDelete(noteId: string, segmentId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_segment_delete", { noteId, segmentId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionAdd(deletion: NoteDeletion) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_add", { deletion }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionList(ownerUserId: string) : Promise<Result<NoteDeletion[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_list", { ownerUserId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async noteDeletionRemove(noteId: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("note_deletion_remove", { noteId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStart(args: MeetingCaptureStartArgs) : Promise<Result<MeetingCaptureStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_start", { args }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStop() : Promise<Result<MeetingCaptureStopped | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_stop") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Continues the running meeting capture in a new segment, with no gap.
+ */
+async meetingCaptureRoll(noteId: string, segmentId: string) : Promise<Result<MeetingCaptureRolled, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_roll", { noteId, segmentId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Meeting audio files on disk that no segment row references, repaired.
+ */
+async meetingAudioUnreferenced() : Promise<Result<UnreferencedMeetingAudio[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_unreferenced") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingCaptureStatus() : Promise<Result<MeetingCaptureStatus | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_capture_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Makes an interrupted segment file valid again and returns its duration.
+ */
+async meetingAudioRepair(path: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_repair", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingAudioEnvelope(path: string, windowMs: number) : Promise<Result<number[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_envelope", { path, windowMs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Base64 of 16 kHz mono little-endian i16 PCM for `[startMs, endMs)`.
+ */
+async meetingAudioRead(path: string, startMs: number, endMs: number) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_read", { path, startMs, endMs }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingAudioDelete(path: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_delete", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async setTrayMeetingMenu(menu: TrayMeetingMenu) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_tray_meeting_menu", { menu }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async meetingAudioFileSize(path: string) : Promise<Result<number, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("meeting_audio_file_size", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Uploads a meeting audio file to a resumable upload session, resuming from
+ * whatever the session already stored. Emits `resumable_upload_progress`.
+ */
+async resumableUpload(args: ResumableUploadArgs) : Promise<Result<ResumableUploadOutcome, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("resumable_upload", { args }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async resumableUploadCancel(uploadId: string) : Promise<void> {
+    await TAURI_INVOKE("resumable_upload_cancel", { uploadId });
 }
 }
 
@@ -948,9 +1111,24 @@ export type AppProcessMatch = { pid: number; exePath: string | null; appName: st
 export type AppTarget = { id: string; name: string; createdAt: string; toneId: string | null; iconPath: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AppTargetUpsertArgs = { id: string; name: string; toneId?: string | null; iconPath?: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AudioClip = "start_recording_clip" | "stop_recording_clip" | "alert_linux_clip" | "alert_macos_clip" | "alert_windows_10_clip" | "alert_windows_11_clip"
-export type ChatMessage = { id: string; conversationId: string; role: string; content: string; createdAt: number; metadata: string | null }
+/**
+ * Why a capture stopped receiving audio. Everything captured so far is on disk.
+ */
+export type CaptureInterruption = 
+/**
+ * The device stopped delivering audio (unplugged, stream died).
+ */
+"no-audio" | 
+/**
+ * Audio could not be written (disk full, permissions, a stalled disk).
+ */
+"write-failed" | 
+/**
+ * The device started delivering audio at another rate; the app
+ * restarts the capture so the recording stays true to time.
+ */
+"device-changed"
 export type CompositorBinding = { actionName: string; keys: string[] }
-export type Conversation = { id: string; title: string; createdAt: number; updatedAt: number }
 export type CreateFloatingWindowArgs = { url: string; title: string | null; width: number | null; height: number | null; minWidth: number | null; minHeight: number | null; x: number | null; y: number | null; decorations: boolean | null; transparent: boolean | null; resizable: boolean | null; focused: boolean | null }
 export type CurrentAppInfoResponse = { appName: string; iconBase64: string }
 export type ElementFingerprint = { automationId: string | null; className: string | null; controlType: number; name: string | null; frameworkId: string | null; childIndex: number; 
@@ -1032,10 +1210,59 @@ wroteFile: boolean;
  * it picks up the bridge. Always true when `wrote_file` is true.
  */
 restartRequired: boolean }
+export type MeetingCaptureRolled = { finished: MeetingCaptureStopped; status: MeetingCaptureStatus }
+export type MeetingCaptureStartArgs = { noteId: string; segmentId: string; 
+/**
+ * Continue the existing file of this segment instead of creating it.
+ */
+append: boolean; preferredMicrophone: string | null }
+export type MeetingCaptureStatus = { noteId: string; segmentId: string; audioPath: string; 
+/**
+ * The whole segment file, including audio it had before this capture.
+ */
+durationMs: number; 
+/**
+ * What the segment file held when this capture started appending to it.
+ */
+initialDurationMs: number; level: number; interruption: CaptureInterruption | null; 
+/**
+ * Only silence has arrived from the microphone for a while (muted,
+ * blocked or wrong microphone).
+ */
+silent: boolean; 
+/**
+ * Whether the computer's audio is mixed in, and if not, why.
+ */
+systemAudio: SystemAudioState }
+export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
 export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
 export type NativeSetupResult = "success" | "require-restart" | "failed"
 export type NativeSetupStatus = "ready" | "needs-setup" | "needs-restart"
+export type Note = { id: string; storage: string; status: string; title: string; titleSource: string; source: string; personalNotes: string; generatedNotes: string | null; durationMs: number; errorCode: string | null; errorMessage: string | null; 
+/**
+ * JSON object.
+ */
+errorDetails: string | null; createdAt: number; updatedAt: number; cloudOwnerUserId: string | null; cloudOnServer: boolean; cloudUnsyncedFields: string; cloudProcessRequestedAt: number | null; cloudServerUpdatedAt: number | null; cloudFetchedUpdatedAt: number | null; 
+/**
+ * JSON object.
+ */
+processedWith: string | null }
+export type NoteDeletion = { noteId: string; ownerUserId: string; createdAt: number }
+export type NoteSearchCandidate = { note: Note; 
+/**
+ * Segment transcripts in index order, separated by blank lines.
+ */
+transcript: string }
+export type NoteSegment = { id: string; noteId: string; segmentIndex: number; kind: string; status: string; durationMs: number; audioPath: string | null; transcribedMs: number; transcriptText: string | null; 
+/**
+ * JSON array of utterances.
+ */
+transcriptUtterances: string | null; createdAt: number; errorCode: string | null; errorMessage: string | null; 
+/**
+ * JSON object.
+ */
+errorDetails: string | null; uploadUrl: string | null; uploadSizeBytes: number | null; uploadComplete: boolean }
 export type PairedRemoteDevice = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
 export type PairedRemoteDeviceDeleteArgs = { id: string }
 export type PairedRemoteDeviceUpsertArgs = { id: string; name: string; platform: string; role: string; sharedSecret: string; pairedAt: string; lastSeenAt?: string | null; lastKnownAddress?: string | null; trusted?: boolean }
@@ -1049,6 +1276,20 @@ export type PillWindowSize = "dictation" | "assistant_compact" | "assistant_expa
 export type RemoteReceiverStatus = { enabled: boolean; deviceId: string; deviceName: string; listenAddress: string | null; port: number | null; pairingCode: string; lastSenderDeviceId: string | null; lastEventId: string | null; lastDeliveryStatus: string | null; lastDeliveryAt: string | null; lastError: string | null; lastTargetClassName: string | null; lastTargetTitle: string | null; lastTargetEditable: boolean | null; devicePlatform: string }
 export type RemoteSenderDeliverArgs = { targetDeviceId: string; text: string; mode: string }
 export type RemoteSenderPairArgs = { receiverDeviceId: string; receiverName: string; receiverPlatform: string; receiverAddress: string; pairingCode: string }
+export type ResumableUploadArgs = { 
+/**
+ * Caller-chosen id for progress events and cancellation.
+ */
+uploadId: string; filePath: string; 
+/**
+ * The session URL; it is a credential and is never logged.
+ */
+url: string; headers: UploadHeader[]; 
+/**
+ * Stop after sending about this many bytes in this call (whole chunks).
+ */
+maxBytes: number | null }
+export type ResumableUploadOutcome = { outcome: UploadOutcomeKind; uploadedBytes: number; totalBytes: number; status: number | null; message: string | null }
 /**
  * Reads `enterprise.json` from the app config directory. Returns `None` if the file does not exist.
  * 
@@ -1062,12 +1303,69 @@ export type StartRecordingResponse = { sampleRate: number }
 export type StartRemoteReceiverArgs = { port?: number | null }
 export type StopRecordingResponse = { samples: number[]; sampleRate: number }
 export type StorageUploadArgs = { path: string; data: number[] }
+/**
+ * Whether system audio is being recorded and, if not, why.
+ */
+export type SystemAudioState = 
+/**
+ * Starting, or waiting for the user to answer the permission prompt.
+ */
+"pending" | 
+/**
+ * Being recorded. Silence while nothing plays is still recording.
+ */
+"recording" | 
+/**
+ * This OS version cannot record system audio.
+ */
+"unsupported" | 
+/**
+ * The user has not allowed Voquill to record system audio.
+ */
+"denied" | 
+/**
+ * The system audio device failed or stopped delivering audio.
+ */
+"failed"
 export type Term = { id: string; createdAt: number; createdByUserId: string; sourceValue: string; destinationValue: string; isReplacement: boolean; isDeleted: boolean }
 export type TextFieldInfo = { cursorPosition: number | null; selectionLength: number | null; textContent: string | null }
 export type Tone = { id: string; name: string; promptTemplate: string; createdAt: number; sortOrder: number }
 export type Transcription = { id: string; transcript: string; timestamp: number; audio?: TranscriptionAudioSnapshot | null; modelSize?: string | null; inferenceDevice?: string | null; rawTranscript?: string | null; sanitizedTranscript?: string | null; transcriptionPrompt?: string | null; postProcessPrompt?: string | null; transcriptionApiKeyId?: string | null; postProcessApiKeyId?: string | null; transcriptionMode?: string | null; postProcessMode?: string | null; postProcessDevice?: string | null; transcriptionDurationMs?: number | null; postprocessDurationMs?: number | null; warnings?: string[] | null; remoteStatus?: string | null; remoteDeviceId?: string | null }
 export type TranscriptionAudioData = { samples: number[]; sampleRate: number }
+export type TranscriptionAudioEntry = { id: string; transcript: string; durationMs: number | null }
 export type TranscriptionAudioSnapshot = { filePath: string; durationMs: number }
+/**
+ * Labels for the meeting section; an item is shown only when its label is
+ * set. The status line is always disabled.
+ */
+export type TrayMeetingMenu = { startLabel: string | null; statusLabel: string | null; stopLabel: string | null }
+export type UnreferencedMeetingAudio = { noteId: string; segmentId: string; audioPath: string; durationMs: number; 
+/**
+ * A note with this id exists (for any account).
+ */
+noteExists: boolean }
+export type UploadHeader = { name: string; value: string }
+export type UploadOutcomeKind = 
+/**
+ * The session has every byte.
+ */
+"complete" | 
+/**
+ * This call sent its `max_bytes`; call again to continue.
+ */
+"partial" | 
+/**
+ * The session is gone (404/410): request a new one and start over.
+ */
+"expired" | 
+/**
+ * A network error, 429 or 5xx: query and resume later.
+ */
+"interrupted" | 
+/**
+ * Any other response; retrying unchanged will not help.
+ */
+"rejected" | "cancelled"
 export type User = { id: string; name: string; bio: string; company?: string | null; title?: string | null; onboarded: boolean; preferredMicrophone?: string | null; preferredLanguage?: string | null; wordsThisMonth?: number; wordsThisMonthMonth?: string | null; wordsTotal?: number; playInteractionChime?: boolean; hasFinishedTutorial?: boolean; hasMigratedPreferredMicrophone?: boolean; cohort?: string | null; stylingMode?: string | null; selectedToneId?: string | null; activeToneIds?: string | null; streak?: number | null; streakRecordedAt?: string | null; referralSource?: string | null }
 export type UserPreferences = { userId: string; transcriptionMode?: string | null; transcriptionApiKeyId?: string | null; transcriptionDevice?: string | null; transcriptionModelSize?: string | null; postProcessingMode?: string | null; postProcessingApiKeyId?: string | null; postProcessingOllamaUrl?: string | null; postProcessingOllamaModel?: string | null; agentMode?: string | null; agentModeApiKeyId?: string | null; openclawGatewayUrl?: string | null; openclawToken?: string | null; activeToneId?: string | null; gotStartedAt?: number | null; gpuEnumerationEnabled?: boolean; pasteKeybind?: string | null; lastSeenFeature?: string | null; isEnterprise?: boolean; languageSwitchEnabled?: boolean; secondaryDictationLanguage?: string | null; activeDictationLanguage?: string | null; additionalDictationLanguages?: string[] | null; preferredMicrophone?: string | null; ignoreUpdateDialog?: boolean; incognitoModeEnabled?: boolean; incognitoModeIncludeInStats?: boolean; dictationLimitMinutes?: number; dictationPillVisibility?: string; useNewBackend?: boolean; realtimeOutputEnabled?: boolean; remoteOutputEnabled?: boolean; remoteTargetDeviceId?: string | null; remoteReceiverPort?: number | null; remoteReceiverAutoStart?: boolean; dictationAudioDim?: number; menuBarIconHidden?: boolean; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type UserPreferencesGetArgs = { userId: string }

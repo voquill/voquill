@@ -4,7 +4,10 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::{thread, time::Duration};
 
-static CLIPBOARD_HOLD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+/// The clipboard owner of the latest paste, tagged with that paste's number so
+/// an older paste's restore thread never drops a newer paste's hold.
+static CLIPBOARD_HOLD: Mutex<Option<(u64, arboard::Clipboard)>> = Mutex::new(None);
+static PASTE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn type_text_into_focused_field(
     text: &str,
@@ -154,9 +157,10 @@ fn paste_via_clipboard(
         .set_text(text.to_string())
         .map_err(|err| format!("failed to store clipboard text: {err}"))?;
 
+    let paste_id = PASTE_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     {
         let mut hold = CLIPBOARD_HOLD.lock().unwrap_or_else(|p| p.into_inner());
-        *hold = Some(clipboard);
+        *hold = Some((paste_id, clipboard));
     }
 
     thread::sleep(Duration::from_millis(40));
@@ -166,11 +170,18 @@ fn paste_via_clipboard(
     if skip_clipboard_restore {
         drop(previous);
     } else {
+        let pasted = text.to_string();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(800));
+            let unchanged = crate::platform::clipboard_holds_text(&pasted);
             let mut hold = CLIPBOARD_HOLD.lock().unwrap_or_else(|p| p.into_inner());
-            *hold = None;
-            previous.restore();
+            if hold.as_ref().is_some_and(|(id, _)| *id == paste_id) {
+                *hold = None;
+            }
+            drop(hold);
+            if unchanged {
+                previous.restore();
+            }
         });
     }
 

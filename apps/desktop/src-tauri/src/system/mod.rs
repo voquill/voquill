@@ -7,11 +7,15 @@ pub mod diagnostics;
 pub mod enterprise_oidc;
 pub mod google_oauth;
 pub mod gpu;
+pub mod meeting_audio;
+pub mod meeting_capture;
+pub mod meeting_mixer;
 pub mod models;
 pub mod oauth_callback_page;
 pub mod paths;
 pub mod remote_receiver;
 pub mod remote_sender;
+pub mod resumable_upload;
 pub mod storage_repo;
 pub mod tray;
 

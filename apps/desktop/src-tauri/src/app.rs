@@ -10,6 +10,17 @@ fn handle_run_event(app_handle: &tauri::AppHandle, event: RunEvent) {
         RunEvent::ExitRequested { .. } => {
             let _ = app_handle.save_window_state(StateFlags::SIZE | StateFlags::POSITION);
         }
+        RunEvent::Exit => {
+            // Finalize a running meeting segment; the note is shown as paused
+            // with this audio on next launch.
+            if let Some(capture) = app_handle
+                .try_state::<std::sync::Arc<crate::system::meeting_capture::MeetingCapture>>()
+            {
+                if let Err(err) = capture.stop() {
+                    log::error!("Failed to finalize meeting capture on exit: {err}");
+                }
+            }
+        }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => {
             if let Some(window) = app_handle.get_webview_window("main") {
@@ -151,6 +162,9 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             app.manage(crate::state::OverlayState::new());
             app.manage(crate::state::RemoteReceiverState::new());
             app.manage(crate::state::FloatingWindowState::new());
+            app.manage(std::sync::Arc::new(
+                crate::system::resumable_upload::ResumableUploads::default(),
+            ));
 
             match crate::system::auth_session::AuthSession::new(app.handle()) {
                 Ok(session) => {
@@ -191,6 +205,9 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
                 let recorder = crate::platform::audio::new_recorder();
 
                 app.manage(recorder);
+                app.manage(std::sync::Arc::new(
+                    crate::system::meeting_capture::MeetingCapture::new(),
+                ));
 
                 crate::system::audio_feedback::start_audio_thread();
 
@@ -228,6 +245,7 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::request_microphone_permission,
             crate::commands::check_accessibility_permission,
             crate::commands::request_accessibility_permission,
+            crate::commands::open_system_audio_settings,
             crate::commands::get_current_app_info,
             crate::commands::app_target_upsert,
             crate::commands::app_target_list,
@@ -256,6 +274,7 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::transcription_update,
             crate::commands::transcription_audio_load,
             crate::commands::purge_stale_transcription_audio,
+            crate::commands::transcription_audio_entries,
             crate::commands::export_transcription,
             crate::commands::export_diagnostics,
             crate::commands::term_create,
@@ -308,14 +327,6 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::get_native_setup_status,
             crate::commands::run_native_setup,
             crate::commands::get_keyboard_language,
-            crate::commands::conversation_create,
-            crate::commands::conversation_list,
-            crate::commands::conversation_update,
-            crate::commands::conversation_delete,
-            crate::commands::chat_message_create,
-            crate::commands::chat_message_list,
-            crate::commands::chat_message_update,
-            crate::commands::chat_message_delete_many,
             crate::commands::check_app_location_writable,
             crate::commands::download_and_open_mac_installer,
             crate::commands::get_system_volume,
@@ -328,6 +339,29 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::floating_window_create,
             crate::commands::floating_window_destroy,
             crate::commands::floating_window_list,
+            crate::commands::note_upsert,
+            crate::commands::note_list,
+            crate::commands::note_delete,
+            crate::commands::note_segment_upsert,
+            crate::commands::note_segment_list,
+            crate::commands::note_search,
+            crate::commands::note_segment_delete,
+            crate::commands::note_deletion_add,
+            crate::commands::note_deletion_list,
+            crate::commands::note_deletion_remove,
+            crate::commands::meeting_capture_start,
+            crate::commands::meeting_capture_stop,
+            crate::commands::meeting_capture_roll,
+            crate::commands::meeting_audio_unreferenced,
+            crate::commands::meeting_capture_status,
+            crate::commands::meeting_audio_repair,
+            crate::commands::meeting_audio_envelope,
+            crate::commands::meeting_audio_read,
+            crate::commands::meeting_audio_delete,
+            crate::commands::set_tray_meeting_menu,
+            crate::commands::meeting_audio_file_size,
+            crate::commands::resumable_upload,
+            crate::commands::resumable_upload_cancel,
         ])
 }
 

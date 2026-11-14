@@ -24,6 +24,10 @@ export type HandleTranscriptParams = {
   audio: StopRecordingResponse;
   transcriptionMetadata: TranscribeAudioMetadata;
   transcriptionWarnings: string[];
+  /** The stream failed and this transcript was re-transcribed from the recording. */
+  transcriptionRecovered: boolean;
+  /** Aborted when the dictation is cancelled: nothing may be delivered after that. */
+  signal: AbortSignal;
 };
 
 export type HandleTranscriptResult = {

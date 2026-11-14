@@ -616,16 +616,6 @@ fn draw_assistant_panel(gfx: &mut Gfx, state: &PillState, ww: f64, wh: f64) {
             draw_user_prompt_preview(gfx, panel_x, py, panel_w, prompt, alpha);
         }
 
-        let open_x = panel_x + PANEL_HEADER_OFFSET_LEFT + HEADER_BUTTON_SIZE + 4.0;
-        let open_y = py + PANEL_HEADER_OFFSET_TOP;
-        let open_hovered = is_mouse_over(state, open_x, open_y, HEADER_BUTTON_SIZE, HEADER_BUTTON_SIZE);
-        draw_panel_button(gfx, open_x, open_y, HEADER_BUTTON_SIZE, alpha, ButtonIcon::OpenInNew, open_hovered);
-        state.click_regions.borrow_mut().push(ClickRegion {
-            x: open_x, y: open_y,
-            w: HEADER_BUTTON_SIZE, h: HEADER_BUTTON_SIZE,
-            action: ClickAction::OpenInNew,
-        });
-
         // Input bar
         if is_typing {
             let input_y = py + panel_h - PANEL_INPUT_HEIGHT;
@@ -676,7 +666,7 @@ fn draw_assistant_panel(gfx: &mut Gfx, state: &PillState, ww: f64, wh: f64) {
     let close_x = panel_x + PANEL_HEADER_OFFSET_LEFT;
     let close_y = py + PANEL_HEADER_OFFSET_TOP;
     let close_hovered = is_mouse_over(state, close_x, close_y, HEADER_BUTTON_SIZE, HEADER_BUTTON_SIZE);
-    draw_panel_button(gfx, close_x, close_y, HEADER_BUTTON_SIZE, alpha, ButtonIcon::Close, close_hovered);
+    draw_close_button(gfx, close_x, close_y, HEADER_BUTTON_SIZE, alpha, close_hovered);
     state.click_regions.borrow_mut().push(ClickRegion {
         x: close_x, y: close_y,
         w: HEADER_BUTTON_SIZE, h: HEADER_BUTTON_SIZE,
@@ -890,13 +880,7 @@ fn draw_user_prompt_preview(
     gfx.draw_text_top_left(&display, tx, ty, 14.0, false, false, [1.0, 1.0, 1.0, 0.5 * alpha]);
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ButtonIcon {
-    Close,
-    OpenInNew,
-}
-
-fn draw_panel_button(gfx: &Gfx, x: f64, y: f64, size: f64, alpha: f64, icon: ButtonIcon, hovered: bool) {
+fn draw_close_button(gfx: &Gfx, x: f64, y: f64, size: f64, alpha: f64, hovered: bool) {
     let bg_alpha = if hovered { 0.16 } else { 0.06 };
     gfx.fill_rounded_rect(x, y, size, size, size / 4.0, [1.0, 1.0, 1.0, bg_alpha * alpha]);
 
@@ -904,26 +888,10 @@ fn draw_panel_button(gfx: &Gfx, x: f64, y: f64, size: f64, alpha: f64, icon: But
     let cy = y + size / 2.0;
     let ca = [1.0, 1.0, 1.0, 0.82 * alpha];
 
-    match icon {
-        ButtonIcon::Close => {
-            // Thicker, bolder X like macOS xmark
-            let s = 4.5;
-            gfx.draw_line(cx - s, cy - s, cx + s, cy + s, ca, 1.8);
-            gfx.draw_line(cx + s, cy - s, cx - s, cy + s, ca, 1.8);
-        }
-        ButtonIcon::OpenInNew => {
-            // Arrow going up-right out of a rounded rect (like arrow.up.forward.app)
-            let s = 4.5;
-            // Diagonal arrow
-            gfx.draw_line(cx - 1.0, cy + 1.0, cx + s, cy - s, ca, 1.5);
-            // Arrowhead
-            gfx.draw_line(cx + s - 3.5, cy - s, cx + s, cy - s, ca, 1.5);
-            gfx.draw_line(cx + s, cy - s, cx + s, cy - s + 3.5, ca, 1.5);
-            // Rounded rect base
-            gfx.draw_line(cx - s, cy - 1.5, cx - s, cy + s, ca, 1.3);
-            gfx.draw_line(cx - s, cy + s, cx + 1.5, cy + s, ca, 1.3);
-        }
-    }
+    // Thicker, bolder X like macOS xmark
+    let s = 4.5;
+    gfx.draw_line(cx - s, cy - s, cx + s, cy + s, ca, 1.8);
+    gfx.draw_line(cx + s, cy - s, cx - s, cy + s, ca, 1.8);
 }
 
 fn draw_keyboard_button(gfx: &mut Gfx, state: &PillState, ww: f64, wh: f64) {

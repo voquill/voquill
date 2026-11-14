@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.provider.Settings
 import android.view.inputmethod.InputMethodManager
 import com.voquill.flutter_video_looper.FlutterVideoLooperPlugin
+import com.voquill.mobile.notes.NoteRecorderChannel
 import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -14,6 +15,7 @@ import org.json.JSONObject
 
 class MainActivity : FlutterFragmentActivity() {
     private var sharedChannel: MethodChannel? = null
+    private var noteRecorderChannel: NoteRecorderChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -62,7 +64,15 @@ class MainActivity : FlutterFragmentActivity() {
                 }
             }
 
+        noteRecorderChannel = NoteRecorderChannel(flutterEngine.dartExecutor.binaryMessenger, this)
+        noteRecorderChannel?.handleIntent(intent)
         maybeShowPaywallFromIntent(intent)
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        noteRecorderChannel?.dispose()
+        noteRecorderChannel = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onResume() {
@@ -81,6 +91,7 @@ class MainActivity : FlutterFragmentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        noteRecorderChannel?.handleIntent(intent)
         maybeShowPaywallFromIntent(intent)
     }
 

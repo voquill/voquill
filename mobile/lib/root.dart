@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:app/utils/analytics_utils.dart';
 import 'package:app/actions/app_actions.dart';
 import 'package:app/actions/keyboard_actions.dart';
+import 'package:app/actions/notes_actions.dart';
 import 'package:app/actions/permission_actions.dart';
 import 'package:app/api/counter_api.dart';
 import 'package:app/flavor.dart';
@@ -47,6 +48,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   final scaffoldMessengerKey = GlobalKey<ScaffoldMessengerState>();
   late final GoRouter goRouter;
   late final StreamSubscription _authSubscription;
+  late final StreamSubscription<String> _openNoteSubscription;
   late final Timer _updatePoller;
   late final Timer _refreshPoller;
   int _lastUpdateCounter = -1;
@@ -69,6 +71,9 @@ class _AppState extends State<App> with WidgetsBindingObserver {
       (_) => _refreshData(),
     );
     _channel.setMethodCallHandler(_handleNativeCall);
+    _openNoteSubscription = openNoteRequests.listen(
+      (id) => goRouter.push('/dashboard/notes/$id'),
+    );
   }
 
   @override
@@ -78,6 +83,7 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     _updatePoller.cancel();
     _refreshPoller.cancel();
     _authSubscription.cancel();
+    _openNoteSubscription.cancel();
     super.dispose();
   }
 
@@ -90,6 +96,8 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       checkPermissions();
+      syncAllNotes();
+      refreshNotes();
     }
   }
 

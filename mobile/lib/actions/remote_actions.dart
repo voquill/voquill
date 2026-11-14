@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:app/actions/notes_actions.dart';
 import 'package:app/actions/session_actions.dart';
+import 'package:app/actions/snackbar_actions.dart';
 import 'package:app/api/dictation_api.dart';
+import 'package:app/api/microphone_pcm_api.dart';
 import 'package:app/model/session_history_entry.dart';
 import 'package:app/state/remote_state.dart';
 import 'package:app/store/store.dart';
@@ -10,14 +13,13 @@ import 'package:app/utils/log_utils.dart';
 import 'package:app/utils/remote_utils.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:record/record.dart';
 
 final _logger = createNamedLogger('remote_actions');
 
 enum DictationTarget { freeForm, activeTurn }
 
 class _RemoteSessionRuntime {
-  AudioRecorder? recorder;
+  MicrophonePcmSource? microphone;
   Future<void>? microphoneReady;
   StreamSubscription? audioSub;
   DictationSession? dictation;
@@ -37,10 +39,9 @@ class _RemoteSessionRuntime {
   Future<void> disposeMicrophone() async {
     try {
       await audioSub?.cancel();
-      await recorder?.stop();
+      await microphone?.stop();
     } catch (_) {}
-    recorder?.dispose();
-    recorder = null;
+    microphone = null;
     audioSub = null;
     microphoneReady = null;
   }
@@ -56,6 +57,10 @@ class _RemoteSessionRuntime {
 }
 
 final Map<String, _RemoteSessionRuntime> _runtimes = {};
+
+/// Whether dictation to the computer holds the microphone.
+bool get isRemoteMicrophoneOpen =>
+    _runtimes.values.any((runtime) => runtime.microphone != null);
 
 _RemoteSessionRuntime _runtime(String sessionId) =>
     _runtimes.putIfAbsent(sessionId, () => _RemoteSessionRuntime());
@@ -125,16 +130,10 @@ Future<void> _ensureMicrophone(String sessionId) {
 Future<void> _startMicrophone(String sessionId) async {
   final runtime = _runtime(sessionId);
   try {
-    final recorder = AudioRecorder();
-    runtime.recorder = recorder;
+    final microphone = MicrophonePcmSource();
+    runtime.microphone = microphone;
 
-    final stream = await recorder.startStream(
-      const RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-      ),
-    );
+    final stream = await microphone.start();
 
     runtime.audioSub = stream.listen((chunk) {
       final dictation = runtime.dictation;
@@ -142,11 +141,26 @@ Future<void> _startMicrophone(String sessionId) async {
       dictation.sendAudio(chunk);
       final level = computeAudioLevel(chunk);
       _mutateSession(sessionId, (s) => s.audioLevel = level);
-    });
+    }, onError: (Object e) => _onMicrophoneFailed(sessionId, e));
   } catch (e) {
     _logger.e('Failed to start microphone: $e');
     runtime.microphoneReady = null;
     await runtime.disposeMicrophone();
+  }
+}
+
+/// The shared microphone stopped (a call, Siri, a failed restart): drop the
+/// stream so the next press reopens it, and say so if a dictation was
+/// running.
+void _onMicrophoneFailed(String sessionId, Object error) {
+  _logger.e('Microphone stream failed: $error');
+  final runtime = _runtimes[sessionId];
+  if (runtime == null) return;
+  final wasRecording = getAppState().remote.session(sessionId).isRecording;
+  unawaited(runtime.disposeMicrophone());
+  if (wasRecording) {
+    cancelRemoteRecording(sessionId);
+    showSnackbar('The microphone was interrupted. Tap to dictate again.');
   }
 }
 
@@ -187,6 +201,12 @@ Future<void> startRemoteRecording(
 }) async {
   final state = getAppState();
   if (state.remote.session(sessionId).isRecording) return;
+  if (isMeetingRecording && !await canShareMicrophoneWithMeeting()) {
+    showSnackbar(
+      'This version of Android cannot dictate while a meeting records. Pause the meeting first.',
+    );
+    return;
+  }
 
   _mutateSession(sessionId, (s) {
     s.status = DictationPillStatus.recording;
@@ -310,10 +330,7 @@ Future<void> _routeDictation(
       final updated = _updateReview(
         turn,
         reviewIndex,
-        (r) => r.copyWith(
-          status: AssistantReviewStatus.denied,
-          response: text,
-        ),
+        (r) => r.copyWith(status: AssistantReviewStatus.denied, response: text),
       );
       await _persistAndMaybeReply(sessionId, updated);
       return;

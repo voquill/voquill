@@ -49,7 +49,6 @@ Voquill is an open-source, cross-platform AI voice typing app that lets you dict
 | **Writing Styles** — Switch between tones like Polished, Verbatim, and Chat to control how your voice sounds on the page. | ![Writing Styles](docs/writing-styles.png) |
 | **Dictionary** — Add custom terms and replacement rules so Voquill always spells your words correctly.                    | ![Dictionary](docs/dictionary.png)         |
 | **Providers** — Bring your own API key and choose your preferred transcription and post-processing provider.              | ![Providers](docs/providers.png)           |
-| **Chats** — Have voice-powered conversations with an AI assistant directly inside Voquill.                                | ![Chats](docs/chats-page.png)              |
 
 ## License
 

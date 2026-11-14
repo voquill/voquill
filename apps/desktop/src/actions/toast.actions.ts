@@ -1,6 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
 import { getIntl } from "../i18n/intl";
 import { ToastAction, ToastType } from "../types/toast.types";
+import {
+  dismissPillToast,
+  PILL_FLASH_DEFAULT_DURATION_MS,
+  sendPillToast,
+} from "../utils/overlay.utils";
 
 function getActionLabel(action: ToastAction): string {
   const intl = getIntl();
@@ -24,21 +28,15 @@ export type ShowToastOptions = {
 };
 
 export async function showToast(options: ShowToastOptions): Promise<void> {
-  const durationSec = options.duration ? options.duration / 1000 : undefined;
-  await invoke("sync_native_pill_assistant", {
-    payload: JSON.stringify({
-      type: "toast",
-      message: options.message,
-      toast_type: options.toastType ?? "info",
-      duration: durationSec,
-      action: options.action ?? null,
-      action_label: options.action ? getActionLabel(options.action) : null,
-    }),
+  await sendPillToast({
+    message: options.message,
+    toastType: options.toastType ?? "info",
+    durationMs: options.duration ?? PILL_FLASH_DEFAULT_DURATION_MS,
+    action: options.action ?? null,
+    actionLabel: options.action ? getActionLabel(options.action) : null,
   });
 }
 
 export async function dismissToast(): Promise<void> {
-  await invoke("sync_native_pill_assistant", {
-    payload: JSON.stringify({ type: "dismiss_toast" }),
-  });
+  await dismissPillToast();
 }

@@ -8,12 +8,28 @@ export type StopRecordingResponse = {
   sampleRate?: number;
 };
 
+export type TranscriptionFailureCode =
+  | "quota_exceeded"
+  | "auth_failed"
+  /** The selected provider has no speech-to-text; retrying cannot help. */
+  | "provider_unsupported";
+
 export type TranscriptionSessionResult = {
   rawTranscript: string | null;
   processedTranscript?: string | null;
   metadata: TranscribeAudioMetadata;
   postProcessMetadata?: PostProcessMetadata;
   warnings: string[];
+  /**
+   * Set when the transcript does not cover the whole recording (stream failed
+   * to open, dropped, errored or timed out). Sessions set it to request
+   * recovery; after recovery it means the audio could not be transcribed.
+   */
+  failureReason?: string | null;
+  /** Set for failures that retrying cannot fix; recovery is skipped and the user is told why. */
+  failureCode?: TranscriptionFailureCode | null;
+  /** True when the transcript came from re-transcribing the recorded audio. */
+  recovered?: boolean;
 };
 
 export type TranscriptionSessionFinalizeOptions = {
@@ -24,6 +40,8 @@ export type TranscriptionSessionFinalizeOptions = {
 export type InterimResultCallback = (segment: string) => void;
 
 export interface TranscriptionSession {
+  /** Stable provider name for logs (class names are mangled when minified). */
+  readonly name: string;
   onRecordingStart(sampleRate: number): Promise<void>;
   finalize(
     audio: StopRecordingResponse,

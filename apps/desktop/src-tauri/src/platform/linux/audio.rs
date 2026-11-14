@@ -15,10 +15,12 @@ const LEVEL_BIN_COUNT: usize = 12;
 const LEVEL_DISPATCH_INTERVAL: Duration = Duration::from_millis(48);
 const CHUNK_DISPATCH_INTERVAL: Duration = Duration::from_millis(100);
 const READ_CHUNK_FRAMES: usize = 1024;
+const PULSE_OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PulseRecorder {
     inner: Arc<Mutex<Option<ActiveRecording>>>,
     preferred_source: Arc<Mutex<Option<String>>>,
+    retain_samples: bool,
 }
 
 struct ActiveRecording {
@@ -38,9 +40,14 @@ impl Default for PulseRecorder {
 
 impl PulseRecorder {
     pub fn new() -> Self {
+        Self::with_sample_retention(true)
+    }
+
+    pub fn with_sample_retention(retain_samples: bool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(None)),
             preferred_source: Arc::new(Mutex::new(None)),
+            retain_samples,
         }
     }
 }
@@ -82,6 +89,8 @@ impl Recorder for PulseRecorder {
 
         let stop_signal = Arc::new(Mutex::new(false));
         let stop_signal_clone = Arc::clone(&stop_signal);
+        let retain_samples = self.retain_samples;
+        let (opened, opened_result) = std::sync::mpsc::channel();
 
         let thread = std::thread::Builder::new()
             .name("pulse-recorder".into())
@@ -92,9 +101,24 @@ impl Recorder for PulseRecorder {
                     stop_signal_clone,
                     level_callback,
                     chunk_callback,
+                    retain_samples,
+                    opened,
                 )
             })
             .map_err(|err| RecordingError::StreamBuild(err.to_string()))?;
+
+        // Starting succeeds only once the stream is open, so a missing or
+        // stopped PulseAudio is reported instead of a silent recording.
+        let open = opened_result
+            .recv_timeout(PULSE_OPEN_TIMEOUT)
+            .unwrap_or_else(|_| Err("PulseAudio did not open the stream in time".into()));
+        if let Err(message) = open {
+            if let Ok(mut flag) = stop_signal.lock() {
+                *flag = true;
+            }
+            let _ = thread.join();
+            return Err(Box::new(RecordingError::StreamBuild(message)));
+        }
 
         *guard = Some(ActiveRecording {
             stop_signal,
@@ -192,14 +216,12 @@ fn query_source_native_rate(source_name: Option<&str>) -> u32 {
     FALLBACK_SAMPLE_RATE
 }
 
-/// The actual blocking recording loop. Runs on a dedicated thread.
-fn record_loop(
+/// A blocking mono f32 recording stream on `source_name` (None = default).
+pub(crate) fn open_record_stream(
     source_name: Option<&str>,
     sample_rate: u32,
-    stop_signal: Arc<Mutex<bool>>,
-    level_callback: Option<LevelCallback>,
-    chunk_callback: Option<ChunkCallback>,
-) -> RecordingResult {
+    description: &str,
+) -> Result<psimple::Simple, String> {
     let spec = pulse::sample::Spec {
         format: pulse::sample::Format::F32le,
         channels: 1,
@@ -215,27 +237,51 @@ fn record_loop(
         fragsize: (READ_CHUNK_FRAMES * std::mem::size_of::<f32>()) as u32,
     };
 
-    let source_cstr = source_name.and_then(|s| std::ffi::CString::new(s).ok());
-    let source_ref = source_cstr
-        .as_ref()
-        .map(|c| c.as_c_str().to_str().unwrap_or_default());
-
-    let simple = match psimple::Simple::new(
+    psimple::Simple::new(
         None,      // server (default)
         "Voquill", // app name
         pulse::stream::Direction::Record,
-        source_ref,  // source (None = default)
-        "Recording", // stream description
+        source_name, // source (None = default)
+        description,
         &spec,
         None, // channel map (default)
         Some(&attr),
-    ) {
+    )
+    // `PAErr::to_string` is an inherent method returning an `Option`.
+    .map_err(|err| format!("{err}"))
+}
+
+/// Reads one fragment (`READ_CHUNK_FRAMES` samples), blocking until it is there.
+pub(crate) fn read_samples(simple: &psimple::Simple) -> Result<Vec<f32>, String> {
+    let mut read_buf = vec![0u8; READ_CHUNK_FRAMES * std::mem::size_of::<f32>()];
+    simple.read(&mut read_buf).map_err(|err| format!("{err}"))?;
+    Ok(read_buf
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
+        .collect())
+}
+
+/// The actual blocking recording loop. Runs on a dedicated thread.
+fn record_loop(
+    source_name: Option<&str>,
+    sample_rate: u32,
+    stop_signal: Arc<Mutex<bool>>,
+    level_callback: Option<LevelCallback>,
+    chunk_callback: Option<ChunkCallback>,
+    retain_samples: bool,
+    opened: std::sync::mpsc::Sender<Result<(), String>>,
+) -> RecordingResult {
+    let simple = match open_record_stream(source_name, sample_rate, "Recording") {
         Ok(s) => s,
         Err(err) => {
             log::error!("failed to open PulseAudio recording stream: {err}");
+            let _ = opened.send(Err(err));
             return empty_result();
         }
     };
+    let _ = opened.send(Ok(()));
 
     log::info!(
         "PulseAudio recording started (source: {})",
@@ -248,8 +294,6 @@ fn record_loop(
     let mut last_chunk_emit = Instant::now();
     let mut chunk_buffer: Vec<f32> = Vec::new();
 
-    let mut read_buf = vec![0u8; READ_CHUNK_FRAMES * std::mem::size_of::<f32>()];
-
     loop {
         // Check stop signal
         if let Ok(flag) = stop_signal.lock() {
@@ -259,19 +303,17 @@ fn record_loop(
         }
 
         // Read audio data (blocking)
-        if let Err(err) = simple.read(&mut read_buf) {
-            log::error!("PulseAudio read error: {err}");
-            break;
+        let samples = match read_samples(&simple) {
+            Ok(samples) => samples,
+            Err(err) => {
+                log::error!("PulseAudio read error: {err}");
+                break;
+            }
+        };
+
+        if retain_samples {
+            all_samples.extend_from_slice(&samples);
         }
-
-        // Convert bytes to f32 samples (F32LE format)
-        let samples: Vec<f32> = read_buf
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
-            .collect();
-
-        // Accumulate for final result
-        all_samples.extend_from_slice(&samples);
 
         // Emit level bins
         if let Some(ref cb) = level_callback {
@@ -363,12 +405,14 @@ fn compute_level_bins(samples: &[f32]) -> Vec<f32> {
 // ── PulseAudio source enumeration ──────────────────────────────────────
 
 #[derive(Clone)]
-struct PulseSource {
-    name: String,
+pub(crate) struct PulseSource {
+    pub(crate) name: String,
     description: String,
     is_monitor: bool,
     is_default: bool,
-    sample_rate: u32,
+    /// The monitor of the default sink: what the computer plays.
+    is_default_sink_monitor: bool,
+    pub(crate) sample_rate: u32,
 }
 
 fn enumerate_pulse_sources() -> Vec<PulseSource> {
@@ -416,9 +460,11 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
         }
     }
 
-    // Get the default source name from server info
+    // Get the default source and sink names from server info
     let default_source: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let default_source_clone = Arc::clone(&default_source);
+    let default_sink: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let default_sink_clone = Arc::clone(&default_sink);
     let server_done = Arc::new(Mutex::new(false));
     let server_done_clone = Arc::clone(&server_done);
 
@@ -426,6 +472,11 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
     introspect.get_server_info(move |info| {
         if let Some(ref name) = info.default_source_name {
             if let Ok(mut guard) = default_source_clone.lock() {
+                *guard = Some(name.to_string());
+            }
+        }
+        if let Some(ref name) = info.default_sink_name {
+            if let Ok(mut guard) = default_sink_clone.lock() {
                 *guard = Some(name.to_string());
             }
         }
@@ -453,6 +504,7 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
         .ok()
         .and_then(|g| g.clone())
         .unwrap_or_default();
+    let default_sink_name = default_sink.lock().ok().and_then(|g| g.clone());
 
     // Enumerate sources
     let sources: Arc<Mutex<Vec<PulseSource>>> = Arc::new(Mutex::new(Vec::new()));
@@ -474,6 +526,9 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
                 .map(|d| d.to_string())
                 .unwrap_or_else(|| name.clone());
             let is_monitor = info.monitor_of_sink.is_some();
+            let is_default_sink_monitor = is_monitor
+                && default_sink_name.is_some()
+                && info.monitor_of_sink_name.as_deref() == default_sink_name.as_deref();
 
             let sample_rate = info.sample_spec.rate;
             if let Ok(mut guard) = sources_clone.lock() {
@@ -482,6 +537,7 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
                     name,
                     description,
                     is_monitor,
+                    is_default_sink_monitor,
                     sample_rate,
                 });
             }
@@ -513,6 +569,13 @@ fn enumerate_pulse_sources() -> Vec<PulseSource> {
         Ok(mutex) => mutex.into_inner().unwrap_or_default(),
         Err(arc) => arc.lock().unwrap_or_else(|p| p.into_inner()).clone(),
     }
+}
+
+/// The monitor source of the default sink, if the server has one.
+pub(crate) fn default_sink_monitor() -> Option<PulseSource> {
+    enumerate_pulse_sources()
+        .into_iter()
+        .find(|source| source.is_default_sink_monitor)
 }
 
 /// List microphone sources via PulseAudio, filtering out monitors.

@@ -25,6 +25,18 @@ When a new `flash_message` arrives while one is already showing, it replaces the
 - The message is non-interactive — no click regions are registered.
 - There is no queue; a new flash message replaces any active one.
 
+## Visibility while a flash is showing
+
+A flash message (and a `toast`, `fireworks` or `flame`, which drive the same banner) must be seen even when the user's `dictationPillVisibility` would hide the pill, e.g. "Copied to clipboard" right after a dictation ends with the pill set to `hidden` or `while_active`.
+
+The host decides this, not the pill. Whenever the TypeScript side sends one of those messages it holds the pill visible: it sends `{"type":"visibility","visibility":"persistent"}` until the banner's display duration plus its exit animation (`PILL_FLASH_EXIT_ANIMATION_MS`, 750 ms, which covers the ~0.6 s spring settle) has elapsed. Then it sends the user's setting again. `dismiss_toast` shortens the hold to just the exit animation. Overlapping flashes extend the hold and never shorten it. See `holdPillVisibleForFlash` in `apps/desktop/src/utils/overlay.utils.ts` and `getPillVisibilityToApply` in `apps/desktop/src/utils/user.utils.ts`.
+
+To keep the two sides in step, the host always sends an explicit `duration` on `toast` messages instead of relying on the pills' `FLASH_DURATION` default. `fireworks` and `flame` have no duration field, so the host mirrors `FIREWORKS_TOTAL_DURATION` (7 s) and `FLAME_TOTAL_DURATION` (5 s); keep those in sync. `dismiss_toast` only shortens the toast's hold to its exit animation — a fireworks/flame animation keeps its own hold — and does nothing when no toast is held, so it cannot flash a hidden pill.
+
+Pills need no extra logic for this on macOS, Windows or X11: they just honour `visibility`.
+
+The GTK pill on Wayland (layer-shell and plain) is the one exception, and it is deliberate. Its window policy is already decided natively: it ignores `visibility` entirely and only shows while recording, because the plain-Wayland window is a maximised transparent dock and showing it outside dictation would cover the screen. TypeScript has no way to say "show only for this flash" through `visibility` without also turning on the persistent pill for every Wayland user (the default setting is `persistent`). So on Wayland only, the pill also stays shown while `flash_visible` is set or `flash_t > 0.01`, which is exact with respect to its own animation.
+
 ## State
 
 Add the following fields to `PillState`:

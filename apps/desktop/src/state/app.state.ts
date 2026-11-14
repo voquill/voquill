@@ -3,12 +3,13 @@ import {
   ApiKey,
   AppTarget,
   ChatMessage,
-  Conversation,
   EnterpriseConfig,
   EnterpriseLicense,
   FullConfig,
   Hotkey,
   Member,
+  Note,
+  NoteSegment,
   Nullable,
   OidcProvider,
   PairedRemoteDevice,
@@ -29,10 +30,10 @@ import { OverlayPhase } from "../types/overlay.types";
 import { PermissionMap } from "../types/permission.types";
 
 import { AgentRunState } from "./agent.state";
-import { ChatState, INITIAL_CHAT_STATE } from "./chat.state";
 import { DictionaryState, INITIAL_DICTIONARY_STATE } from "./dictionary.state";
 import { INITIAL_LOCAL_STATE, LocalState } from "./local.state";
 import { INITIAL_LOGIN_STATE, LoginState } from "./login.state";
+import { INITIAL_NOTES_STATE, NotesState } from "./notes.state";
 import {
   INITIAL_ONBOARDING_STATE,
   type OnboardingState,
@@ -103,10 +104,12 @@ export type AppState = {
   pairedRemoteDeviceById: Record<string, PairedRemoteDevice>;
   remoteReceiverStatus: Nullable<RemoteReceiverStatus>;
   transcriptionById: Record<string, Transcription>;
+  noteById: Record<string, Note>;
+  /** Loaded on demand, ordered by segment index. */
+  noteSegmentsByNoteId: Record<string, NoteSegment[]>;
   hotkeyById: Record<string, Hotkey>;
   apiKeyById: Record<string, ApiKey>;
   toneById: Record<string, Tone>;
-  conversationById: Record<string, Conversation>;
   chatMessageById: Record<string, ChatMessage>;
   chatMessageIdsByConversationId: Record<string, string[]>;
   toolInfoById: Record<string, ToolInfo>;
@@ -123,6 +126,7 @@ export type AppState = {
   local: LocalState;
   onboarding: OnboardingState;
   transcriptions: TranscriptionsState;
+  notes: NotesState;
   dictionary: DictionaryState;
   tones: TonesState;
   toneEditor: ToneEditorState;
@@ -133,7 +137,7 @@ export type AppState = {
   login: LoginState;
   pillConversationId: Nullable<string>;
   assistantInputMode: AssistantInputMode;
-  chat: ChatState;
+  isPillFlashShowing: boolean;
 
   snackbarMessage?: string;
   snackbarCounter: number;
@@ -166,10 +170,11 @@ export const INITIAL_APP_STATE: AppState = {
   pairedRemoteDeviceById: {},
   remoteReceiverStatus: null,
   transcriptionById: {},
+  noteById: {},
+  noteSegmentsByNoteId: {},
   priceValueByKey: {},
   apiKeyById: {},
   toneById: {},
-  conversationById: {},
   chatMessageById: {},
   chatMessageIdsByConversationId: {},
   toolInfoById: {},
@@ -199,10 +204,11 @@ export const INITIAL_APP_STATE: AppState = {
   supportsPasteKeybinds: "disabled",
   pillConversationId: null,
   assistantInputMode: "voice",
+  isPillFlashShowing: false,
   local: INITIAL_LOCAL_STATE,
-  chat: INITIAL_CHAT_STATE,
   onboarding: INITIAL_ONBOARDING_STATE,
   transcriptions: INITIAL_TRANSCRIPTIONS_STATE,
+  notes: INITIAL_NOTES_STATE,
   dictionary: INITIAL_DICTIONARY_STATE,
   tones: INITIAL_TONES_STATE,
   toneEditor: INITIAL_TONE_EDITOR_STATE,

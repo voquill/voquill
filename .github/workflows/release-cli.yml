@@ -178,11 +178,11 @@ jobs:
       matrix:
         include:
           - label: macOS x86_64
-            os: macos-14
+            os: macos-15
             target: x86_64-apple-darwin
             archive_ext: tar.gz
           - label: macOS arm64
-            os: macos-14
+            os: macos-15
             target: aarch64-apple-darwin
             archive_ext: tar.gz
           - label: Linux x86_64

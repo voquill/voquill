@@ -675,15 +675,6 @@ fn draw_assistant_panel(cr: &cairo::Context, state: &PillState, ww: f64, wh: f64
             draw_user_prompt_preview(cr, panel_x, py, panel_w, prompt, alpha);
         }
 
-        let open_x = panel_x + PANEL_HEADER_OFFSET_LEFT + HEADER_BUTTON_SIZE + 4.0;
-        draw_panel_button(cr, open_x, py + PANEL_HEADER_OFFSET_TOP,
-            HEADER_BUTTON_SIZE, alpha, ButtonIcon::OpenInNew);
-        state.click_regions.borrow_mut().push(ClickRegion {
-            x: open_x, y: py + PANEL_HEADER_OFFSET_TOP,
-            w: HEADER_BUTTON_SIZE, h: HEADER_BUTTON_SIZE,
-            action: ClickAction::OpenInNew,
-        });
-
         // Input bar drawn on top of scroll view + gradients
         if is_typing {
             let input_y = py + panel_h - PANEL_INPUT_HEIGHT;
@@ -724,8 +715,8 @@ fn draw_assistant_panel(cr: &cairo::Context, state: &PillState, ww: f64, wh: f64
     }
 
     // Close button drawn last so it's always on top of gradients
-    draw_panel_button(cr, panel_x + PANEL_HEADER_OFFSET_LEFT, py + PANEL_HEADER_OFFSET_TOP,
-        HEADER_BUTTON_SIZE, alpha, ButtonIcon::Close);
+    draw_close_button(cr, panel_x + PANEL_HEADER_OFFSET_LEFT, py + PANEL_HEADER_OFFSET_TOP,
+        HEADER_BUTTON_SIZE, alpha);
     state.click_regions.borrow_mut().push(ClickRegion {
         x: panel_x + PANEL_HEADER_OFFSET_LEFT,
         y: py + PANEL_HEADER_OFFSET_TOP,
@@ -994,16 +985,7 @@ fn draw_user_prompt_preview(
     let _ = cr.show_text(&display);
 }
 
-#[derive(Debug, Clone, Copy)]
-enum ButtonIcon {
-    Close,
-    OpenInNew,
-}
-
-fn draw_panel_button(
-    cr: &cairo::Context,
-    x: f64, y: f64, size: f64, alpha: f64, icon: ButtonIcon,
-) {
+fn draw_close_button(cr: &cairo::Context, x: f64, y: f64, size: f64, alpha: f64) {
     rounded_rect(cr, x, y, size, size, size / 4.0);
     cr.set_source_rgba(1.0, 1.0, 1.0, 0.06 * alpha);
     let _ = cr.fill();
@@ -1015,31 +997,12 @@ fn draw_panel_button(
     cr.set_source_rgba(1.0, 1.0, 1.0, 0.82 * alpha);
     cr.set_line_width(1.5);
     cr.set_line_cap(cairo::LineCap::Round);
-
-    match icon {
-        ButtonIcon::Close => {
-            cr.move_to(cx - icon_size / 2.0, cy - icon_size / 2.0);
-            cr.line_to(cx + icon_size / 2.0, cy + icon_size / 2.0);
-            let _ = cr.stroke();
-            cr.move_to(cx + icon_size / 2.0, cy - icon_size / 2.0);
-            cr.line_to(cx - icon_size / 2.0, cy + icon_size / 2.0);
-            let _ = cr.stroke();
-        }
-        ButtonIcon::OpenInNew => {
-            let s = icon_size * 0.5;
-            cr.move_to(cx - s, cy + s);
-            cr.line_to(cx + s, cy - s);
-            let _ = cr.stroke();
-            cr.move_to(cx, cy - s);
-            cr.line_to(cx + s, cy - s);
-            cr.line_to(cx + s, cy);
-            let _ = cr.stroke();
-            cr.move_to(cx - s, cy - s * 0.3);
-            cr.line_to(cx - s, cy + s);
-            cr.line_to(cx + s * 0.3, cy + s);
-            let _ = cr.stroke();
-        }
-    }
+    cr.move_to(cx - icon_size / 2.0, cy - icon_size / 2.0);
+    cr.line_to(cx + icon_size / 2.0, cy + icon_size / 2.0);
+    let _ = cr.stroke();
+    cr.move_to(cx + icon_size / 2.0, cy - icon_size / 2.0);
+    cr.line_to(cx - icon_size / 2.0, cy + icon_size / 2.0);
+    let _ = cr.stroke();
 }
 
 fn draw_keyboard_button(cr: &cairo::Context, state: &PillState, ww: f64, wh: f64) {

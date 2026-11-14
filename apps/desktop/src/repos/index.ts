@@ -12,20 +12,16 @@ import {
   getAgentModePrefs,
   getGenerativePrefs,
   getTranscriptionPrefs,
+  type TranscriptionPrefs,
 } from "../utils/user.utils";
 import { BaseApiKeyRepo, LocalApiKeyRepo } from "./api-key.repo";
 import { BaseAppTargetRepo, LocalAppTargetRepo } from "./app-target.repo";
 import { BaseAuthRepo, CloudAuthRepo, EnterpriseAuthRepo } from "./auth.repo";
-import { BaseChatMessageRepo, LocalChatMessageRepo } from "./chat-message.repo";
 import {
   BaseConfigRepo,
   CloudConfigRepo,
   EnterpriseConfigRepo,
 } from "./config.repo";
-import {
-  BaseConversationRepo,
-  LocalConversationRepo,
-} from "./conversation.repo";
 import { EnterpriseRepo } from "./enterprise.repo";
 import {
   AzureOpenAIGenerateTextRepo,
@@ -69,6 +65,9 @@ import {
   SpeachesModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
+import { CloudNoteRepo } from "./cloud-note.repo";
+import { MeetingAudioRepo } from "./meeting-audio.repo";
+import { BaseNoteRepo, LocalNoteRepo } from "./note.repo";
 import {
   BasePairedRemoteDeviceRepo,
   LocalPairedRemoteDeviceRepo,
@@ -99,6 +98,7 @@ import {
 import { ToolRepo } from "./tool.repo";
 import {
   AldeaTranscribeAudioRepo,
+  AssemblyAITranscribeAudioRepo,
   AzureTranscribeAudioRepo,
   BaseTranscribeAudioRepo,
   DeepgramTranscribeAudioRepo,
@@ -111,6 +111,7 @@ import {
   OpenAICompatibleTranscribeAudioRepo,
   OpenAITranscribeAudioRepo,
   SpeachesTranscribeAudioRepo,
+  UnsupportedTranscribeAudioRepo,
   XaiTranscribeAudioRepo,
 } from "./transcribe-audio.repo";
 import {
@@ -176,6 +177,18 @@ export const getTranscriptionRepo = (): BaseTranscriptionRepo => {
   return new LocalTranscriptionRepo();
 };
 
+export const getNoteRepo = (): BaseNoteRepo => {
+  return new LocalNoteRepo();
+};
+
+export const getCloudNoteRepo = (): CloudNoteRepo => {
+  return new CloudNoteRepo();
+};
+
+export const getMeetingAudioRepo = (): MeetingAudioRepo => {
+  return new MeetingAudioRepo();
+};
+
 export const getAppTargetRepo = (): BaseAppTargetRepo => {
   return new LocalAppTargetRepo();
 };
@@ -204,14 +217,6 @@ export const getToneRepo = (): BaseToneRepo => {
 
 export const getStorageRepo = (): BaseStorageRepo => {
   return new LocalStorageRepo();
-};
-
-export const getConversationRepo = (): BaseConversationRepo => {
-  return new LocalConversationRepo();
-};
-
-export const getChatMessageRepo = (): BaseChatMessageRepo => {
-  return new LocalChatMessageRepo();
 };
 
 export const getToolRepo = (): ToolRepo => {
@@ -396,9 +401,11 @@ export type TranscribeAudioRepoOutput = {
   warnings: string[];
 };
 
-export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
-  const prefs = getTranscriptionPrefs(getAppState());
-
+export const getTranscribeAudioRepo = (
+  prefs: TranscriptionPrefs = getTranscriptionPrefs(getAppState()),
+): TranscribeAudioRepoOutput => {
+  // Prefs captured for a dictation are reused per attempt; never mutate them.
+  const warnings = [...prefs.warnings];
   if (prefs.mode === "cloud") {
     let repo: BaseTranscribeAudioRepo;
     if (getIsEnterpriseEnabled()) {
@@ -409,7 +416,7 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
     return {
       repo,
       apiKeyId: null,
-      warnings: prefs.warnings,
+      warnings,
     };
   } else if (prefs.mode === "api") {
     let repo: BaseTranscribeAudioRepo;
@@ -451,7 +458,7 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
       const model =
         prefs.transcriptionModel || "Systran/faster-whisper-large-v3";
       if (!model) {
-        prefs.warnings.push("No model configured for Speaches transcription.");
+        warnings.push("No model configured for Speaches transcription.");
       }
       repo = new SpeachesTranscribeAudioRepo(
         baseUrl,
@@ -459,6 +466,8 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
       );
     } else if (prefs.provider === "elevenlabs") {
       repo = new ElevenLabsTranscribeAudioRepo(prefs.apiKeyValue);
+    } else if (prefs.provider === "assemblyai") {
+      repo = new AssemblyAITranscribeAudioRepo(prefs.apiKeyValue);
     } else if (prefs.provider === "deepgram") {
       repo = new DeepgramTranscribeAudioRepo(
         prefs.apiKeyValue,
@@ -469,24 +478,30 @@ export const getTranscribeAudioRepo = (): TranscribeAudioRepoOutput => {
         prefs.apiKeyValue,
         prefs.transcriptionModel,
       );
-    } else {
+    } else if (prefs.provider === "groq") {
       repo = new GroqTranscribeAudioRepo(
         prefs.apiKeyValue,
         prefs.transcriptionModel,
+      );
+    } else {
+      // Never fall back to another provider with the user's audio.
+      repo = new UnsupportedTranscribeAudioRepo(prefs.provider);
+      warnings.push(
+        `${prefs.provider} does not support transcription; choose a transcription provider.`,
       );
     }
 
     return {
       repo,
       apiKeyId: prefs.apiKeyId,
-      warnings: prefs.warnings,
+      warnings,
     };
   }
 
   return {
     repo: new LocalTranscribeAudioRepo(),
     apiKeyId: null,
-    warnings: prefs.warnings,
+    warnings,
   };
 };
 

@@ -8,7 +8,7 @@ import {
   getToolPermissionStatus,
   requestToolPermission,
 } from "../actions/tool.actions";
-import { getAgentRepo, getChatMessageRepo } from "../repos";
+import { getAgentRepo } from "../repos";
 import { createAgentRunState } from "../state/agent.state";
 import { getAppState, produceAppState } from "../store";
 import { createTool } from "../tools";
@@ -17,7 +17,6 @@ import { getLogger } from "../utils/log.utils";
 import type { AgentTypeConfig } from "./agent-configs";
 
 const POLL_INTERVAL_MS = 500;
-const activeLoops = new Map<string, AgentLoop>();
 
 export async function runAgent(
   conversationId: string,
@@ -42,8 +41,6 @@ export async function runAgent(
     maxIterations: config.maxIterations,
   });
 
-  activeLoops.set(conversationId, loop);
-
   let currentMessageId: string | null = null;
   let iterationText = "";
   let iterationToolCalls: LlmToolCall[] = [];
@@ -55,7 +52,7 @@ export async function runAgent(
       switch (event.type) {
         case "iteration-start": {
           if (currentMessageId) {
-            await finalizeAssistantMessage(
+            finalizeAssistantMessage(
               currentMessageId,
               iterationText,
               iterationToolCalls,
@@ -154,7 +151,7 @@ export async function runAgent(
         case "tool-call-result": {
           toolCallIndex++;
           const reason = toolCallReasons.get(event.toolCallId);
-          await createChatMessage({
+          createChatMessage({
             id: crypto.randomUUID(),
             conversationId,
             role: "system",
@@ -200,7 +197,7 @@ export async function runAgent(
 
         case "finish": {
           if (currentMessageId) {
-            await finalizeAssistantMessage(
+            finalizeAssistantMessage(
               currentMessageId,
               iterationText,
               iterationToolCalls,
@@ -238,30 +235,14 @@ export async function runAgent(
         delete draft.streamingMessageById[currentMessageId!];
       });
     }
-    activeLoops.delete(conversationId);
   }
 }
 
-export function abortAgentLoop(conversationId: string): void {
-  const loop = activeLoops.get(conversationId);
-  if (loop) loop.abort();
-
-  produceAppState((draft) => {
-    modifyAgentState({
-      draft,
-      conversationId,
-      modify: (s) => {
-        s.aborted = true;
-      },
-    });
-  });
-}
-
-async function finalizeAssistantMessage(
+function finalizeAssistantMessage(
   messageId: string,
   text: string,
   toolCalls: LlmToolCall[],
-): Promise<void> {
+): void {
   const message = getAppState().chatMessageById[messageId];
   if (!message) return;
 
@@ -273,8 +254,6 @@ async function finalizeAssistantMessage(
         ? ({ type: "reasoning", toolCalls } as Record<string, unknown>)
         : null,
   };
-
-  await getChatMessageRepo().createChatMessage(final);
 
   produceAppState((draft) => {
     draft.chatMessageById[messageId] = final;
@@ -351,7 +330,7 @@ async function executeWithPermission(
     });
   });
 
-  const resolution = await pollForPermission(conversationId, permissionId);
+  const resolution = await pollForPermission(permissionId);
 
   if (resolution === "allowed") {
     try {
@@ -369,13 +348,9 @@ async function executeWithPermission(
 }
 
 async function pollForPermission(
-  conversationId: string,
   permissionId: string,
 ): Promise<"allowed" | "denied"> {
   while (true) {
-    const state = getAppState().agentStateByConversationId[conversationId];
-    if (state?.aborted) return "denied";
-
     const result = getToolPermissionStatus(permissionId);
     if (result?.status === "allowed") return "allowed";
     if (result?.status === "denied") return "denied";

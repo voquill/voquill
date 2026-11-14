@@ -1,12 +1,5 @@
 import { Nullable } from "./common.types";
 
-export type Conversation = {
-  id: string;
-  title: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type ChatMessageRole = "user" | "assistant" | "system";
 
 export type ChatMessage = {

@@ -259,14 +259,6 @@ fn start_stdout_reader(app: tauri::AppHandle, reader: std::io::BufReader<ChildSt
                                 let _ = app.emit_to("main", "assistant-typed-message", payload);
                             }
                         }
-                    } else if line.contains("\"open_conversation\"") {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                            if let Some(id) = val.get("conversation_id").and_then(|v| v.as_str()) {
-                                let payload = serde_json::json!({ "conversationId": id });
-                                let _ = app.emit_to("main", "open-pill-conversation", payload);
-                            }
-                        }
-                        let _ = app.emit_to("main", "assistant-mode-close", ());
                     } else if line.contains("\"resolve_permission\"") {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
                             let permission_id = val

@@ -1,19 +1,17 @@
 import {
-  ChatBubbleOutline,
   ClassOutlined,
   HelpOutline,
   HistoryOutlined,
   HomeOutlined,
   PaletteOutlined,
   SettingsOutlined,
+  StickyNote2Outlined,
 } from "@mui/icons-material";
 import { Box, List, Stack } from "@mui/material";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { FormattedMessage } from "react-intl";
-import { useMemo } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "../../store";
-import { getIsAssistantModeEnabled } from "../../utils/assistant-mode.utils";
 import { ListTile } from "../common/ListTile";
 import { DiscordListTile } from "./DiscordListTile";
 import { MobileAppListTile } from "./MobileAppListTile";
@@ -27,6 +25,38 @@ type NavItem = {
   icon: React.ReactNode;
 };
 
+const navItems: NavItem[] = [
+  {
+    label: <FormattedMessage defaultMessage="Home" />,
+    path: "/dashboard",
+    icon: <HomeOutlined />,
+  },
+  {
+    label: <FormattedMessage defaultMessage="History" />,
+    path: "/dashboard/transcriptions",
+    icon: <HistoryOutlined />,
+  },
+  {
+    label: <FormattedMessage defaultMessage="Dictionary" />,
+    path: "/dashboard/dictionary",
+    icon: <ClassOutlined />,
+  },
+  {
+    label: <FormattedMessage defaultMessage="Styles" />,
+    path: "/dashboard/styling",
+    icon: <PaletteOutlined />,
+  },
+  {
+    label: <FormattedMessage defaultMessage="Notes" />,
+    path: "/dashboard/notes",
+    icon: <StickyNote2Outlined />,
+  },
+];
+
+const isNavItemSelected = (pathname: string, path: string) =>
+  pathname === path ||
+  (path !== "/dashboard" && pathname.startsWith(`${path}/`));
+
 export type DashboardMenuProps = {
   onChoose?: () => void;
 };
@@ -37,42 +67,6 @@ export const DashboardMenu = ({ onChoose }: DashboardMenuProps) => {
   const isEnterprise = useAppStore((state) => state.isEnterprise);
   const isUpdateAvailable = useAppStore(
     (state) => state.updater.status === "ready",
-  );
-  const assistantModeEnabled = useAppStore(getIsAssistantModeEnabled);
-
-  const navItems = useMemo<NavItem[]>(
-    () => [
-      {
-        label: <FormattedMessage defaultMessage="Home" />,
-        path: "/dashboard",
-        icon: <HomeOutlined />,
-      },
-      {
-        label: <FormattedMessage defaultMessage="History" />,
-        path: "/dashboard/transcriptions",
-        icon: <HistoryOutlined />,
-      },
-      {
-        label: <FormattedMessage defaultMessage="Dictionary" />,
-        path: "/dashboard/dictionary",
-        icon: <ClassOutlined />,
-      },
-      {
-        label: <FormattedMessage defaultMessage="Styles" />,
-        path: "/dashboard/styling",
-        icon: <PaletteOutlined />,
-      },
-      ...(assistantModeEnabled
-        ? [
-            {
-              label: <FormattedMessage defaultMessage="Chats" />,
-              path: "/dashboard/chats",
-              icon: <ChatBubbleOutline />,
-            },
-          ]
-        : []),
-    ],
-    [assistantModeEnabled],
   );
 
   const onChooseHandler = (path: string) => {
@@ -91,7 +85,7 @@ export const DashboardMenu = ({ onChoose }: DashboardMenuProps) => {
         <ListTile
           key={path}
           onClick={() => onChooseHandler(path)}
-          selected={location.pathname === path}
+          selected={isNavItemSelected(location.pathname, path)}
           leading={icon}
           title={label}
         />
