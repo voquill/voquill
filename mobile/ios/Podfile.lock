@@ -128,23 +128,23 @@ PODS:
   - permission_handler_apple (9.3.0):
     - Flutter
   - PromisesObjC (2.4.0)
-  - purchases_flutter (8.11.0):
+  - purchases_flutter (10.7.0):
     - Flutter
-    - PurchasesHybridCommon (= 14.3.0)
-  - purchases_ui_flutter (8.11.0):
+    - PurchasesHybridCommon (= 18.28.0)
+  - purchases_ui_flutter (10.7.0):
     - Flutter
-    - PurchasesHybridCommonUI (= 14.3.0)
-  - PurchasesHybridCommon (14.3.0):
-    - RevenueCat (= 5.32.0)
-  - PurchasesHybridCommonUI (14.3.0):
-    - PurchasesHybridCommon (= 14.3.0)
-    - RevenueCatUI (= 5.32.0)
+    - PurchasesHybridCommonUI (= 18.28.0)
+  - PurchasesHybridCommon (18.28.0):
+    - RevenueCat (= 5.83.0)
+  - PurchasesHybridCommonUI (18.28.0):
+    - PurchasesHybridCommon (= 18.28.0)
+    - RevenueCatUI (= 5.83.0)
   - RecaptchaInterop (101.0.0)
   - record_ios (1.2.0):
     - Flutter
-  - RevenueCat (5.32.0)
-  - RevenueCatUI (5.32.0):
-    - RevenueCat (= 5.32.0)
+  - RevenueCat (5.83.0)
+  - RevenueCatUI (5.83.0):
+    - RevenueCat (= 5.83.0)
   - rive_native (0.0.1):
     - Flutter
   - shared_preferences_foundation (0.0.1):
@@ -235,7 +235,7 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/url_launcher_ios/ios"
 
 SPEC CHECKSUMS:
-  AppAuth: d4f13a8fe0baf391b2108511793e4b479691fb73
+  AppAuth: 58e37c546bb9bf2073c1392ccba8cef35ff283cb
   AppCheckCore: cc8fd0a3a230ddd401f326489c99990b013f0c4f
   cloud_functions: 8cfd7ba062db83be645823b41f2b42aa234bcfe3
   Firebase: 065f2bb395062046623036d8e6dc857bc2521d56
@@ -256,23 +256,23 @@ SPEC CHECKSUMS:
   flutter_secure_storage: 1ed9476fba7e7a782b22888f956cce43e2c62f13
   flutter_video_looper: de4070d9ec12e9455428b9da53d519ddda22a354
   google_sign_in_ios: b48bb9af78576358a168361173155596c845f0b9
-  GoogleSignIn: ce8c89bb9b37fb624b92e7514cc67335d1e277e4
+  GoogleSignIn: e6b83a7093495f8ba4b7547460485f1e308c8df5
   GoogleUtilities: 00c88b9a86066ef77f0da2fab05f65d7768ed8e1
-  GTMAppAuth: f69bd07d68cd3b766125f7e072c45d7340dea0de
+  GTMAppAuth: 4a3fbbb34098b327feaa51cfbf98b0b12f6892e7
   GTMSessionFetcher: 5aea5ba6bd522a239e236100971f10cb71b96ab6
   leveldb-library: cc8b8f8e013647a295ad3f8cd2ddf49a6f19be19
   Mixpanel-swift: 630484a1b61cb90820aa34492798d542d9f1d0f1
   mixpanel_flutter: b0c5273729fb9e02920a3100b35055c53f4d7229
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
   PromisesObjC: f5707f49cb48b9636751c5b2e7d227e43fba9f47
-  purchases_flutter: 3570127ba41583a75e553d68a763367007830eff
-  purchases_ui_flutter: 4f73ee267b1f50f72f71ece0d918fc5d0cb7f97f
-  PurchasesHybridCommon: 7f0944cc5411bdcd1ea5d69affa6a6f9aaf87b13
-  PurchasesHybridCommonUI: 8149f983d0d5fcc6d2536900c934d3dfb7cbed45
+  purchases_flutter: 174b063d0e6f1f31424adedfcc3a7cda540fe026
+  purchases_ui_flutter: 32b8838ae5a130a85210844246a4cd8e52ee75ec
+  PurchasesHybridCommon: 8563d6a7d832332beb9b30478dbe56eeaa0dd425
+  PurchasesHybridCommonUI: 32f7edc00832b451d2fcbcf8ace064a5b8e936de
   RecaptchaInterop: 11e0b637842dfb48308d242afc3f448062325aba
   record_ios: 412daca2350b228e698fffcd08f1f94ceb1e3844
-  RevenueCat: 7e1d0768fb287c9983173c9b28e39ccbeeb828a9
-  RevenueCatUI: 61ddba6f94803f9b79c470ffe1e8b81d807c11ce
+  RevenueCat: a83de0391a1061302699cb55eb1ff0662f5768b5
+  RevenueCatUI: 6f819d25fe953112c3722e33d0879bd590d78810
   rive_native: c9ed76ccf380f38205edcb8f552121aac8ec39da
   shared_preferences_foundation: 7036424c3d8ec98dfe75ff1667cb0cd531ec82bb
   url_launcher_ios: 7a95fa5b60cc718a708b8f2966718e93db0cef1b
