@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. Meeting audio, My notes and cached notes stay on the device. -->
+<full-backup-content>
+    <exclude domain="file" path="notes/" />
+</full-backup-content>

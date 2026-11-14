@@ -41,7 +41,7 @@
 			<key>Title</key>
 			<string>🔒 Privacy and security</string>
 			<key>FooterText</key>
-			<string>Your voice data is processed securely. Your audio and transcriptions are never stored anywhere except on your own device.</string>
+			<string>Your voice data is processed securely. Dictation audio and transcriptions are never stored anywhere except on your own device. Meeting notes are different: meeting audio is uploaded to Voquill to be transcribed and is deleted from Voquill once it is transcribed (audio that is never transcribed is deleted after 30 days). Your meeting notes and transcripts are kept in your Voquill account, so they appear on all your devices, until you delete them.</string>
 		</dict>
 	</array>
 </dict>

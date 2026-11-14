@@ -7,7 +7,8 @@ enum Flavor {
   dev,
   emulators;
 
-  static late Flavor current;
+  /// Set by each `main_*.dart`; prod (no dev overrides) until then.
+  static Flavor current = Flavor.prod;
 
   bool get isProd => this == Flavor.prod;
   bool get isDev => this == Flavor.dev;
@@ -46,7 +47,24 @@ enum Flavor {
     }
   }
 
+  /// Dev and emulator builds read `--dart-define`s that shorten Notes
+  /// segment and note limits for device testing; prod ignores them.
+  bool get allowsDevOverrides => this != Flavor.prod;
+
   String get emulatorHost => Platform.isAndroid ? '10.0.2.2' : 'localhost';
+
+  /// The Voquill REST server (`core/server`), matching desktop's
+  /// `VITE_NEW_SERVER_URL` per environment.
+  String get apiBaseUrl {
+    switch (this) {
+      case Flavor.prod:
+        return 'https://api.voquill.com';
+      case Flavor.dev:
+        return 'https://api-dev.voquill.com';
+      case Flavor.emulators:
+        return 'http://$emulatorHost:6325';
+    }
+  }
 
   String get termsUrl => 'https://voquill.com/terms';
   String get privacyUrl => 'https://voquill.com/privacy';
