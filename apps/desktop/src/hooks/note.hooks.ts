@@ -1,7 +1,7 @@
 import type { NoteSegment } from "@voquill/types";
 import { useCallback, useMemo } from "react";
 import { useIntl } from "react-intl";
-import { useNavigate } from "react-router-dom";
+import { useMatch, useNavigate } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../actions/app.actions";
 import { startMeetingNote } from "../actions/note.actions";
 import { useAppStore } from "../store";
@@ -12,6 +12,10 @@ import {
 } from "../utils/note-transcript.utils";
 
 export const getNotePath = (noteId: string) => `/dashboard/notes/${noteId}`;
+
+/** A note takes over the whole window, so the dashboard hides its sidebar. */
+export const useIsNotePageOpen = () =>
+  useMatch(getNotePath(":noteId")) !== null;
 
 /** Starts a new meeting note and opens it, or opens the one in progress. */
 export const useStartMeetingNote = () => {

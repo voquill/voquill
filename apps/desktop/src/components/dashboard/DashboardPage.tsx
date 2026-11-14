@@ -2,6 +2,7 @@ import { Box, Stack, Typography } from "@mui/material";
 import { getVersion } from "@tauri-apps/api/app";
 import { Outlet } from "react-router-dom";
 import { useAsyncData } from "../../hooks/async.hooks";
+import { useIsNotePageOpen } from "../../hooks/note.hooks";
 import { TranscriptionDetailsDialog } from "../transcriptions/TranscriptionDetailsDialog";
 import { DashboardMenu } from "./DashboardMenu";
 import { FeatureReleaseDialog } from "./FeatureReleaseDialog";
@@ -10,6 +11,7 @@ import { TrialEndedDialog } from "./TrialEndedDialog";
 
 export default function DashboardPage() {
   const data = useAsyncData(getVersion, []);
+  const isNotePageOpen = useIsNotePageOpen();
 
   return (
     <>
@@ -23,7 +25,7 @@ export default function DashboardPage() {
       >
         <Box
           sx={{
-            display: { xs: "none", sm: "flex" },
+            display: isNotePageOpen ? "none" : { xs: "none", sm: "flex" },
             flexDirection: "column",
             width: 224,
             minWidth: 224,
