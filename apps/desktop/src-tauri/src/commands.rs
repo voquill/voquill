@@ -530,6 +530,14 @@ pub fn request_accessibility_permission() -> Result<crate::domain::PermissionSta
     crate::platform::permissions::request_accessibility_permission()
 }
 
+/// Opens the System Settings pane where the user allows Voquill to record
+/// the computer's audio (macOS only).
+#[tauri::command]
+#[specta::specta]
+pub fn open_system_audio_settings() -> Result<(), String> {
+    crate::platform::system_audio::open_system_audio_settings()
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn get_current_app_info() -> Result<CurrentAppInfoResponse, String> {

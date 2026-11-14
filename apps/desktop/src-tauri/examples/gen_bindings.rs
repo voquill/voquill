@@ -18,6 +18,7 @@ fn main() {
         request_microphone_permission,
         check_accessibility_permission,
         request_accessibility_permission,
+        open_system_audio_settings,
         get_current_app_info,
         app_target_upsert,
         app_target_list,

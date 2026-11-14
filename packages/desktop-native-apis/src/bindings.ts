@@ -97,6 +97,18 @@ async requestAccessibilityPermission() : Promise<Result<PermissionStatus, string
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Opens the System Settings pane where the user allows Voquill to record
+ * the computer's audio (macOS only).
+ */
+async openSystemAudioSettings() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("open_system_audio_settings") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async getCurrentAppInfo() : Promise<Result<CurrentAppInfoResponse, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_current_app_info") };
@@ -1214,9 +1226,14 @@ durationMs: number;
  */
 initialDurationMs: number; level: number; interruption: CaptureInterruption | null; 
 /**
- * Only silence has arrived for a while (muted, blocked or wrong microphone).
+ * Only silence has arrived from the microphone for a while (muted,
+ * blocked or wrong microphone).
  */
-silent: boolean }
+silent: boolean; 
+/**
+ * Whether the computer's audio is mixed in, and if not, why.
+ */
+systemAudio: SystemAudioState }
 export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
 export type MenuIconVariant = "default" | "update"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
@@ -1286,6 +1303,30 @@ export type StartRecordingResponse = { sampleRate: number }
 export type StartRemoteReceiverArgs = { port?: number | null }
 export type StopRecordingResponse = { samples: number[]; sampleRate: number }
 export type StorageUploadArgs = { path: string; data: number[] }
+/**
+ * Whether system audio is being recorded and, if not, why.
+ */
+export type SystemAudioState = 
+/**
+ * Starting, or waiting for the user to answer the permission prompt.
+ */
+"pending" | 
+/**
+ * Being recorded. Silence while nothing plays is still recording.
+ */
+"recording" | 
+/**
+ * This OS version cannot record system audio.
+ */
+"unsupported" | 
+/**
+ * The user has not allowed Voquill to record system audio.
+ */
+"denied" | 
+/**
+ * The system audio device failed or stopped delivering audio.
+ */
+"failed"
 export type Term = { id: string; createdAt: number; createdByUserId: string; sourceValue: string; destinationValue: string; isReplacement: boolean; isDeleted: boolean }
 export type TextFieldInfo = { cursorPosition: number | null; selectionLength: number | null; textContent: string | null }
 export type Tone = { id: string; name: string; promptTemplate: string; createdAt: number; sortOrder: number }
