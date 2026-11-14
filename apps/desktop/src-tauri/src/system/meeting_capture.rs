@@ -19,7 +19,9 @@ use crate::system::meeting_audio::{
 
 pub const EVT_MEETING_CAPTURE_PROGRESS: &str = "meeting_capture_progress";
 
-const RECEIVE_TIMEOUT: Duration = Duration::from_millis(100);
+/// How long the writer waits for audio before looking at its stop and roll
+/// flags again. A stop takes at most this long to be noticed.
+const RECEIVE_TIMEOUT: Duration = Duration::from_millis(20);
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const COMMIT_INTERVAL: Duration = Duration::from_secs(1);
 const SILENT_DEVICE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -339,7 +341,8 @@ impl MeetingCapture {
             .spawn(move || {
                 while !monitor_shared.finished.load(Ordering::SeqCst) {
                     emit_progress(&monitor_shared);
-                    std::thread::sleep(PROGRESS_INTERVAL);
+                    // Parked, not asleep, so `stop` can wake it at once.
+                    std::thread::park_timeout(PROGRESS_INTERVAL);
                 }
                 emit_progress(&monitor_shared);
             })
@@ -424,6 +427,7 @@ impl MeetingCapture {
             return Ok(None);
         };
 
+        let started = Instant::now();
         // The recorder stops (and hands over what it buffered) before the
         // writer is told to finish, so the last moments are kept.
         if let Err(err) = self.recorder.stop() {
@@ -443,8 +447,13 @@ impl MeetingCapture {
             }
         };
 
+        capture.monitor_thread.thread().unpark();
         let _ = capture.monitor_thread.join();
-        log::info!("Meeting capture stopped ({} ms)", samples_to_ms(samples));
+        log::info!(
+            "Meeting capture stopped ({} ms of audio) in {} ms",
+            samples_to_ms(samples),
+            started.elapsed().as_millis()
+        );
         let status = capture.shared.status(&capture.note_id);
         Ok(Some(MeetingCaptureStopped {
             note_id: capture.note_id,
@@ -837,6 +846,27 @@ mod tests {
         );
         std::fs::remove_file(first).unwrap();
         std::fs::remove_file(second).unwrap();
+    }
+
+    #[test]
+    fn stop_does_not_wait_out_the_progress_interval() {
+        let path = temp_path("prompt-stop");
+        let capture = fake_capture(10);
+        capture
+            .start_with_progress("n".into(), "a".into(), path.clone(), false, None, |_| {})
+            .unwrap();
+        wait_for(|| capture.status().unwrap().duration_ms >= 1_000);
+
+        let started = Instant::now();
+        let stopped = capture.stop().unwrap().unwrap();
+
+        assert!(
+            started.elapsed() < PROGRESS_INTERVAL / 2,
+            "stop took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(stopped.duration_ms, 1_000);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
