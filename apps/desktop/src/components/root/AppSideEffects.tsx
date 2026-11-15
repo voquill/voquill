@@ -58,6 +58,7 @@ import {
   PasteKeybindSupport,
 } from "../../state/app.state";
 import { getAppState, produceAppState, useAppStore } from "../../store";
+import { getActiveNoteId, getIsNoteCapturing } from "../../utils/note.utils";
 import { AuthUser } from "../../types/auth.types";
 import { OverlayPhase } from "../../types/overlay.types";
 import { CURRENT_COHORT, getMixpanel } from "../../utils/analytics.utils";
@@ -654,13 +655,28 @@ export const AppSideEffects = () => {
         updateInitializedRef.current = true;
       }
 
-      const available = await checkForAppUpdates();
-      invoke("set_menu_icon", {
-        variant: available ? "update" : "default",
-      }).catch(console.error);
+      await checkForAppUpdates();
     },
     [],
   );
+
+  // The tray icon shows a dot while a meeting records, so a recording left
+  // running is visible from any app; otherwise it shows a waiting update.
+  const isMeetingRecording = useAppStore((state) => {
+    const activeNoteId = getActiveNoteId(state);
+    return activeNoteId !== null && getIsNoteCapturing(state, activeNoteId);
+  });
+  const updateAvailable = useAppStore(
+    (state) => state.updater.availableVersion !== null,
+  );
+  useEffect(() => {
+    const variant = isMeetingRecording
+      ? "recording"
+      : updateAvailable
+        ? "update"
+        : "default";
+    invoke("set_menu_icon", { variant, updateAvailable }).catch(console.error);
+  }, [isMeetingRecording, updateAvailable]);
 
   useToastAction(async (payload) => {
     if (payload.action === "upgrade") {

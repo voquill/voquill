@@ -423,9 +423,9 @@ async setTrayTitle(title: string | null) : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async setMenuIcon(variant: MenuIconVariant) : Promise<Result<null, string>> {
+async setMenuIcon(variant: MenuIconVariant, updateAvailable: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_menu_icon", { variant }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_menu_icon", { variant, updateAvailable }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1235,7 +1235,11 @@ silent: boolean;
  */
 systemAudio: SystemAudioState }
 export type MeetingCaptureStopped = { noteId: string; segmentId: string; audioPath: string; durationMs: number }
-export type MenuIconVariant = "default" | "update"
+export type MenuIconVariant = "default" | "update" | 
+/**
+ * A meeting is being recorded: the logo with a dot in its corner.
+ */
+"recording"
 export type MonitorAtCursor = { x: number; y: number; width: number; height: number; visibleX: number; visibleY: number; visibleWidth: number; visibleHeight: number; scaleFactor: number; cursorX: number; cursorY: number }
 export type NativeSetupResult = "success" | "require-restart" | "failed"
 export type NativeSetupStatus = "ready" | "needs-setup" | "needs-restart"

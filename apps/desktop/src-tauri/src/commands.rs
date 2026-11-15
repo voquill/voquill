@@ -1964,8 +1964,9 @@ pub fn set_tray_title(app: AppHandle, title: Option<String>) -> Result<(), Strin
 pub fn set_menu_icon(
     app: AppHandle,
     variant: crate::system::tray::MenuIconVariant,
+    update_available: bool,
 ) -> Result<(), String> {
-    crate::system::tray::set_menu_icon(&app, variant)
+    crate::system::tray::set_menu_icon(&app, variant, update_available)
 }
 
 #[tauri::command]
