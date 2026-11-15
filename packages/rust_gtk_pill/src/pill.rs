@@ -1,6 +1,5 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use gtk::gdk;
@@ -13,6 +12,9 @@ use crate::ipc::{self, InMessage, OutMessage, Phase, Visibility};
 use crate::state::{FlameTongue, PillState, Rocket, RocketPhase, Spark, WindowMode};
 use crate::{draw, input, x11};
 
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const SETTLE_TICKS: u8 = 2;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Backend {
     LayerShell,
@@ -20,7 +22,7 @@ enum Backend {
     PlainWayland,
 }
 
-pub fn run(receiver: Receiver<InMessage>) {
+pub fn run(receiver: async_channel::Receiver<InMessage>) {
     let backend = if gtk_layer_shell::is_supported() {
         Backend::LayerShell
     } else {
@@ -165,11 +167,22 @@ pub fn run(receiver: Receiver<InMessage>) {
         alloc_height: Cell::new(0.0),
     });
 
+    let frame = Rc::new(Frame {
+        state: state.clone(),
+        window: window.clone(),
+        drawing_area: drawing_area.clone(),
+        entry: entry.clone(),
+        backend,
+        ticking: Cell::new(false),
+        monitor_geometry: Cell::new((0, 0, 0, 0)),
+    });
+
     if backend == Backend::PlainWayland {
-        let state_alloc = state.clone();
+        let frame_alloc = frame.clone();
         window.connect_size_allocate(move |_, alloc| {
-            state_alloc.alloc_width.set(alloc.width() as f64);
-            state_alloc.alloc_height.set(alloc.height() as f64);
+            frame_alloc.state.alloc_width.set(alloc.width() as f64);
+            frame_alloc.state.alloc_height.set(alloc.height() as f64);
+            frame_alloc.wake();
         });
     }
 
@@ -184,37 +197,41 @@ pub fn run(receiver: Receiver<InMessage>) {
             | gdk::EventMask::SMOOTH_SCROLL_MASK,
     );
 
-    let state_enter = state.clone();
+    let frame_enter = frame.clone();
     window.connect_enter_notify_event(move |win, event| {
+        let state = &frame_enter.state;
         let (mx, my) = event.position();
-        let is_over_pill = input::is_over_pill_area(&state_enter, mx, my);
+        let is_over_pill = input::is_over_pill_area(state, mx, my);
         if is_over_pill {
-            state_enter.hovered.set(true);
+            state.hovered.set(true);
             ipc::send(&OutMessage::Hover { hovered: true });
         }
         if let Some(gdk_win) = win.window() {
-            input::set_expanded_input_region(&gdk_win, &state_enter);
+            input::set_expanded_input_region(&gdk_win, state);
         }
+        frame_enter.wake();
         glib::Propagation::Proceed
     });
 
-    let state_motion = state.clone();
+    let frame_motion = frame.clone();
     window.connect_motion_notify_event(move |_, event| {
+        let state = &frame_motion.state;
         let (mx, my) = event.position();
-        let is_over_pill = input::is_over_pill_area(&state_motion, mx, my);
-        let was_hovered = state_motion.hovered.get();
-        if is_over_pill != was_hovered {
-            state_motion.hovered.set(is_over_pill);
+        let is_over_pill = input::is_over_pill_area(state, mx, my);
+        if is_over_pill != state.hovered.get() {
+            state.hovered.set(is_over_pill);
             ipc::send(&OutMessage::Hover { hovered: is_over_pill });
+            frame_motion.wake();
         }
         glib::Propagation::Proceed
     });
 
-    let state_leave = state.clone();
+    let frame_leave = frame.clone();
     window.connect_leave_notify_event(move |_, event| {
         if event.mode() == gdk::CrossingMode::Normal {
-            state_leave.hovered.set(false);
+            frame_leave.state.hovered.set(false);
             ipc::send(&OutMessage::Hover { hovered: false });
+            frame_leave.wake();
         }
         glib::Propagation::Proceed
     });
@@ -247,7 +264,7 @@ pub fn run(receiver: Receiver<InMessage>) {
         });
     }
 
-    let state_click = state.clone();
+    let frame_click = frame.clone();
     let last_click: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
     window.connect_button_release_event(move |_, event| {
         let now = Instant::now();
@@ -258,13 +275,15 @@ pub fn run(receiver: Receiver<InMessage>) {
         }
         last_click.set(Some(now));
         let (x, y) = event.position();
-        input::handle_click(&state_click, x, y);
+        input::handle_click(&frame_click.state, x, y);
+        frame_click.wake();
         glib::Propagation::Proceed
     });
 
-    let state_scroll = state.clone();
+    let frame_scroll = frame.clone();
     window.connect_scroll_event(move |_, event| {
-        input::handle_scroll(&state_scroll, event);
+        input::handle_scroll(&frame_scroll.state, event);
+        frame_scroll.wake();
         glib::Propagation::Proceed
     });
 
@@ -312,167 +331,150 @@ pub fn run(receiver: Receiver<InMessage>) {
         *state_entry_changed.entry_text.borrow_mut() = e.text().to_string();
     });
 
-    let receiver = Rc::new(RefCell::new(receiver));
-    let state_tick = state.clone();
-    let da = drawing_area.clone();
-    let win_tick = window.clone();
-    let entry_tick = entry.clone();
-    let quit_flag = Rc::new(Cell::new(false));
-    let quit_tick = quit_flag.clone();
-    let backend_tick = backend;
-    glib::timeout_add_local(Duration::from_millis(16), move || {
-        let rx = receiver.borrow();
-        while let Ok(msg) = rx.try_recv() {
-            match msg {
-                InMessage::Phase { phase } => {
-                    let prev = state_tick.phase.get();
-                    state_tick.phase.set(phase);
-                    if phase == Phase::Idle && prev != Phase::Idle {
-                        state_tick.target_level.set(0.0);
-                        state_tick.current_level.set(0.0);
-                        state_tick.wave_phase.set(0.0);
-                    }
-                }
-                InMessage::Levels { levels } => {
-                    *state_tick.pending_levels.borrow_mut() = levels;
-                }
-                InMessage::StyleInfo { count, name } => {
-                    state_tick.style_count.set(count);
-                    *state_tick.style_name.borrow_mut() = name;
-                }
-                InMessage::Toast { message, toast_type, duration, action, action_label } => {
-                    *state_tick.flash_message.borrow_mut() = message;
-                    state_tick.flash_is_error.set(toast_type.as_deref() == Some("error"));
-                    state_tick.flash_visible.set(true);
-                    state_tick.flash_timer.set(duration.unwrap_or(FLASH_DURATION));
-                    *state_tick.flash_action.borrow_mut() = action;
-                    *state_tick.flash_action_label.borrow_mut() = action_label;
-                }
-                InMessage::DismissToast => {
-                    state_tick.flash_visible.set(false);
-                    state_tick.flash_timer.set(0.0);
-                    *state_tick.flash_action.borrow_mut() = None;
-                    *state_tick.flash_action_label.borrow_mut() = None;
-                }
-                InMessage::Fireworks { message } => {
-                    *state_tick.flash_message.borrow_mut() = message;
-                    state_tick.flash_is_error.set(false);
-                    *state_tick.flash_action.borrow_mut() = None;
-                    *state_tick.flash_action_label.borrow_mut() = None;
-                    state_tick.flash_visible.set(true);
-                    state_tick.flash_timer.set(FIREWORKS_TOTAL_DURATION);
-
-                    state_tick.fireworks_active.set(true);
-                    state_tick.fireworks_elapsed.set(0.0);
-                    state_tick.fireworks_next_launch.set(0);
-                    state_tick.fireworks_rockets.borrow_mut().clear();
-                }
-                InMessage::Flame { message } => {
-                    *state_tick.flash_message.borrow_mut() = message;
-                    state_tick.flash_is_error.set(false);
-                    *state_tick.flash_action.borrow_mut() = None;
-                    *state_tick.flash_action_label.borrow_mut() = None;
-                    state_tick.flash_visible.set(true);
-                    state_tick.flash_timer.set(FLAME_TOTAL_DURATION);
-
-                    state_tick.flame_active.set(true);
-                    state_tick.flame_elapsed.set(0.0);
-                    state_tick.flame_tongues.borrow_mut().clear();
-                }
-                InMessage::FlashBlue => {
-                    state_tick.flash_blue_active.set(true);
-                    state_tick.flash_blue_elapsed.set(0.0);
-                }
-                InMessage::BroadcastTranscript { text } => {
-                    *state_tick.transcript_text.borrow_mut() = text;
-                    state_tick.transcript_time_since_update.set(0.0);
-                    state_tick.transcript_has_message.set(true);
-                }
-                InMessage::Visibility { visibility } => {
-                    state_tick.visibility.set(visibility);
-                }
-                InMessage::WindowSize { ref size } => {
-                    let mode = WindowMode::from_str(size);
-                    state_tick.window_mode.set(mode);
-                }
-                InMessage::AssistantState {
-                    active,
-                    input_mode,
-                    compact,
-                    user_prompt,
-                    messages,
-                    streaming,
-                    permissions,
-                } => {
-                    let was_active = state_tick.assistant_active.get();
-                    state_tick.assistant_active.set(active);
-                    *state_tick.assistant_input_mode.borrow_mut() = input_mode;
-                    state_tick.assistant_compact.set(compact);
-                    *state_tick.assistant_user_prompt.borrow_mut() = user_prompt;
-                    *state_tick.assistant_messages.borrow_mut() = messages;
-                    *state_tick.assistant_streaming.borrow_mut() = streaming;
-                    *state_tick.assistant_permissions.borrow_mut() = permissions;
-
-                    if active && !was_active {
-                        state_tick.should_stick.set(true);
-                        state_tick.scroll_offset.set(0.0);
-                    }
-                }
-                InMessage::Quit => {
-                    quit_tick.set(true);
-                }
+    let main_loop = glib::MainLoop::new(None, false);
+    let frame_rx = frame.clone();
+    let main_loop_rx = main_loop.clone();
+    glib::spawn_future_local(async move {
+        while let Ok(msg) = receiver.recv().await {
+            if matches!(msg, InMessage::Quit) {
+                break;
             }
+            apply_message(&frame_rx.state, msg);
+            frame_rx.wake();
+        }
+        main_loop_rx.quit();
+    });
+
+    window.show_all();
+    entry.hide();
+    frame.wake();
+    ipc::send(&OutMessage::Ready);
+
+    main_loop.run();
+}
+
+/// Owns the pill widgets and drives redraws. Nothing runs while the pill is
+/// at rest; messages and input events call `wake`, which ticks at frame rate
+/// only until every animation has settled.
+struct Frame {
+    state: Rc<PillState>,
+    window: gtk::Window,
+    drawing_area: gtk::DrawingArea,
+    entry: gtk::Entry,
+    backend: Backend,
+    ticking: Cell<bool>,
+    monitor_geometry: Cell<(i32, i32, i32, i32)>,
+}
+
+impl Frame {
+    fn wake(self: &Rc<Self>) {
+        self.sync_window();
+        self.drawing_area.queue_draw();
+        if self.ticking.replace(true) {
+            return;
         }
 
-        if quit_tick.get() {
-            return ControlFlow::Break;
+        let frame = Rc::clone(self);
+        let quiet_ticks = Cell::new(0u8);
+        glib::timeout_add_local(FRAME_INTERVAL, move || {
+            let animating = tick(&frame.state);
+            frame.sync_window();
+            frame.drawing_area.queue_draw();
+            if animating {
+                quiet_ticks.set(0);
+                return ControlFlow::Continue;
+            }
+            // Allow a pending draw to report layout (e.g. transcript height)
+            // back to the next tick before going to sleep.
+            quiet_ticks.set(quiet_ticks.get() + 1);
+            if quiet_ticks.get() < SETTLE_TICKS {
+                return ControlFlow::Continue;
+            }
+            frame.ticking.set(false);
+            ControlFlow::Break
+        });
+    }
+
+    fn sync_window(&self) {
+        self.sync_entry();
+        if self.backend == Backend::LayerShell {
+            self.follow_pointer_monitor();
         }
 
-        tick(&state_tick);
+        let state = &self.state;
+        let is_active = state.phase.get() != Phase::Idle;
+        let is_assistant = state.assistant_active.get();
+        let should_show = match self.backend {
+            // Wayland ignores the visibility setting and only surfaces the pill
+            // while recording, plus while a flash message is still animating.
+            Backend::LayerShell | Backend::PlainWayland => {
+                state.phase.get() == Phase::Recording
+                    || state.flash_visible.get()
+                    || state.flash_t.get() > 0.01
+            }
+            Backend::X11 => match state.visibility.get() {
+                Visibility::Hidden => is_assistant,
+                Visibility::WhileActive => is_active || is_assistant,
+                Visibility::Persistent => true,
+            },
+        };
+        if should_show {
+            self.window.show();
+        } else {
+            self.window.hide();
+        }
 
-        // Show/hide entry for typing mode
-        let is_typing = state_tick.assistant_active.get()
-            && *state_tick.assistant_input_mode.borrow() == "type";
-        if is_typing && !gtk::prelude::WidgetExt::is_visible(&entry_tick) {
-            let (ox, oy) = state_tick.content_offset();
-            let dw = state_tick.draw_width.get();
-            let dh = state_tick.draw_height.get();
+        if let Some(gdk_win) = self.window.window() {
+            input::update_input_region(&gdk_win, state);
+        }
+    }
+
+    fn sync_entry(&self) {
+        let state = &self.state;
+        let entry = &self.entry;
+        let win = &self.window;
+        let is_typing =
+            state.assistant_active.get() && *state.assistant_input_mode.borrow() == "type";
+        if is_typing && !gtk::prelude::WidgetExt::is_visible(entry) {
+            let (ox, oy) = state.content_offset();
+            let dw = state.draw_width.get();
+            let dh = state.draw_height.get();
             let panel_w = PANEL_EXPANDED_WIDTH;
             let panel_x = (dw - panel_w) / 2.0;
             let margin_start = (ox + panel_x + PANEL_CONTENT_SIDE_INSET) as i32;
-            let aw = state_tick.alloc_width.get();
+            let aw = state.alloc_width.get();
             let right_margin = if aw > 0.0 {
                 aw - ox - dw
             } else {
                 WINDOW_W_TYPING as f64 - ox - dw
             };
             let margin_end = (right_margin + (dw - panel_x - panel_w) + PANEL_CONTENT_SIDE_INSET) as i32;
-            let ah = state_tick.alloc_height.get();
+            let ah = state.alloc_height.get();
             let bottom_margin = if ah > 0.0 {
                 ah - oy - dh
             } else {
                 0.0
             };
             let margin_bottom = (bottom_margin + PANEL_BOTTOM_MARGIN) as i32;
-            entry_tick.set_margin_start(margin_start);
-            entry_tick.set_margin_end(margin_end);
-            entry_tick.set_margin_bottom(margin_bottom);
-            entry_tick.set_height_request(PANEL_INPUT_HEIGHT as i32);
-            entry_tick.set_visible(true);
-            entry_tick.show();
-            match backend_tick {
+            entry.set_margin_start(margin_start);
+            entry.set_margin_end(margin_end);
+            entry.set_margin_bottom(margin_bottom);
+            entry.set_height_request(PANEL_INPUT_HEIGHT as i32);
+            entry.set_visible(true);
+            entry.show();
+            match self.backend {
                 Backend::LayerShell => {
-                    win_tick.set_keyboard_mode(gtk_layer_shell::KeyboardMode::OnDemand);
+                    win.set_keyboard_mode(gtk_layer_shell::KeyboardMode::OnDemand);
                     glib::idle_add_local_once({
-                        let e = entry_tick.clone();
+                        let e = entry.clone();
                         move || { e.grab_focus(); }
                     });
                 }
                 Backend::X11 => {
-                    win_tick.set_accept_focus(true);
+                    win.set_accept_focus(true);
                     glib::timeout_add_local(Duration::from_millis(100), {
-                        let e = entry_tick.clone();
-                        let w = win_tick.clone();
+                        let e = entry.clone();
+                        let w = win.clone();
                         move || {
                             x11::force_keyboard_focus(&w);
                             e.grab_focus();
@@ -481,107 +483,146 @@ pub fn run(receiver: Receiver<InMessage>) {
                     });
                 }
                 Backend::PlainWayland => {
-                    win_tick.set_accept_focus(true);
+                    win.set_accept_focus(true);
                     glib::idle_add_local_once({
-                        let e = entry_tick.clone();
+                        let e = entry.clone();
                         move || { e.grab_focus(); }
                     });
                 }
             }
-        } else if !is_typing && gtk::prelude::WidgetExt::is_visible(&entry_tick) {
-            entry_tick.select_region(0, 0);
-            entry_tick.set_visible(false);
-            entry_tick.hide();
-            match backend_tick {
+        } else if !is_typing && gtk::prelude::WidgetExt::is_visible(entry) {
+            entry.select_region(0, 0);
+            entry.set_visible(false);
+            entry.hide();
+            match self.backend {
                 Backend::LayerShell => {
-                    win_tick.set_keyboard_mode(gtk_layer_shell::KeyboardMode::None);
+                    win.set_keyboard_mode(gtk_layer_shell::KeyboardMode::None);
                 }
                 _ => {
-                    win_tick.set_accept_focus(false);
+                    win.set_accept_focus(false);
                 }
             }
         }
-
-        let visibility = state_tick.visibility.get();
-        let is_active = state_tick.phase.get() != Phase::Idle;
-        let is_assistant = state_tick.assistant_active.get();
-        let should_show = match backend_tick {
-            // Wayland ignores the visibility setting and only surfaces the pill
-            // while recording, plus while a flash message is still animating.
-            Backend::LayerShell | Backend::PlainWayland => {
-                state_tick.phase.get() == Phase::Recording
-                    || state_tick.flash_visible.get()
-                    || state_tick.flash_t.get() > 0.01
-            }
-            Backend::X11 => match visibility {
-                Visibility::Hidden => is_assistant,
-                Visibility::WhileActive => is_active || is_assistant,
-                Visibility::Persistent => true,
-            },
-        };
-        if should_show {
-            win_tick.show();
-        } else {
-            win_tick.hide();
-        }
-
-        if let Some(gdk_win) = win_tick.window() {
-            input::update_input_region(&gdk_win, &state_tick);
-        }
-        da.queue_draw();
-        ControlFlow::Continue
-    });
-
-    window.show_all();
-    entry.hide();
-    ipc::send(&OutMessage::Ready);
-
-    if backend == Backend::LayerShell {
-        let window_ref = window.clone();
-        let quit_monitor = quit_flag.clone();
-        let last_geom: Rc<Cell<(i32, i32, i32, i32)>> = Rc::new(Cell::new((0, 0, 0, 0)));
-        glib::timeout_add_local(Duration::from_millis(100), move || {
-            if quit_monitor.get() {
-                return ControlFlow::Break;
-            }
-            let display = match gdk::Display::default() {
-                Some(d) => d,
-                None => return ControlFlow::Continue,
-            };
-            let seat = match display.default_seat() {
-                Some(s) => s,
-                None => return ControlFlow::Continue,
-            };
-            let pointer = match seat.pointer() {
-                Some(p) => p,
-                None => return ControlFlow::Continue,
-            };
-            let (_, x, y) = pointer.position();
-            if let Some(monitor) = display.monitor_at_point(x, y) {
-                let g = monitor.geometry();
-                let new_geom = (g.x(), g.y(), g.width(), g.height());
-                if new_geom != last_geom.get() {
-                    last_geom.set(new_geom);
-                    window_ref.set_monitor(&monitor);
-                }
-            }
-            ControlFlow::Continue
-        });
     }
 
-    let main_loop = glib::MainLoop::new(None, false);
-    let ml = main_loop.clone();
-    let _quit_watch = glib::timeout_add_local(Duration::from_millis(100), move || {
-        if quit_flag.get() {
-            ml.quit();
-            return ControlFlow::Break;
+    fn follow_pointer_monitor(&self) {
+        let Some(display) = gdk::Display::default() else { return };
+        let Some(pointer) = display.default_seat().and_then(|seat| seat.pointer()) else {
+            return;
+        };
+        let (_, x, y) = pointer.position();
+        if let Some(monitor) = display.monitor_at_point(x, y) {
+            let g = monitor.geometry();
+            let geometry = (g.x(), g.y(), g.width(), g.height());
+            if geometry != self.monitor_geometry.replace(geometry) {
+                self.window.set_monitor(&monitor);
+            }
         }
-        ControlFlow::Continue
-    });
-    main_loop.run();
+    }
 }
 
-fn tick(state: &PillState) {
+fn apply_message(state: &PillState, msg: InMessage) {
+    match msg {
+        InMessage::Phase { phase } => {
+            let prev = state.phase.get();
+            state.phase.set(phase);
+            if phase == Phase::Idle && prev != Phase::Idle {
+                state.target_level.set(0.0);
+                state.current_level.set(0.0);
+                state.wave_phase.set(0.0);
+            }
+        }
+        InMessage::Levels { levels } => {
+            *state.pending_levels.borrow_mut() = levels;
+        }
+        InMessage::StyleInfo { count, name } => {
+            state.style_count.set(count);
+            *state.style_name.borrow_mut() = name;
+        }
+        InMessage::Toast { message, toast_type, duration, action, action_label } => {
+            *state.flash_message.borrow_mut() = message;
+            state.flash_is_error.set(toast_type.as_deref() == Some("error"));
+            state.flash_visible.set(true);
+            state.flash_timer.set(duration.unwrap_or(FLASH_DURATION));
+            *state.flash_action.borrow_mut() = action;
+            *state.flash_action_label.borrow_mut() = action_label;
+        }
+        InMessage::DismissToast => {
+            state.flash_visible.set(false);
+            state.flash_timer.set(0.0);
+            *state.flash_action.borrow_mut() = None;
+            *state.flash_action_label.borrow_mut() = None;
+        }
+        InMessage::Fireworks { message } => {
+            *state.flash_message.borrow_mut() = message;
+            state.flash_is_error.set(false);
+            *state.flash_action.borrow_mut() = None;
+            *state.flash_action_label.borrow_mut() = None;
+            state.flash_visible.set(true);
+            state.flash_timer.set(FIREWORKS_TOTAL_DURATION);
+
+            state.fireworks_active.set(true);
+            state.fireworks_elapsed.set(0.0);
+            state.fireworks_next_launch.set(0);
+            state.fireworks_rockets.borrow_mut().clear();
+        }
+        InMessage::Flame { message } => {
+            *state.flash_message.borrow_mut() = message;
+            state.flash_is_error.set(false);
+            *state.flash_action.borrow_mut() = None;
+            *state.flash_action_label.borrow_mut() = None;
+            state.flash_visible.set(true);
+            state.flash_timer.set(FLAME_TOTAL_DURATION);
+
+            state.flame_active.set(true);
+            state.flame_elapsed.set(0.0);
+            state.flame_tongues.borrow_mut().clear();
+        }
+        InMessage::FlashBlue => {
+            state.flash_blue_active.set(true);
+            state.flash_blue_elapsed.set(0.0);
+        }
+        InMessage::BroadcastTranscript { text } => {
+            *state.transcript_text.borrow_mut() = text;
+            state.transcript_time_since_update.set(0.0);
+            state.transcript_has_message.set(true);
+        }
+        InMessage::Visibility { visibility } => {
+            state.visibility.set(visibility);
+        }
+        InMessage::WindowSize { ref size } => {
+            let mode = WindowMode::from_str(size);
+            state.window_mode.set(mode);
+        }
+        InMessage::AssistantState {
+            active,
+            input_mode,
+            compact,
+            user_prompt,
+            messages,
+            streaming,
+            permissions,
+        } => {
+            let was_active = state.assistant_active.get();
+            state.assistant_active.set(active);
+            *state.assistant_input_mode.borrow_mut() = input_mode;
+            state.assistant_compact.set(compact);
+            *state.assistant_user_prompt.borrow_mut() = user_prompt;
+            *state.assistant_messages.borrow_mut() = messages;
+            *state.assistant_streaming.borrow_mut() = streaming;
+            *state.assistant_permissions.borrow_mut() = permissions;
+
+            if active && !was_active {
+                state.should_stick.set(true);
+                state.scroll_offset.set(0.0);
+            }
+        }
+        InMessage::Quit => {}
+    }
+}
+
+/// Advances one frame. Returns true while anything is still in motion.
+fn tick(state: &PillState) -> bool {
     let phase = state.phase.get();
     let is_active = phase != Phase::Idle;
     let is_recording = phase == Phase::Recording;
@@ -619,6 +660,9 @@ fn tick(state: &PillState) {
     let decayed = target * TARGET_DECAY_PER_FRAME;
     state.target_level.set(if decayed < 0.0005 { 0.0 } else { decayed });
 
+    let mut animating =
+        is_active || state.current_level.get() != 0.0 || state.target_level.get() != 0.0;
+
     let level = state.current_level.get();
     let base_level = if is_loading && !is_recording { PROCESSING_BASE_LEVEL } else { 0.0 };
     let effective_level = level.max(base_level);
@@ -627,7 +671,7 @@ fn tick(state: &PillState) {
 
     // Pill expand/collapse (spring)
     let expand_target = if is_active || hovered || state.assistant_active.get() { 1.0 } else { 0.0 };
-    spring_anim(&state.expand_t, &state.expand_velocity, expand_target, SPRING_STIFFNESS);
+    animating |= spring_anim(&state.expand_t, &state.expand_velocity, expand_target, SPRING_STIFFNESS);
 
     // Loading offset
     if is_loading {
@@ -640,25 +684,28 @@ fn tick(state: &PillState) {
         && (hovered || phase == Phase::Recording)
         && state.expand_t.get() > 0.3;
     let tooltip_target = if show_tooltip { 1.0 } else { 0.0 };
-    spring_anim(&state.tooltip_t, &state.tooltip_velocity, tooltip_target, SPRING_STIFFNESS);
+    animating |= spring_anim(&state.tooltip_t, &state.tooltip_velocity, tooltip_target, SPRING_STIFFNESS);
 
     // Panel open/close (spring)
     let panel_target = if state.assistant_active.get() { 1.0 } else { 0.0 };
-    spring_anim(&state.panel_open_t, &state.panel_open_velocity, panel_target, SPRING_STIFFNESS);
+    animating |= spring_anim(&state.panel_open_t, &state.panel_open_velocity, panel_target, SPRING_STIFFNESS);
 
     // Keyboard button (spring)
     let is_voice = *state.assistant_input_mode.borrow() == "voice";
     let kb_target = if state.assistant_active.get() && is_voice { 1.0 } else { 0.0 };
-    spring_anim(&state.kb_button_t, &state.kb_button_velocity, kb_target, SPRING_STIFFNESS);
+    animating |= spring_anim(&state.kb_button_t, &state.kb_button_velocity, kb_target, SPRING_STIFFNESS);
 
     // Animate content dimensions toward target mode
     let mode = state.window_mode.get();
     let (tw, th) = mode.dimensions();
-    spring_px(&state.draw_width, &state.draw_w_velocity, tw as f64, SPRING_STIFFNESS);
-    spring_px(&state.draw_height, &state.draw_h_velocity, th as f64, SPRING_STIFFNESS);
+    animating |= spring_px(&state.draw_width, &state.draw_w_velocity, tw as f64, SPRING_STIFFNESS);
+    animating |= spring_px(&state.draw_height, &state.draw_h_velocity, th as f64, SPRING_STIFFNESS);
 
     // Shimmer phase for thinking animation
-    state.shimmer_phase.set((state.shimmer_phase.get() + SHIMMER_SPEED) % 1.0);
+    if is_thinking(state) {
+        state.shimmer_phase.set((state.shimmer_phase.get() + SHIMMER_SPEED) % 1.0);
+        animating = true;
+    }
 
     // Fireworks
     tick_fireworks(state);
@@ -671,6 +718,12 @@ fn tick(state: &PillState) {
 
     // Broadcast transcript
     tick_transcript(state);
+
+    animating |= state.fireworks_active.get()
+        || state.flame_active.get()
+        || state.flash_blue_active.get()
+        || state.transcript_has_message.get()
+        || state.transcript_opacity.get() > 0.0;
 
     // Flash message timer
     if state.flash_visible.get() {
@@ -685,20 +738,32 @@ fn tick(state: &PillState) {
         }
     }
     let flash_target = if state.flash_visible.get() { 1.0 } else { 0.0 };
-    spring_anim(&state.flash_t, &state.flash_velocity, flash_target, SPRING_STIFFNESS);
+    animating |= state.flash_visible.get();
+    animating |= spring_anim(&state.flash_t, &state.flash_velocity, flash_target, SPRING_STIFFNESS);
 
     // Cancel button
     let cancel_target = if state.hovered.get()
         && state.phase.get() != Phase::Idle
         && !state.assistant_active.get()
     { 1.0 } else { 0.0 };
-    spring_anim(&state.cancel_t, &state.cancel_velocity, cancel_target, SPRING_STIFFNESS * 2.0);
+    animating |= spring_anim(&state.cancel_t, &state.cancel_velocity, cancel_target, SPRING_STIFFNESS * 2.0);
 
     // Auto-scroll to bottom when new content arrives
     if state.should_stick.get() && state.assistant_active.get() && !state.assistant_compact.get() {
         let max_scroll = (state.content_height.get() - state.viewport_height.get()).max(0.0);
-        state.scroll_offset.set(max_scroll);
+        animating |= state.scroll_offset.replace(max_scroll) != max_scroll;
     }
+
+    animating
+}
+
+fn is_thinking(state: &PillState) -> bool {
+    state.panel_open_t.get() > 0.0
+        && state
+            .assistant_messages
+            .borrow()
+            .iter()
+            .any(|msg| !msg.is_tool_result && msg.content.is_none())
 }
 
 fn tick_fireworks(state: &PillState) {
@@ -885,10 +950,10 @@ fn tick_transcript(state: &PillState) {
     }
 }
 
-fn spring_anim(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: f64) {
+fn spring_anim(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: f64) -> bool {
     let v = value.get();
     let vel = velocity.get();
-    if v == target && vel == 0.0 { return; }
+    if v == target && vel == 0.0 { return false; }
     let damping = 2.0 * stiffness.sqrt();
     let force = stiffness * (target - v) - damping * vel;
     let new_vel = vel + force * SPRING_DT;
@@ -896,16 +961,18 @@ fn spring_anim(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: 
     if (new_v - target).abs() < 0.002 && new_vel.abs() < 0.5 {
         value.set(target);
         velocity.set(0.0);
+        false
     } else {
         value.set(new_v.clamp(0.0, 1.0));
         velocity.set(if new_v < 0.0 || new_v > 1.0 { 0.0 } else { new_vel });
+        true
     }
 }
 
-fn spring_px(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: f64) {
+fn spring_px(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: f64) -> bool {
     let v = value.get();
     let vel = velocity.get();
-    if v == target && vel == 0.0 { return; }
+    if v == target && vel == 0.0 { return false; }
     let damping = 2.0 * stiffness.sqrt();
     let force = stiffness * (target - v) - damping * vel;
     let new_vel = vel + force * SPRING_DT;
@@ -913,8 +980,10 @@ fn spring_px(value: &Cell<f64>, velocity: &Cell<f64>, target: f64, stiffness: f6
     if (new_v - target).abs() < 0.5 && (new_vel * SPRING_DT).abs() < 0.5 {
         value.set(target);
         velocity.set(0.0);
+        false
     } else {
         value.set(new_v);
         velocity.set(new_vel);
+        true
     }
 }
