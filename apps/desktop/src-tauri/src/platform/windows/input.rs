@@ -518,9 +518,10 @@ fn paste_via_clipboard(
     send_paste_keys(keybind);
 
     if !skip_clipboard_restore {
+        let pasted = text.to_string();
         thread::spawn(move || {
             thread::sleep(Duration::from_millis(800));
-            previous.restore();
+            previous.restore_unless_replaced(&pasted);
         });
     }
 

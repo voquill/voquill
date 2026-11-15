@@ -1,8 +1,6 @@
 import {
   ApiKey,
   AppTarget,
-  ChatMessage,
-  Conversation,
   Hotkey,
   Member,
   PairedRemoteDevice,
@@ -87,15 +85,6 @@ export const registerAppTargets = (
   }
 };
 
-export const registerConversations = (
-  draft: AppState,
-  conversations: Conversation[],
-): void => {
-  for (const conversation of conversations) {
-    draft.conversationById[conversation.id] = conversation;
-  }
-};
-
 export const registerToolInfos = (
   draft: AppState,
   toolInfos: ToolInfo[],
@@ -110,19 +99,6 @@ export const registerToolPermission = (
   permission: ToolPermission,
 ): void => {
   draft.toolPermissionById[permission.id] = permission;
-};
-
-export const registerChatMessages = (
-  draft: AppState,
-  conversationId: string,
-  messages: ChatMessage[],
-): void => {
-  for (const message of messages) {
-    draft.chatMessageById[message.id] = message;
-  }
-  draft.chatMessageIdsByConversationId[conversationId] = messages
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-    .map((m) => m.id);
 };
 
 export const registerPairedRemoteDevices = (

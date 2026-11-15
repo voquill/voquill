@@ -14,7 +14,10 @@ import {
 import { getAppState, produceAppState } from "../store";
 import { PostProcessingMode, TranscriptionMode } from "../types/ai.types";
 import { AudioSamples } from "../types/audio.types";
-import { StopRecordingResponse } from "../types/transcription-session.types";
+import {
+  StopRecordingResponse,
+  TranscriptionSessionResult,
+} from "../types/transcription-session.types";
 import {
   extractJsonFromMarkdown,
   unwrapNestedLlmResponse,
@@ -39,14 +42,21 @@ import {
   getMyEffectiveUserId,
   getMyUserName,
   loadMyEffectiveDictationLanguage,
+  type TranscriptionPrefs,
 } from "../utils/user.utils";
+import { getIntl } from "../i18n/intl";
+import type { TranscriptionAudioEntry } from "../repos/transcription.repo";
 import { showErrorSnackbar } from "./app.actions";
+import { showToast } from "./toast.actions";
 import { addWordsToCurrentUser } from "./user.actions";
 
 export type TranscribeAudioInput = {
   samples: AudioSamples;
   sampleRate: number;
   dictationLanguage?: string;
+  /** Defaults to the current preferences; a dictation passes the ones it started with. */
+  transcriptionPrefs?: TranscriptionPrefs;
+  signal?: AbortSignal;
 };
 
 export type TranscribeAudioMetadata = {
@@ -98,6 +108,8 @@ export const transcribeAudio = async ({
   samples,
   sampleRate,
   dictationLanguage: dictationLanguageOverride,
+  transcriptionPrefs,
+  signal,
 }: TranscribeAudioInput): Promise<TranscribeAudioResult> => {
   const state = getAppState();
 
@@ -108,7 +120,7 @@ export const transcribeAudio = async ({
     repo: transcribeRepo,
     apiKeyId: transcriptionApiKeyId,
     warnings: transcribeWarnings,
-  } = getTranscribeAudioRepo();
+  } = getTranscribeAudioRepo(transcriptionPrefs);
   warnings.push(...transcribeWarnings);
 
   const dictationLanguage = dictationLanguageOverride
@@ -138,6 +150,7 @@ export const transcribeAudio = async ({
     sampleRate,
     prompt: transcriptionPrompt,
     language: whisperLanguage,
+    signal,
   });
   const transcribeDuration = performance.now() - transcribeStart;
   const rawTranscript = transcribeOutput.text.trim();
@@ -299,6 +312,8 @@ export const postProcessTranscript = async ({
   };
 };
 
+export const FAILED_TRANSCRIPT_PLACEHOLDER = "[Transcription Failed]";
+
 export type StoreTranscriptionInput = {
   audio: StopRecordingResponse;
   rawTranscript: string | null;
@@ -404,7 +419,7 @@ export const storeTranscription = async (
     id: transcriptionId,
     transcript: !transcriptionFailed
       ? (input.transcript ?? "")
-      : "[Transcription Failed]",
+      : FAILED_TRANSCRIPT_PLACEHOLDER,
     createdAt: dayjs().toISOString(),
     createdByUserId: getMyEffectiveUserId(state),
     isDeleted: false,
@@ -461,21 +476,111 @@ export const storeTranscription = async (
     }
   }
 
+  await purgeStaleTranscriptionAudio();
+
+  return { transcription: storedTranscription, wordCount: wordsAdded };
+};
+
+/** Failed dictations keep their audio for retry up to these bounds. */
+export const MAX_KEPT_FAILED_AUDIO_ENTRIES = 100;
+export const MAX_KEPT_FAILED_AUDIO_MS = 60 * 60_000;
+
+/**
+ * Picks which failed dictations keep their audio, newest first, until the
+ * count or total-duration bound is reached. The rest fall back to the normal
+ * retention of recent audio.
+ */
+export const selectFailedAudioToKeep = (
+  entries: TranscriptionAudioEntry[],
+): { keepIds: string[]; unprotectedIds: string[] } => {
+  const keepIds: string[] = [];
+  const unprotectedIds: string[] = [];
+  let keptMs = 0;
+  for (const entry of entries) {
+    if (entry.transcript !== FAILED_TRANSCRIPT_PLACEHOLDER) {
+      continue;
+    }
+    const durationMs = entry.durationMs ?? 0;
+    if (
+      keepIds.length < MAX_KEPT_FAILED_AUDIO_ENTRIES &&
+      keptMs + durationMs <= MAX_KEPT_FAILED_AUDIO_MS
+    ) {
+      keepIds.push(entry.id);
+      keptMs += durationMs;
+    } else {
+      unprotectedIds.push(entry.id);
+    }
+  }
+  return { keepIds, unprotectedIds };
+};
+
+const purgeStaleTranscriptionAudio = async (): Promise<void> => {
   try {
-    const purgedIds = await getTranscriptionRepo().purgeStaleAudio();
-    if (purgedIds.length > 0) {
-      produceAppState((draft) => {
-        for (const purgedId of purgedIds) {
-          const purged = draft.transcriptionById[purgedId];
-          if (purged) {
-            delete purged.audio;
-          }
+    const repo = getTranscriptionRepo();
+    const { keepIds, unprotectedIds } = selectFailedAudioToKeep(
+      await repo.listAudioEntries(),
+    );
+    const purgedIds = await repo.purgeStaleAudio(keepIds);
+    if (purgedIds.length === 0) {
+      return;
+    }
+
+    produceAppState((draft) => {
+      for (const purgedId of purgedIds) {
+        const purged = draft.transcriptionById[purgedId];
+        if (purged) {
+          delete purged.audio;
         }
+      }
+    });
+
+    const purgedFailed = purgedIds.filter((id) => unprotectedIds.includes(id));
+    if (purgedFailed.length > 0) {
+      getLogger().warning(
+        `Removed audio of ${purgedFailed.length} failed dictation(s) over the retention bound`,
+      );
+      void showToast({
+        message: getIntl().formatMessage(
+          {
+            defaultMessage:
+              "Too many failed dictations are waiting in History. The audio of the oldest {count, plural, one {# one was} other {# were}} removed. Retry or delete failed dictations to keep the rest.",
+          },
+          { count: purgedFailed.length },
+        ),
+        toastType: "error",
+        duration: 10_000,
       });
     }
   } catch (error) {
     console.error("Failed to purge stale audio snapshots", error);
   }
+};
 
-  return { transcription: storedTranscription, wordCount: wordsAdded };
+export type FailedTranscriptionStorage = "saved" | "incognito" | "unsaved";
+
+/**
+ * Persists a dictation whose audio could not be transcribed as a failed
+ * History entry with its audio, so it can be retried from History.
+ */
+export const storeFailedTranscription = async (
+  audio: StopRecordingResponse,
+  result: TranscriptionSessionResult,
+): Promise<FailedTranscriptionStorage> => {
+  if (getAppState().userPrefs?.incognitoModeEnabled) {
+    return "incognito";
+  }
+
+  const { transcription } = await storeTranscription({
+    audio,
+    rawTranscript: null,
+    sanitizedTranscript: null,
+    transcript: null,
+    transcriptionMetadata: result.metadata,
+    postProcessMetadata: {},
+    warnings: dedup([
+      ...result.warnings,
+      result.failureReason ?? "Transcription failed",
+    ]),
+  });
+  return transcription?.audio ? "saved" : "unsaved";
 };

@@ -11,6 +11,7 @@ import 'package:app/utils/url_utils.dart';
 import 'package:app/widgets/common/app_list_tile.dart';
 import 'package:app/widgets/common/app_sliver_app_bar.dart';
 import 'package:app/widgets/common/list_tile_section.dart';
+import 'package:app/widgets/notes/sign_out_meeting_dialog.dart';
 import 'package:app/widgets/settings/ai_configuration_sheet.dart';
 import 'package:app/widgets/settings/edit_profile_dialog.dart';
 import 'package:app/widgets/settings/idle_timeout_sheet.dart';
@@ -150,7 +151,9 @@ class SettingsPage extends StatelessWidget {
                 AppListTile(
                   leading: const Icon(Icons.logout_outlined),
                   title: const Text('Sign out'),
-                  onTap: () => signOut(),
+                  onTap: () async {
+                    if (await confirmSignOutDuringMeeting(context)) signOut();
+                  },
                 ),
               ],
             ),

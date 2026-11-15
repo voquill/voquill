@@ -117,11 +117,6 @@ fn start_out_reader(app: tauri::AppHandle, rx: mpsc::Receiver<OutMessage>) {
                     let payload = serde_json::json!({ "text": text });
                     let _ = app.emit_to("main", "assistant-typed-message", payload);
                 }
-                OutMessage::OpenConversation { conversation_id } => {
-                    let payload = serde_json::json!({ "conversationId": conversation_id });
-                    let _ = app.emit_to("main", "open-pill-conversation", payload);
-                    let _ = app.emit_to("main", "assistant-mode-close", ());
-                }
                 OutMessage::ResolvePermission {
                     permission_id,
                     status,

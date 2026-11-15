@@ -155,14 +155,15 @@ export const EditTypography: React.FC<EditTypographyProps> = ({
     >
       {/* Hidden span for measuring text width */}
       <Typography
+        {...typographyProps}
         ref={measureRef}
+        aria-hidden
         sx={{
+          ...typographyProps?.sx,
           position: "absolute",
           visibility: "hidden",
           whiteSpace: "nowrap",
-          ...typographyProps?.sx,
         }}
-        {...typographyProps}
       >
         {draft || String(value)}
       </Typography>

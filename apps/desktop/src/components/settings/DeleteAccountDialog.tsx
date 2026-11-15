@@ -1,3 +1,4 @@
+import { releaseNotesForLocalDataClear } from "../../actions/note.actions";
 import {
   Alert,
   Box,
@@ -37,6 +38,7 @@ export const DeleteAccountDialog = () => {
 
     try {
       await getAuthRepo().deleteMyAccount();
+      await releaseNotesForLocalDataClear();
       await invoke("clear_local_data");
       setConfirmationEmail("");
       showSnackbar("You account has been deleted", { duration: 15000 });

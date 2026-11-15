@@ -97,7 +97,6 @@ pub fn run(receiver: Receiver<InMessage>) {
         assistant_active: Cell::new(false),
         assistant_input_mode: RefCell::new("voice".to_string()),
         assistant_compact: Cell::new(true),
-        assistant_conversation_id: RefCell::new(None),
         assistant_user_prompt: RefCell::new(None),
         assistant_messages: RefCell::new(Vec::new()),
         assistant_streaming: RefCell::new(None),
@@ -431,14 +430,13 @@ fn process_message(msg: InMessage, state: &PillState, _hwnd: HWND) {
         }
         InMessage::AssistantState {
             active, input_mode, compact,
-            conversation_id, user_prompt,
+            user_prompt,
             messages, streaming, permissions,
         } => {
             let was_active = state.assistant_active.get();
             state.assistant_active.set(active);
             *state.assistant_input_mode.borrow_mut() = input_mode;
             state.assistant_compact.set(compact);
-            *state.assistant_conversation_id.borrow_mut() = conversation_id;
             *state.assistant_user_prompt.borrow_mut() = user_prompt;
             *state.assistant_messages.borrow_mut() = messages;
             *state.assistant_streaming.borrow_mut() = streaming;

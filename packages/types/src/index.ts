@@ -16,6 +16,7 @@ export * from "./hotkey.types";
 export * from "./llm-provider.types";
 export * from "./member.types";
 export * from "./metrics.types";
+export * from "./note.types";
 export * from "./openrouter.types";
 export * from "./preferences.types";
 export * from "./remote.types";

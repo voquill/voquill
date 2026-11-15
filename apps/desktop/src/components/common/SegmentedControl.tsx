@@ -25,12 +25,11 @@ const tabSx = {
   color: "text.secondary",
   "&.Mui-selected": {
     color: "text.primary",
-    bgcolor: "background.paper",
-    boxShadow: "inset 0 1px 3px rgba(0,0,0,0.2), 0 1px 2px rgba(0,0,0,0.05)",
+    bgcolor: "level2",
   },
   "&:hover:not(.Mui-selected)": {
     color: "text.primary",
-    bgcolor: "rgba(255,255,255,0.05)",
+    bgcolor: "action.hover",
   },
 };
 
@@ -68,11 +67,9 @@ export const SegmentedControl = <Value extends string>({
     <Box
       sx={{
         display: "inline-flex",
-        bgcolor: "action.hover",
+        bgcolor: "level1",
         borderRadius: 2,
         p: 0.5,
-        border: 1,
-        borderColor: "divider",
         maxWidth: "100%",
       }}
     >

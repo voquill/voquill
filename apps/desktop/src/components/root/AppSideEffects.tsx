@@ -23,6 +23,7 @@ import {
   startRemoteReceiver,
 } from "../../actions/remote-receiver.actions";
 import { handleRemoteFinalTextReceived } from "../../actions/remote-transcript.actions";
+import { findLatestSuccessfulTranscript } from "../../actions/transcriptions.actions";
 import {
   checkForAppUpdates,
   dismissUpdateDialog,
@@ -49,7 +50,6 @@ import {
   getMemberRepo,
   getTenantRepo,
   getTermRepo,
-  getTranscriptionRepo,
   getUserRepo,
 } from "../../repos";
 import {
@@ -58,6 +58,7 @@ import {
   PasteKeybindSupport,
 } from "../../state/app.state";
 import { getAppState, produceAppState, useAppStore } from "../../store";
+import { getActiveNoteId, getIsNoteCapturing } from "../../utils/note.utils";
 import { AuthUser } from "../../types/auth.types";
 import { OverlayPhase } from "../../types/overlay.types";
 import { CURRENT_COHORT, getMixpanel } from "../../utils/analytics.utils";
@@ -654,13 +655,28 @@ export const AppSideEffects = () => {
         updateInitializedRef.current = true;
       }
 
-      const available = await checkForAppUpdates();
-      invoke("set_menu_icon", {
-        variant: available ? "update" : "default",
-      }).catch(console.error);
+      await checkForAppUpdates();
     },
     [],
   );
+
+  // The tray icon shows a dot while a meeting records, so a recording left
+  // running is visible from any app; otherwise it shows a waiting update.
+  const isMeetingRecording = useAppStore((state) => {
+    const activeNoteId = getActiveNoteId(state);
+    return activeNoteId !== null && getIsNoteCapturing(state, activeNoteId);
+  });
+  const updateAvailable = useAppStore(
+    (state) => state.updater.availableVersion !== null,
+  );
+  useEffect(() => {
+    const variant = isMeetingRecording
+      ? "recording"
+      : updateAvailable
+        ? "update"
+        : "default";
+    invoke("set_menu_icon", { variant, updateAvailable }).catch(console.error);
+  }, [isMeetingRecording, updateAvailable]);
 
   useToastAction(async (payload) => {
     if (payload.action === "upgrade") {
@@ -682,11 +698,9 @@ export const AppSideEffects = () => {
   });
 
   useTauriListen<void>("tray-copy-last-transcript", async () => {
-    const [latest] = await getTranscriptionRepo().listTranscriptions({
-      limit: 1,
-    });
-    if (latest?.transcript) {
-      await invoke("copy_to_clipboard", { text: latest.transcript });
+    const transcript = await findLatestSuccessfulTranscript();
+    if (transcript) {
+      await invoke("copy_to_clipboard", { text: transcript });
     }
   });
 

@@ -12,7 +12,6 @@ export const SWITCH_WRITING_STYLE_FORWARD_HOTKEY =
 export const SWITCH_WRITING_STYLE_BACKWARD_HOTKEY =
   "switch-writing-style-backward";
 export const CANCEL_TRANSCRIPTION_HOTKEY = "cancel-transcription";
-export const OPEN_CHAT_HOTKEY = "open-chat";
 export const ADD_TO_DICTIONARY_HOTKEY = "add-to-dictionary";
 export const ADDITIONAL_LANGUAGE_HOTKEY_PREFIX = "additional-language:";
 

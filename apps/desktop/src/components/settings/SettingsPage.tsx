@@ -43,7 +43,11 @@ import { setAutoLaunchEnabled } from "../../actions/settings.actions";
 import { loadTones } from "../../actions/tone.actions";
 import { setPreferredLanguage } from "../../actions/user.actions";
 import { getAuthRepo, getStripeRepo } from "../../repos";
-import { produceAppState, useAppStore } from "../../store";
+import {
+  getSignOutStopsMeeting,
+  stopMeetingNote,
+} from "../../actions/note.actions";
+import { getAppState, produceAppState, useAppStore } from "../../store";
 import {
   getAllowsChangePostProcessing,
   getAllowsChangeTranscription,
@@ -62,6 +66,7 @@ import {
   getIsSignedIn,
   getMyUser,
 } from "../../utils/user.utils";
+import { ConfirmDialog } from "../common/ConfirmDialog";
 import { ListTile } from "../common/ListTile";
 import { Section } from "../common/Section";
 import { DashboardEntryLayout } from "../dashboard/DashboardEntryLayout";
@@ -218,8 +223,31 @@ export default function SettingsPage() {
     }
   };
 
-  const handleSignOut = async () => {
+  const [confirmSignOut, setConfirmSignOut] = useState(false);
+
+  const signOutNow = async () => {
     await getAuthRepo().signOut();
+  };
+
+  const handleSignOut = async () => {
+    if (getSignOutStopsMeeting()) {
+      setConfirmSignOut(true);
+      return;
+    }
+    await signOutNow();
+  };
+
+  const handleConfirmSignOut = async () => {
+    setConfirmSignOut(false);
+    const activeNoteId = getAppState().notes.activeNoteId;
+    try {
+      if (activeNoteId) {
+        await stopMeetingNote(activeNoteId);
+      }
+      await signOutNow();
+    } catch (error) {
+      showErrorSnackbar(error);
+    }
   };
 
   const general = (
@@ -485,6 +513,18 @@ export default function SettingsPage() {
         {advanced}
         {!isEnterprise && dangerZone}
       </Stack>
+      <ConfirmDialog
+        isOpen={confirmSignOut}
+        title={
+          <FormattedMessage defaultMessage="Stop the meeting and sign out?" />
+        }
+        content={
+          <FormattedMessage defaultMessage="The meeting being recorded belongs to your Voquill account. Signing out stops the recording. Everything recorded so far is saved on this device, and the notes are written when you sign in again." />
+        }
+        confirmLabel={<FormattedMessage defaultMessage="Stop and sign out" />}
+        onCancel={() => setConfirmSignOut(false)}
+        onConfirm={handleConfirmSignOut}
+      />
     </DashboardEntryLayout>
   );
 }

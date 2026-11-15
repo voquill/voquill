@@ -78,7 +78,6 @@ pub enum InMessage {
         active: bool,
         input_mode: String,
         compact: bool,
-        conversation_id: Option<String>,
         user_prompt: Option<String>,
         messages: Vec<PillMessage>,
         streaming: Option<PillStreaming>,
@@ -98,7 +97,6 @@ pub enum OutMessage {
     AssistantClose,
     EnableTypeMode,
     TypedMessage { text: String },
-    OpenConversation { conversation_id: String },
     ResolvePermission {
         permission_id: String,
         status: String,

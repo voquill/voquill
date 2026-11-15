@@ -14,6 +14,7 @@ pub mod monitor;
 pub mod overlay;
 pub mod permissions;
 pub mod position;
+pub mod system_audio;
 pub mod volume;
 pub mod window;
 
