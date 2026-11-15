@@ -22,11 +22,25 @@ const TRAY_ICON_UPDATE: &[u8] = include_bytes!(concat!(
     "/icons/tray/update-win-linux-36.png"
 ));
 
+#[cfg(target_os = "macos")]
+const TRAY_ICON_RECORDING: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/icons/tray/recording-macos-36.png"
+));
+
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_RECORDING: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/icons/tray/recording-win-linux-36.png"
+));
+
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MenuIconVariant {
     Default,
     Update,
+    /// A meeting is being recorded: the logo with a dot in its corner.
+    Recording,
 }
 
 use crate::domain::EVT_REGISTER_CURRENT_APP;
@@ -185,15 +199,20 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn set_menu_icon(app: &tauri::AppHandle, variant: MenuIconVariant) -> Result<(), String> {
+/// Shows `variant` in the tray, and enables the install item when an update
+/// is available (the recording icon takes the update icon's place meanwhile).
+pub fn set_menu_icon(
+    app: &tauri::AppHandle,
+    variant: MenuIconVariant,
+    update_available: bool,
+) -> Result<(), String> {
     use tauri::image::Image;
     use tauri::tray::TrayIconId;
-
-    let is_update = matches!(variant, MenuIconVariant::Update);
 
     let bytes = match variant {
         MenuIconVariant::Default => TRAY_ICON_DEFAULT,
         MenuIconVariant::Update => TRAY_ICON_UPDATE,
+        MenuIconVariant::Recording => TRAY_ICON_RECORDING,
     };
 
     let tray = app
@@ -204,7 +223,7 @@ pub fn set_menu_icon(app: &tauri::AppHandle, variant: MenuIconVariant) -> Result
     tray.set_icon(Some(image)).map_err(|err| err.to_string())?;
 
     if let Some(update_item) = UPDATE_MENU_ITEM.get() {
-        let _ = update_item.set_enabled(is_update);
+        let _ = update_item.set_enabled(update_available);
     }
 
     #[cfg(target_os = "macos")]
