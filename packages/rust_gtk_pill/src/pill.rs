@@ -13,6 +13,7 @@ use crate::state::{FlameTongue, PillState, Rocket, RocketPhase, Spark, WindowMod
 use crate::{draw, input, x11};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SETTLE_TICKS: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -350,6 +351,14 @@ pub fn run(receiver: async_channel::Receiver<InMessage>) {
     frame.wake();
     ipc::send(&OutMessage::Ready);
 
+    if backend == Backend::LayerShell {
+        let frame_monitor = frame.clone();
+        glib::timeout_add_local(MONITOR_POLL_INTERVAL, move || {
+            frame_monitor.follow_pointer_monitor();
+            ControlFlow::Continue
+        });
+    }
+
     main_loop.run();
 }
 
@@ -397,9 +406,6 @@ impl Frame {
 
     fn sync_window(&self) {
         self.sync_entry();
-        if self.backend == Backend::LayerShell {
-            self.follow_pointer_monitor();
-        }
 
         let state = &self.state;
         let is_active = state.phase.get() != Phase::Idle;
