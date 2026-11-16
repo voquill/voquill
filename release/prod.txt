@@ -1,10 +1,1 @@
-- New: Voquill Notes. Record a meeting and get a transcript and written notes
-- Notes record your computer's audio along with your microphone
-- Ask questions about one meeting or across all your notes
-- Import a transcript to turn it into a note
-- The menu tray icon shows a dot while a meeting is recording
-- Dictate for up to 10 minutes at a time with Voquill Cloud
-- Dictation is recovered if the connection drops, and the audio is kept so you can retry
-- The Chats tab has been removed
-- Add CheaperInference as a provider
-- Various bug fixes and improvements
+- Improved performance across the board
