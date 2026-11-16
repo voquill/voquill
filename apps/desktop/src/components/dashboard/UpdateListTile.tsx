@@ -1,9 +1,14 @@
 import { ArrowUpwardOutlined } from "@mui/icons-material";
 import { FormattedMessage } from "react-intl";
 import { openUpdateDialog } from "../../actions/updater.actions";
+import { useDictationAnimation } from "../../hooks/animation.hooks";
 import { ListTile } from "../common/ListTile";
 
 export const UpdateListTile = () => {
+  const shimmerAnimation = useDictationAnimation(
+    "shimmer 3s ease-in-out infinite",
+  );
+
   return (
     <ListTile
       onClick={() => openUpdateDialog()}
@@ -23,8 +28,7 @@ export const UpdateListTile = () => {
           background:
             "linear-gradient(90deg, transparent, rgba(59, 130, 246, 0.6), transparent)",
           backgroundSize: "200% 100%",
-          animation: "shimmer 3s ease-in-out infinite",
-          willChange: "transform",
+          animation: shimmerAnimation,
           mask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
           maskComposite: "exclude",
           WebkitMask:

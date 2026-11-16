@@ -88,6 +88,7 @@ export type AppState = {
   activeRecordingMode: Nullable<RecordingMode>;
   dictationLanguageOverride: Nullable<string>;
   overlayPhase: OverlayPhase;
+  windowFocused: boolean;
   audioLevels: number[];
   permissions: PermissionMap;
   confettiCounter: number;
@@ -182,6 +183,7 @@ export const INITIAL_APP_STATE: AppState = {
   agentStateByConversationId: {},
   streamingMessageById: {},
   overlayPhase: "idle",
+  windowFocused: true,
   audioLevels: [],
   permissions: {
     microphone: null,

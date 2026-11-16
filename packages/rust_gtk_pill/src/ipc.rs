@@ -1,5 +1,4 @@
 use std::io::{self, BufRead, Write};
-use std::sync::mpsc::Sender;
 
 use serde::{Deserialize, Serialize};
 
@@ -113,7 +112,7 @@ pub fn send(msg: &OutMessage) {
     let _ = stdout.flush();
 }
 
-pub fn start_stdin_reader(sender: Sender<InMessage>) {
+pub fn start_stdin_reader(sender: async_channel::Sender<InMessage>) {
     std::thread::spawn(move || {
         let stdin = io::stdin();
         let reader = stdin.lock();
@@ -124,7 +123,7 @@ pub fn start_stdin_reader(sender: Sender<InMessage>) {
             }
             match serde_json::from_str::<InMessage>(&line) {
                 Ok(msg) => {
-                    if sender.send(msg).is_err() {
+                    if sender.send_blocking(msg).is_err() {
                         break;
                     }
                 }
@@ -133,6 +132,6 @@ pub fn start_stdin_reader(sender: Sender<InMessage>) {
                 }
             }
         }
-        let _ = sender.send(InMessage::Quit);
+        let _ = sender.send_blocking(InMessage::Quit);
     });
 }
