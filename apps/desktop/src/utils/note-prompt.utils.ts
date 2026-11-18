@@ -28,20 +28,24 @@ const MAX_OUTPUT_TOKENS = 16_000;
 const MAX_PROMPT_OVERHEAD_TOKENS = 3_000;
 /** Above this many transcript tokens, notes are built map-reduce even if the context would fit. */
 const SINGLE_PASS_MAX_TOKENS = 64_000;
-const MAX_MAP_ROUNDS = 4;
+/** Personal notes steer emphasis; beyond this they are cut, so they cannot crowd out the transcript. */
+export const PERSONAL_NOTES_MAX_TOKENS = 4_000;
 const MAX_TITLE_CHARS = 120;
+
+const countChars = (text: string) => {
+  let ascii = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) < 128) ascii++;
+  }
+  return { ascii, other: text.length - ascii };
+};
 
 /**
  * Conservative token estimate without a tokenizer: ~4 ASCII chars per token,
  * one per other char.
  */
 export const estimateTokens = (text: string): number => {
-  let ascii = 0;
-  let other = 0;
-  for (let i = 0; i < text.length; i++) {
-    if (text.charCodeAt(i) < 128) ascii++;
-    else other++;
-  }
+  const { ascii, other } = countChars(text);
   return Math.ceil(ascii / 4) + other;
 };
 
@@ -163,7 +167,7 @@ export type GeneratedNoteContent = {
 
 export const buildFinalNotesRequest = (
   input: GenerateNoteContentInput,
-  material: { label: string; body: string },
+  material: NoteMaterial,
 ): GenerateTextInput => {
   const outputShape = input.wantTitle
     ? `Respond with a JSON object: {"title": string, "notes": string}. ${TITLE_RULES}`
@@ -255,20 +259,60 @@ export const parseGeneratedNoteOutput = (
   };
 };
 
-/** Splits transcript lines into windows of at most `maxTokens` estimated tokens. */
+/** Breaks a line over `maxTokens` at spaces (and inside words longer than that). */
+const splitOverlongLine = (line: string, maxTokens: number): string[] => {
+  if (estimateTokens(line) <= maxTokens) return [line];
+  const pieces: string[] = [];
+  let words: string[] = [];
+  let ascii = 0;
+  let other = 0;
+  const flush = () => {
+    if (words.length > 0) pieces.push(words.join(" "));
+    words = [];
+    ascii = 0;
+    other = 0;
+  };
+  for (let word of line.split(" ")) {
+    // Each character is at most one token, so `maxTokens` characters always fit.
+    while (estimateTokens(word) > maxTokens) {
+      flush();
+      pieces.push(word.slice(0, maxTokens));
+      word = word.slice(maxTokens);
+    }
+    const chars = countChars(word);
+    if (
+      words.length > 0 &&
+      Math.ceil((ascii + 1 + chars.ascii) / 4) + other + chars.other > maxTokens
+    ) {
+      flush();
+    }
+    ascii += (words.length > 0 ? 1 : 0) + chars.ascii;
+    other += chars.other;
+    words.push(word);
+  }
+  flush();
+  return pieces;
+};
+
+/**
+ * Splits text into windows of at most `maxTokens` estimated tokens, at line
+ * breaks, and inside lines that alone are longer than a window.
+ */
 export const splitLinesForMap = (text: string, maxTokens: number): string[] => {
   const windows: string[] = [];
   let current: string[] = [];
   let currentTokens = 0;
   for (const line of text.split("\n")) {
-    const tokens = estimateTokens(line) + 1;
-    if (current.length > 0 && currentTokens + tokens > maxTokens) {
-      windows.push(current.join("\n"));
-      current = [];
-      currentTokens = 0;
+    for (const piece of splitOverlongLine(line, maxTokens - 1)) {
+      const tokens = estimateTokens(piece) + 1;
+      if (current.length > 0 && currentTokens + tokens > maxTokens) {
+        windows.push(current.join("\n"));
+        current = [];
+        currentTokens = 0;
+      }
+      current.push(piece);
+      currentTokens += tokens;
     }
-    current.push(line);
-    currentTokens += tokens;
   }
   if (current.length > 0) windows.push(current.join("\n"));
   return windows;
@@ -290,57 +334,118 @@ export const getSinglePassBudgetTokens = (contextTokens: number): number => {
   );
 };
 
+/** The head of `text` that fits `maxTokens` estimated tokens. */
+export const truncateToTokens = (text: string, maxTokens: number): string => {
+  if (estimateTokens(text) <= maxTokens) return text;
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (estimateTokens(text.slice(0, mid)) <= maxTokens) low = mid;
+    else high = mid - 1;
+  }
+  return `${text.slice(0, low)}…`;
+};
+
+/** What a step writes notes from: transcript lines, or notes on sections of them. */
+export type NoteMaterial = {
+  label: "transcript" | "section_notes";
+  body: string;
+};
+
+/**
+ * Writes notes one bounded step at a time; `generateNoteContent` drives the
+ * steps, so a transcript of any length fits.
+ */
+export type NoteWriter = {
+  /** Estimated tokens of material one step may carry. */
+  maxInputTokens: number;
+  writeSection(
+    input: GenerateNoteContentInput,
+    part: NoteMaterial,
+    index: number,
+    total: number,
+  ): Promise<string>;
+  writeNotes(
+    input: GenerateNoteContentInput,
+    material: NoteMaterial,
+  ): Promise<GeneratedNoteContent>;
+};
+
+/** Writes each step with these prompts on the user's own model. */
+export const createPromptNoteWriter = ({
+  generator,
+  contextTokens,
+}: NoteGenerationModel): NoteWriter => {
+  const budget = getSinglePassBudgetTokens(contextTokens);
+  const personalNotesTokens = Math.min(
+    PERSONAL_NOTES_MAX_TOKENS,
+    Math.floor(budget / 4),
+  );
+  return {
+    maxInputTokens: budget - personalNotesTokens,
+    writeSection: async (input, part, index, total) => {
+      const output = await generator.generateText(
+        buildSectionNotesRequest(input, part.body, index, total),
+      );
+      return cleanGeneratedMarkdown(output.text);
+    },
+    writeNotes: async (input, material) => {
+      const personalNotes = truncateToTokens(
+        input.personalNotes.trim(),
+        personalNotesTokens,
+      );
+      const output = await generator.generateText(
+        buildFinalNotesRequest({ ...input, personalNotes }, material),
+      );
+      return parseGeneratedNoteOutput(output.text, input.wantTitle);
+    },
+  };
+};
+
 /**
  * Title and markdown notes for a transcript. Empty transcripts need no model
  * call; long ones are summarized section by section and the section notes
- * merged (repeatedly, if even those do not fit the model's context).
+ * merged, as many times as it takes to fit one step.
  */
 export const generateNoteContent = async (
-  model: NoteGenerationModel,
+  writer: NoteWriter,
   input: GenerateNoteContentInput,
 ): Promise<GeneratedNoteContent> => {
   if (countWords(input.transcript) === 0) {
     return { title: null, notes: EMPTY_TRANSCRIPT_NOTES };
   }
-  const budget = getSinglePassBudgetTokens(model.contextTokens);
-  const materialBudget = Math.max(
-    Math.floor(budget / 2),
-    budget - estimateTokens(input.personalNotes),
-  );
 
-  let material = { label: "transcript", body: input.transcript };
-  for (let round = 0; estimateTokens(material.body) > materialBudget; round++) {
-    if (round >= MAX_MAP_ROUNDS) {
-      throw new Error(
-        "The transcript is too long to summarize with this model",
-      );
-    }
+  let material: NoteMaterial = { label: "transcript", body: input.transcript };
+  while (estimateTokens(material.body) > writer.maxInputTokens) {
     const windows = splitLinesForMap(
       material.body,
-      Math.floor(materialBudget / 2),
+      Math.floor(writer.maxInputTokens / 2),
     );
     const sections: string[] = [];
     for (const [index, window] of windows.entries()) {
-      const output = await model.generator.generateText(
-        buildSectionNotesRequest(input, window, index, windows.length),
+      sections.push(
+        await writer.writeSection(
+          input,
+          { label: material.label, body: window },
+          index,
+          windows.length,
+        ),
       );
-      sections.push(cleanGeneratedMarkdown(output.text));
     }
-    material = {
-      label: "section_notes",
-      body: sections
-        .map(
-          (section, index) =>
-            `## Section ${index + 1} of ${sections.length}\n${section}`,
-        )
-        .join("\n\n"),
-    };
+    const body = sections
+      .map(
+        (section, index) =>
+          `## Section ${index + 1} of ${sections.length}\n${section}`,
+      )
+      .join("\n\n");
+    if (estimateTokens(body) >= estimateTokens(material.body)) {
+      throw new Error("The section notes are no shorter than their input");
+    }
+    material = { label: "section_notes", body };
   }
 
-  const output = await model.generator.generateText(
-    buildFinalNotesRequest(input, material),
-  );
-  const content = parseGeneratedNoteOutput(output.text, input.wantTitle);
+  const content = await writer.writeNotes(input, material);
   if (!content.notes) {
     throw new Error("The model returned empty notes");
   }

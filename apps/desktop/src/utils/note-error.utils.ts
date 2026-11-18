@@ -37,6 +37,11 @@ const messages = defineMessages({
   askLimitBody: {
     defaultMessage: "You've asked the most questions allowed for today.",
   },
+  generateLimitTitle: { defaultMessage: "Daily limit for AI notes reached" },
+  generateLimitBody: {
+    defaultMessage:
+      "Voquill cloud writes a limited amount of AI notes per day. Retry when the limit resets, or upgrade for more.",
+  },
   memberTitle: { defaultMessage: "Your Voquill account isn't set up yet" },
   memberBody: { defaultMessage: "Finish signing in to Voquill, then retry." },
   processingLimitTitle: { defaultMessage: "Waiting for your other notes" },
@@ -153,6 +158,11 @@ const NOTE_ERRORS: Record<string, NoteErrorEntry> = {
   ask_limit_exceeded: {
     title: messages.askLimitTitle,
     body: messages.askLimitBody,
+  },
+  generate_limit_exceeded: {
+    title: messages.generateLimitTitle,
+    body: messages.generateLimitBody,
+    upgrade: true,
   },
   member_not_found: { title: messages.memberTitle, body: messages.memberBody },
   too_many_processing: {

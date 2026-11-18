@@ -13,7 +13,20 @@ import {
   DEFAULT_NOTE_CHUNK_LIMITS,
   LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
 } from "../utils/note-audio.utils";
-import { getTranscriptionPrefs } from "../utils/user.utils";
+import { getGenerativePrefs, getTranscriptionPrefs } from "../utils/user.utils";
+import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
+import {
+  createPromptNoteWriter,
+  PERSONAL_NOTES_MAX_TOKENS,
+  truncateToTokens,
+  type NoteWriter,
+} from "../utils/note-prompt.utils";
+import {
+  NOTE_GENERATE_LIMITS,
+  NotesApiError,
+  NotesNetworkError,
+  type CloudNoteRepo,
+} from "../repos/cloud-note.repo";
 import {
   getCloudNotesUserId,
   getLocalNoteProcessedWith,
@@ -31,6 +44,7 @@ import {
   DICTATION_WORDS_EXCEEDED_ERROR_CODE,
   LocalNotePipeline,
   NoteProcessingError,
+  type NoteErrorCode,
 } from "./local-note.pipeline";
 import { getTranscriptionAttemptTimeout } from "../sessions";
 import { runWithAttemptTimeout } from "../utils/abort.utils";
@@ -79,8 +93,79 @@ const yieldToDictation = async (): Promise<void> => {
   }
 };
 
+/** Voquill cloud refusals the notes UI explains; anything else fails as `generation_failed`. */
+const EXPLAINED_GENERATE_ERROR_CODES = new Set([
+  "member_not_found",
+  "audio_quota_exceeded",
+  "generate_limit_exceeded",
+]);
+
+const toNoteGenerateError = (error: unknown): unknown => {
+  if (error instanceof NotesNetworkError) {
+    return new NoteProcessingError("network_unavailable", error);
+  }
+  if (
+    error instanceof NotesApiError &&
+    EXPLAINED_GENERATE_ERROR_CODES.has(error.code)
+  ) {
+    return new NoteProcessingError(
+      error.code as NoteErrorCode,
+      error,
+      error.details,
+    );
+  }
+  return error;
+};
+
+/** Voquill cloud writes each step server-side (`POST /v1/notes/generate`). */
+const createVoquillNoteWriter = (api: CloudNoteRepo): NoteWriter => {
+  const call = <T>(request: Promise<T>) =>
+    request.catch((error: unknown) => {
+      throw toNoteGenerateError(error);
+    });
+  return {
+    maxInputTokens: NOTE_GENERATE_LIMITS.maxInputTokens,
+    writeSection: (input, part, index, total) =>
+      call(
+        api.writeSectionNotes({
+          material: part.label,
+          text: part.body,
+          index,
+          total,
+          meetingDate: input.meetingDate || undefined,
+        }),
+      ),
+    writeNotes: (input, material) =>
+      call(
+        api.writeFinalNotes({
+          material: material.label,
+          text: material.body,
+          meetingDate: input.meetingDate || undefined,
+          personalNotes: truncateToTokens(
+            input.personalNotes.trim(),
+            PERSONAL_NOTES_MAX_TOKENS,
+          ),
+          wantTitle: input.wantTitle,
+        }),
+      ),
+  };
+};
+
 const getChatGenerator = () =>
   getNoteGenerationAvailable(getAppState()) ? getGenerateTextRepo().repo : null;
+
+const getNoteWriter = (): NoteWriter | null => {
+  const generator = getChatGenerator();
+  if (!generator) return null;
+  const state = getAppState();
+  if (getGenerativePrefs(state).mode === "cloud" && !getIsEnterpriseEnabled()) {
+    return createVoquillNoteWriter(getCloudNoteRepo());
+  }
+  return createPromptNoteWriter({
+    generator,
+    contextTokens: getNoteGenerationContextTokens(state),
+  });
+};
 
 let localNotePipeline: LocalNotePipeline | null = null;
 
@@ -126,15 +211,7 @@ const getLocalNotePipeline = (): LocalNotePipeline => {
       }));
       return applyReplacements(rawTranscript, replacements);
     },
-    getGenerationModel: () => {
-      const generator = getChatGenerator();
-      return generator
-        ? {
-            generator,
-            contextTokens: getNoteGenerationContextTokens(getAppState()),
-          }
-        : null;
-    },
+    getNoteWriter,
     getChatGenerator,
     getCloudNotesUserId: () => getCloudNotesUserId(getAppState()),
     getProcessedWith: () => getLocalNoteProcessedWith(getAppState()),
