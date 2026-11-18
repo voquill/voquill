@@ -24,8 +24,8 @@ import {
   EMPTY_TRANSCRIPT_NOTES,
   formatNoteTranscriptForModel,
   generateNoteContent,
-  type NoteGenerationModel,
   type NoteTextGenerator,
+  type NoteWriter,
 } from "../utils/note-prompt.utils";
 import {
   extractQuestionTerms,
@@ -105,8 +105,8 @@ export type LocalNotePipelineDeps = {
     samples: Float32Array;
     sampleRate: number;
   }): Promise<string>;
-  /** The user's post-processing model, or null when post-processing is off. */
-  getGenerationModel(): NoteGenerationModel | null;
+  /** Writes AI notes with the user's post-processing mode; null when it is off. */
+  getNoteWriter(): NoteWriter | null;
   getChatGenerator(): NoteChatGenerator | null;
   /** Whose cloud notes (local copies) search may include. */
   getCloudNotesUserId(): string | null;
@@ -130,6 +130,10 @@ export type NoteErrorCode =
   | "audio_missing"
   | "transcription_failed"
   | "generation_failed"
+  | "network_unavailable"
+  | "member_not_found"
+  | "audio_quota_exceeded"
+  | "generate_limit_exceeded"
   | typeof DICTATION_WORDS_EXCEEDED_ERROR_CODE;
 
 /**
@@ -548,8 +552,8 @@ export class LocalNotePipeline extends BaseNotePipeline {
   private async generate(noteId: string): Promise<void> {
     const { store } = this.deps;
     const transcript = formatNoteTranscriptForModel(store.getSegments(noteId));
-    const model = transcript.trim() ? this.deps.getGenerationModel() : null;
-    if (!model) {
+    const writer = transcript.trim() ? this.deps.getNoteWriter() : null;
+    if (!writer) {
       await store.updateNote(noteId, (note) => {
         note.generatedNotes = transcript.trim() ? null : EMPTY_TRANSCRIPT_NOTES;
       });
@@ -558,14 +562,19 @@ export class LocalNotePipeline extends BaseNotePipeline {
 
     try {
       const note = store.getNote(noteId);
-      const yielding: NoteGenerationModel = {
-        contextTokens: model.contextTokens,
-        generator: {
-          generateText: async (input) => {
-            await this.deps.yieldToDictation();
-            this.assertNoteExists(noteId);
-            return model.generator.generateText(input);
-          },
+      const beforeRequest = async () => {
+        await this.deps.yieldToDictation();
+        this.assertNoteExists(noteId);
+      };
+      const yielding: NoteWriter = {
+        maxInputTokens: writer.maxInputTokens,
+        writeSection: async (...args) => {
+          await beforeRequest();
+          return writer.writeSection(...args);
+        },
+        writeNotes: async (...args) => {
+          await beforeRequest();
+          return writer.writeNotes(...args);
         },
       };
       const content = await generateNoteContent(yielding, {
@@ -583,7 +592,10 @@ export class LocalNotePipeline extends BaseNotePipeline {
         }
       });
     } catch (error) {
-      if (error instanceof NoteDeletedError) {
+      if (
+        error instanceof NoteDeletedError ||
+        error instanceof NoteProcessingError
+      ) {
         throw error;
       }
       throw new NoteProcessingError("generation_failed", error);

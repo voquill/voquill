@@ -12,6 +12,7 @@ import type {
   NoteAskInput,
 } from "../pipelines/base-note.pipeline";
 import { getNewServerAuth, NEW_SERVER_URL } from "../utils/new-server.utils";
+import type { NoteMaterial } from "../utils/note-prompt.utils";
 import { BaseRepo } from "./base.repo";
 
 /**
@@ -102,6 +103,21 @@ export const capAskInput = ({
     content: m.content.slice(0, NOTE_ASK_LIMITS.maxHistoryMessageChars),
   })),
 });
+
+/** What one `/generate` step accepts (docs/notes.md "POST /v1/notes/generate"). */
+export const NOTE_GENERATE_LIMITS = {
+  /** Estimated tokens (`estimateTokens`) of `text`. */
+  maxInputTokens: 30_000,
+};
+
+/** A step writes up to 16k tokens of notes, far more than any other call returns. */
+const NOTES_GENERATE_TIMEOUT_MS = 5 * 60_000;
+
+type NoteGenerateStepFields = {
+  material: NoteMaterial["label"];
+  text: string;
+  meetingDate?: string;
+};
 
 /** The server's fixed id for an imported note's only segment. */
 const SERVER_IMPORT_SEGMENT_ID = "import";
@@ -369,10 +385,12 @@ export class CloudNoteRepo extends BaseRepo {
       body,
       signal,
       read,
+      timeoutMs = this.timeoutMs,
     }: {
       body?: unknown;
       signal?: AbortSignal;
       read?: (response: Response) => Promise<T>;
+      timeoutMs?: number;
     } = {},
   ): Promise<T> {
     const attempt = async (forceRefresh: boolean) => {
@@ -385,7 +403,7 @@ export class CloudNoteRepo extends BaseRepo {
       const timer = setTimeout(() => {
         timedOut = true;
         controller.abort();
-      }, this.timeoutMs);
+      }, timeoutMs);
       const forwardAbort = () => controller.abort();
       signal?.addEventListener("abort", forwardAbort);
       try {
@@ -432,9 +450,11 @@ export class CloudNoteRepo extends BaseRepo {
     method: string,
     path: string,
     body?: unknown,
+    timeoutMs?: number,
   ): Promise<T> {
     return this.send(method, path, {
       body,
+      timeoutMs,
       read: (response) => response.json() as Promise<T>,
     });
   }
@@ -556,6 +576,34 @@ export class CloudNoteRepo extends BaseRepo {
       body,
     );
     return note;
+  }
+
+  /** Intermediate notes on one window of a transcript (or of section notes). */
+  async writeSectionNotes(
+    step: NoteGenerateStepFields & { index: number; total: number },
+  ): Promise<string> {
+    const { notes } = await this.json<{ notes: string }>(
+      "POST",
+      "/generate",
+      { stage: "section", ...step },
+      NOTES_GENERATE_TIMEOUT_MS,
+    );
+    return notes;
+  }
+
+  /** Title and notes from material that fits one step. */
+  async writeFinalNotes(
+    step: NoteGenerateStepFields & {
+      personalNotes: string;
+      wantTitle: boolean;
+    },
+  ): Promise<{ title: string | null; notes: string }> {
+    return this.json(
+      "POST",
+      "/generate",
+      { stage: "final", ...step },
+      NOTES_GENERATE_TIMEOUT_MS,
+    );
   }
 
   async search(query: string): Promise<ServerNoteSearchResult[]> {

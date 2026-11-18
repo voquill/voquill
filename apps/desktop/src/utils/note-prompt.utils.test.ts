@@ -4,12 +4,16 @@ import type { GenerateTextInput } from "../repos/generate-text.repo";
 import {
   cleanGeneratedMarkdown,
   cleanGeneratedTitle,
+  createPromptNoteWriter,
   EMPTY_TRANSCRIPT_NOTES,
   estimateTokens,
   formatNoteTranscriptForModel,
   generateNoteContent,
   getSinglePassBudgetTokens,
   parseGeneratedNoteOutput,
+  splitLinesForMap,
+  type NoteMaterial,
+  type NoteWriter,
 } from "./note-prompt.utils";
 
 const recordingModel = (
@@ -19,7 +23,7 @@ const recordingModel = (
   const requests: GenerateTextInput[] = [];
   return {
     requests,
-    model: {
+    model: createPromptNoteWriter({
       contextTokens,
       generator: {
         async generateText(input: GenerateTextInput) {
@@ -27,8 +31,25 @@ const recordingModel = (
           return { text: reply(input) };
         },
       },
+    }),
+  };
+};
+
+/** A writer that records each step; section notes are a tenth of their input. */
+const recordingWriter = (maxInputTokens: number) => {
+  const steps: { stage: string; part: NoteMaterial }[] = [];
+  const writer: NoteWriter = {
+    maxInputTokens,
+    async writeSection(_input, part) {
+      steps.push({ stage: "section", part });
+      return "x".repeat(Math.ceil(part.body.length / 10));
+    },
+    async writeNotes(_input, material) {
+      steps.push({ stage: "final", part: material });
+      return { title: "T", notes: "N" };
     },
   };
+  return { writer, steps };
 };
 
 const input = {
@@ -95,9 +116,84 @@ describe("generateNoteContent", () => {
     expect(requests.at(-1)?.prompt).toContain("<section_notes>");
   });
 
+  it("merges section notes for as many rounds as a transcript needs", async () => {
+    const line = `[00:00] Speaker 1: ${"word ".repeat(100).trim()}`;
+    const transcript = Array.from({ length: 3_000 }, () => line).join("\n");
+    const { writer, steps } = recordingWriter(2_000);
+
+    expect(await generateNoteContent(writer, { ...input, transcript })).toEqual(
+      {
+        title: "T",
+        notes: "N",
+      },
+    );
+
+    for (const step of steps) {
+      expect(estimateTokens(step.part.body)).toBeLessThanOrEqual(2_000);
+    }
+    const sectionLabels = new Set(
+      steps.filter((s) => s.stage === "section").map((s) => s.part.label),
+    );
+    expect(sectionLabels).toEqual(new Set(["transcript", "section_notes"]));
+    expect(steps.at(-1)).toMatchObject({
+      stage: "final",
+      part: { label: "section_notes" },
+    });
+  });
+
+  it("fails instead of looping when section notes do not get shorter", async () => {
+    const transcript = Array.from({ length: 50 }, () =>
+      "word ".repeat(100),
+    ).join("\n");
+    const writer: NoteWriter = {
+      maxInputTokens: 500,
+      writeSection: async (_input, part) => part.body,
+      writeNotes: async () => ({ title: null, notes: "unused" }),
+    };
+    await expect(
+      generateNoteContent(writer, { ...input, transcript }),
+    ).rejects.toThrow("no shorter");
+  });
+
+  it("caps personal notes so they cannot crowd out the transcript", async () => {
+    const { model, requests } = recordingModel(4_096, () =>
+      JSON.stringify({ title: "T", notes: "N" }),
+    );
+    await generateNoteContent(model, {
+      ...input,
+      transcript: "[00:00] Speaker 1: Hello.",
+      personalNotes: "mine ".repeat(10_000),
+    });
+    expect(
+      estimateTokens(`${requests[0].system}\n${requests[0].prompt}`),
+    ).toBeLessThan(4_096);
+  });
+
   it("uses the server's single-pass budget for large contexts", () => {
     expect(getSinglePassBudgetTokens(131_072)).toBe(64_000);
     expect(getSinglePassBudgetTokens(4_096)).toBeLessThan(3_000);
+  });
+});
+
+describe("splitLinesForMap", () => {
+  it("splits a pasted transcript without line breaks", () => {
+    const text = "word ".repeat(10_000).trim();
+    const windows = splitLinesForMap(text, 1_000);
+    expect(windows.length).toBeGreaterThan(10);
+    for (const window of windows) {
+      expect(estimateTokens(window)).toBeLessThanOrEqual(1_000);
+    }
+    expect(windows.join(" ")).toBe(text);
+  });
+
+  it("cuts a single word longer than a window", () => {
+    const windows = splitLinesForMap("é".repeat(2_500), 1_000);
+    expect(windows.map((w) => w.length)).toEqual([999, 999, 502]);
+  });
+
+  it("keeps lines whole when they fit", () => {
+    expect(splitLinesForMap("a\nb\nc", 2)).toEqual(["a", "b", "c"]);
+    expect(splitLinesForMap("a\nb\nc", 4)).toEqual(["a\nb", "c"]);
   });
 });
 
