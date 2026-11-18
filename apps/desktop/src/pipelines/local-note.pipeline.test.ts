@@ -12,7 +12,10 @@ import {
   LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
   NOTE_CHUNK_MAX_MS,
 } from "../utils/note-audio.utils";
-import { EMPTY_TRANSCRIPT_NOTES } from "../utils/note-prompt.utils";
+import {
+  createPromptNoteWriter,
+  EMPTY_TRANSCRIPT_NOTES,
+} from "../utils/note-prompt.utils";
 import type { NoteAskEvent } from "./base-note.pipeline";
 import { FakeNoteStore } from "./fake-note-store.test-utils";
 import {
@@ -143,8 +146,10 @@ const createHarness = ({
       }
       return `chunk ${transcribeCalls.length}`;
     },
-    getGenerationModel: () =>
-      generatorEnabled ? { generator, contextTokens: 32_768 } : null,
+    getNoteWriter: () =>
+      generatorEnabled
+        ? createPromptNoteWriter({ generator, contextTokens: 32_768 })
+        : null,
     getChatGenerator: () => (generatorEnabled ? generator : null),
     getCloudNotesUserId: () => null,
     getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
@@ -251,42 +256,56 @@ describe("LocalNotePipeline.process", () => {
     expect(harness.deleted).toEqual(["/audio/seg-0.wav"]);
   });
 
-  it("records a generation failure and never deletes the audio", async () => {
-    const harness = createHarness();
-    harness.pipeline = new LocalNotePipeline({
-      store: harness.store,
-      repo: { searchNotes: async () => [] },
-      audio: {
-        getEnvelope: async () => [0.1],
-        readSamples: async () => new Float32Array(16),
-        deleteSegmentAudio: async (path) => {
-          harness.deleted.push(path);
-        },
-      },
-      transcribe: async () => "hello",
-      getGenerationModel: () => ({
-        generator: {
-          generateText: async () => {
-            throw new Error("model unavailable");
+  it.each([
+    [new Error("model unavailable"), "generation_failed", undefined],
+    [
+      new NoteProcessingError("audio_quota_exceeded", "over the allowance", {
+        availableAt: "2026-12-01T00:00:00.000Z",
+      }),
+      "audio_quota_exceeded",
+      { availableAt: "2026-12-01T00:00:00.000Z" },
+    ],
+  ])(
+    "records a generation failure (%s) and never deletes the audio",
+    async (failure, code, details) => {
+      const harness = createHarness();
+      harness.pipeline = new LocalNotePipeline({
+        store: harness.store,
+        repo: { searchNotes: async () => [] },
+        audio: {
+          getEnvelope: async () => [0.1],
+          readSamples: async () => new Float32Array(16),
+          deleteSegmentAudio: async (path) => {
+            harness.deleted.push(path);
           },
         },
-        contextTokens: 32_768,
-      }),
-      getChatGenerator: () => null,
-      getCloudNotesUserId: () => null,
-      getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
-      getProcessedWith: () => PROCESSED_ON_DEVICE,
-      getTranscriptionWordBudget: () => wordBudget,
-      yieldToDictation: async () => {},
-    });
-    await harness.pipeline.process("note");
+        transcribe: async () => "hello",
+        getNoteWriter: () => ({
+          maxInputTokens: 30_000,
+          writeSection: async () => {
+            throw failure;
+          },
+          writeNotes: async () => {
+            throw failure;
+          },
+        }),
+        getChatGenerator: () => null,
+        getCloudNotesUserId: () => null,
+        getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
+        getProcessedWith: () => PROCESSED_ON_DEVICE,
+        getTranscriptionWordBudget: () => wordBudget,
+        yieldToDictation: async () => {},
+      });
+      await harness.pipeline.process("note");
 
-    const note = harness.store.getNote("note")!;
-    expect(note.status).toBe("failed");
-    expect(note.error?.code).toBe("generation_failed");
-    expect(harness.store.getSegments("note")[0].status).toBe("transcribed");
-    expect(harness.deleted).toEqual([]);
-  });
+      const note = harness.store.getNote("note")!;
+      expect(note.status).toBe("failed");
+      expect(note.error?.code).toBe(code);
+      expect(note.error?.details).toEqual(details);
+      expect(harness.store.getSegments("note")[0].status).toBe("transcribed");
+      expect(harness.deleted).toEqual([]);
+    },
+  );
 
   it("ends ready with the transcript only when post-processing is off", async () => {
     const harness = createHarness();
@@ -317,7 +336,7 @@ describe("LocalNotePipeline.process", () => {
       transcribe: async () => {
         throw new Error("silence must not be sent");
       },
-      getGenerationModel: () => {
+      getNoteWriter: () => {
         throw new Error("nothing to generate from");
       },
       getChatGenerator: () => null,
@@ -359,7 +378,7 @@ describe("LocalNotePipeline.process", () => {
         await harness.store.deleteNote("note");
         return "late";
       },
-      getGenerationModel: () => null,
+      getNoteWriter: () => null,
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => DEFAULT_NOTE_CHUNK_LIMITS,
@@ -579,15 +598,16 @@ describe("LocalNotePipeline and dictation", () => {
         events.push("transcribe");
         return "words";
       },
-      getGenerationModel: () => ({
-        contextTokens: 32_768,
-        generator: {
-          generateText: async () => {
-            events.push("generate");
-            return { text: '{"title":"T","notes":"N"}' };
+      getNoteWriter: () =>
+        createPromptNoteWriter({
+          contextTokens: 32_768,
+          generator: {
+            generateText: async () => {
+              events.push("generate");
+              return { text: '{"title":"T","notes":"N"}' };
+            },
           },
-        },
-      }),
+        }),
       getChatGenerator: () => null,
       getCloudNotesUserId: () => null,
       getChunkLimits: () => LOCAL_WHISPER_NOTE_CHUNK_LIMITS,
