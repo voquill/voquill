@@ -3,6 +3,8 @@ import {
   CEREBRAS_MODELS,
   CHEAPER_INFERENCE_BASE_URL,
   CHEAPER_INFERENCE_MODELS,
+  ATLAS_CLOUD_BASE_URL,
+  ATLAS_CLOUD_MODELS,
   CLAUDE_MODELS,
   DEEPGRAM_TRANSCRIPTION_MODELS,
   DEEPSEEK_MODELS,
@@ -222,6 +224,35 @@ export class CheaperInferenceModelProviderRepo extends BaseModelProviderRepo {
   ): Promise<string[]> {
     const fetched = await this.fetchModels(options);
     return fetched.length > 0 ? fetched : [...CHEAPER_INFERENCE_MODELS];
+  }
+
+  async getTranscriptionModels(): Promise<string[]> {
+    return [];
+  }
+}
+
+export class AtlasCloudModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return false;
+  }
+
+  private async fetchModels(options: FetchModelsOptions): Promise<string[]> {
+    if (!options.apiKey) return [];
+    return fetchOpenAICompatibleModels(
+      `${ATLAS_CLOUD_BASE_URL}/models`,
+      options.apiKey,
+    );
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    const fetched = await this.fetchModels(options);
+    return fetched.length > 0 ? fetched : [...ATLAS_CLOUD_MODELS];
   }
 
   async getTranscriptionModels(): Promise<string[]> {

@@ -3,6 +3,7 @@ import type { ApiKeyProvider } from "@voquill/types";
 import {
   aldeaTestIntegration,
   assemblyaiTestIntegration,
+  atlascloudTestIntegration,
   azureOpenAITestIntegration,
   azureTestIntegration,
   cerebrasTestIntegration,
@@ -103,6 +104,11 @@ const STANDARD_PROVIDERS: Record<
     displayName: "Cheaper Inference",
     testFn: (args) =>
       cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
+  atlascloud: {
+    displayName: "Atlas Cloud",
+    testFn: (args) =>
+      atlascloudTestIntegration({ ...args, customFetch: tauriFetch }),
   },
 };
 

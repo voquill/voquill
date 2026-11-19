@@ -28,6 +28,7 @@ import {
   BaseGenerateTextRepo,
   CerebrasGenerateTextRepo,
   CheaperInferenceGenerateTextRepo,
+  AtlasCloudGenerateTextRepo,
   ClaudeGenerateTextRepo,
   CloudGenerateTextRepo,
   DeepseekGenerateTextRepo,
@@ -52,6 +53,7 @@ import {
   BaseModelProviderRepo,
   CerebrasModelProviderRepo,
   CheaperInferenceModelProviderRepo,
+  AtlasCloudModelProviderRepo,
   ClaudeModelProviderRepo,
   DeepgramModelProviderRepo,
   DeepSeekModelProviderRepo,
@@ -355,6 +357,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "atlascloud") {
+      getLogger().verbose("Configuring Atlas Cloud repo for generate text");
+      repo = new AtlasCloudGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else {
       getLogger().verbose("Configuring Groq repo for generate text");
       repo = new GroqGenerateTextRepo(
@@ -519,6 +527,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "atlascloud":
+      return new AtlasCloudModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
