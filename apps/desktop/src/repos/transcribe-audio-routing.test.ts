@@ -42,6 +42,7 @@ describe("getTranscribeAudioRepo", () => {
     "openrouter",
     "cerebras",
     "cheaperinference",
+    "openllm",
   ] as const)("refuses %s too", (provider) => {
     expect(getTranscribeAudioRepo(apiPrefs(provider)).repo).toBeInstanceOf(
       UnsupportedTranscribeAudioRepo,
