@@ -20,6 +20,7 @@ export const API_KEY_PROVIDERS = [
   "xai",
   "cheaperinference",
   "openllm",
+  "atlascloud",
 ] as const;
 export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number];
 
