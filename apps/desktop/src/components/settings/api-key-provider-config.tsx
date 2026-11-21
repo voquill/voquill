@@ -7,6 +7,7 @@ import {
   azureTestIntegration,
   cerebrasTestIntegration,
   cheaperinferenceTestIntegration,
+  cheapaimodelTestIntegration,
   claudeTestIntegration,
   deepgramTestIntegration,
   deepseekTestIntegration,
@@ -103,6 +104,11 @@ const STANDARD_PROVIDERS: Record<
     displayName: "Cheaper Inference",
     testFn: (args) =>
       cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
+  cheapaimodel: {
+    displayName: "cheapaimodel",
+    testFn: (args) =>
+      cheapaimodelTestIntegration({ ...args, customFetch: tauriFetch }),
   },
 };
 
