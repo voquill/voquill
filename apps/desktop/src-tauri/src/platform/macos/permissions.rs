@@ -144,10 +144,12 @@ fn permission_state_from_authorization(status: i64) -> Result<PermissionState, S
     }
 }
 
-fn open_microphone_privacy_settings() -> bool {
+/// Opens the Privacy & Security pane at `anchor` in System Settings.
+fn open_privacy_settings(anchor: &str) -> bool {
     unsafe {
-        let url_string = NSString::alloc(nil)
-            .init_str("x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone");
+        let url_string = NSString::alloc(nil).init_str(&format!(
+            "x-apple.systempreferences:com.apple.preference.security?{anchor}"
+        ));
         let url: id = msg_send![class!(NSURL), URLWithString: url_string];
         if url == nil {
             let _: () = msg_send![url_string, release];
@@ -163,23 +165,21 @@ fn open_microphone_privacy_settings() -> bool {
     }
 }
 
+fn open_microphone_privacy_settings() -> bool {
+    open_privacy_settings("Privacy_Microphone")
+}
+
 fn open_accessibility_privacy_settings() -> bool {
-    unsafe {
-        let url_string = NSString::alloc(nil).init_str(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        );
-        let url: id = msg_send![class!(NSURL), URLWithString: url_string];
-        if url == nil {
-            let _: () = msg_send![url_string, release];
-            return false;
-        }
+    open_privacy_settings("Privacy_Accessibility")
+}
 
-        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        let success: bool = msg_send![workspace, openURL: url];
-
-        let _: () = msg_send![url_string, release];
-
-        success
+/// The "Screen & System Audio Recording" pane, where "System Audio Recording
+/// Only" lists the apps allowed to use a process tap.
+pub(crate) fn open_system_audio_privacy_settings() -> Result<(), String> {
+    if open_privacy_settings("Privacy_AudioCapture") {
+        Ok(())
+    } else {
+        Err("Could not open System Settings".to_string())
     }
 }
 

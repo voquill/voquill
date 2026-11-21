@@ -15,6 +15,7 @@ import {
   geminiTestIntegration,
   groqTestIntegration,
   openaiCompatibleTestIntegration,
+  openllmTestIntegration,
   openaiTestIntegration,
   openrouterTestIntegration,
   xaiTestIntegration,
@@ -104,6 +105,11 @@ const STANDARD_PROVIDERS: Record<
     displayName: "Cheaper Inference",
     testFn: (args) =>
       cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
+  openllm: {
+    displayName: "OpenLLM",
+    testFn: (args) =>
+      openllmTestIntegration({ ...args, customFetch: tauriFetch }),
   },
   atlascloud: {
     displayName: "Atlas Cloud",

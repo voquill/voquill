@@ -3,7 +3,9 @@ import { Suspense, useEffect } from "react";
 import { ErrorBoundary } from "react-error-boundary";
 import { Outlet, useLocation } from "react-router-dom";
 import { trackPageView } from "../../utils/analytics.utils";
+import { AnimationSideEffects } from "./AnimationSideEffects";
 import { LoadingApp } from "./LoadingApp";
+import { NotesSideEffects } from "../notes/NotesSideEffects";
 import { OverlaySyncSideEffects } from "./OverlaySyncSideEffects";
 import { PermissionSideEffects } from "./PermissionSideEffects";
 import { RootConfetti } from "./RootConfetti";
@@ -29,10 +31,14 @@ export default function Root() {
 
   return (
     <>
+      <AnimationSideEffects />
       <PermissionSideEffects />
       <RootConfetti />
       <RootSideEffects />
       <OverlaySyncSideEffects />
+      {/* Meeting supervision (capture progress, rollover, limits, tray) runs
+          for the app's lifetime, not only while the dashboard is shown. */}
+      <NotesSideEffects />
       <RootDialogs />
       <ErrorBoundary FallbackComponent={ErrorFallback}>
         <Suspense fallback={<LoadingApp />}>

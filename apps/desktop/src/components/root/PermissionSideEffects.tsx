@@ -1,14 +1,21 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useIntervalAsync } from "../../hooks/helper.hooks";
-import { produceAppState } from "../../store";
+import { produceAppState, useAppStore } from "../../store";
 import {
   checkAccessibilityPermission,
   checkMicrophonePermission,
+  isPermissionAuthorized,
+  REQUIRED_PERMISSIONS,
 } from "../../utils/permission.utils";
 
 export const PermissionSideEffects = () => {
   const mountedRef = useRef(true);
   const checkingRef = useRef(false);
+  const windowFocused = useAppStore((state) => state.windowFocused);
+  const allAuthorized = useAppStore((state) =>
+    REQUIRED_PERMISSIONS.every((kind) =>
+      isPermissionAuthorized(state.permissions[kind]?.state),
+    ),
+  );
 
   const refreshPermissions = useCallback(async () => {
     if (checkingRef.current) {
@@ -41,13 +48,24 @@ export const PermissionSideEffects = () => {
 
   useEffect(() => {
     mountedRef.current = true;
-    void refreshPermissions();
     return () => {
       mountedRef.current = false;
     };
-  }, [refreshPermissions]);
+  }, []);
 
-  useIntervalAsync(1000, refreshPermissions, [refreshPermissions]);
+  useEffect(() => {
+    if (windowFocused) {
+      void refreshPermissions();
+    }
+  }, [windowFocused, refreshPermissions]);
+
+  useEffect(() => {
+    if (allAuthorized) {
+      return;
+    }
+    const interval = setInterval(() => void refreshPermissions(), 1000);
+    return () => clearInterval(interval);
+  }, [allAuthorized, refreshPermissions]);
 
   return null;
 };

@@ -36,7 +36,7 @@ fn main() {
         }
     }
 
-    let (sender, receiver) = std::sync::mpsc::channel();
+    let (sender, receiver) = async_channel::unbounded();
     ipc::start_stdin_reader(sender);
     pill::run(receiver);
 }

@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:app/actions/remote_actions.dart';
+import 'package:app/model/local_note_model.dart';
 import 'package:app/store/store.dart';
 import 'package:app/utils/channel_utils.dart';
 import 'package:app/widgets/common/asset_video_player.dart';
@@ -58,6 +60,14 @@ class _KeyboardPermissionsState extends State<KeyboardPermissions>
       context,
       (s) => s.hasKeyboardPermission,
     );
+    // Picture in picture switches the audio session to playback, which
+    // would interrupt a meeting or remote dictation using the microphone.
+    final isMicrophoneInUse =
+        useAppStore().select(
+          context,
+          (s) => s.notes.liveNote?.phase == LocalNotePhase.recording,
+        ) ||
+        isRemoteMicrophoneOpen;
 
     final button = isEnabled
         ? widget.nextButton
@@ -84,7 +94,7 @@ class _KeyboardPermissionsState extends State<KeyboardPermissions>
             asset: Platform.isIOS
                 ? 'assets/keyboard-perms-ios.mp4'
                 : 'assets/keyboard-perms-android.mp4',
-            pip: true,
+            pip: !isMicrophoneInUse,
           ),
         ),
       ),

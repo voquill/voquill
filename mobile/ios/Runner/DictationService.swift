@@ -2,12 +2,13 @@ import AVFoundation
 import ActivityKit
 import Foundation
 
-class DictationService {
+class DictationService: MicrophoneConsumer {
     static let shared = DictationService()
 
-    private var audioEngine: AVAudioEngine?
+    private let microphone = MicrophoneEngine.shared
     private var audioFile: AVAudioFile?
-    private var audioFormat: AVAudioFormat?
+    private var fileConverter: PCMConverter?
+    private let fileLock = NSLock()
     private var isRecording = false
     private var activityRef: Any?
 
@@ -23,10 +24,6 @@ class DictationService {
     private var idleTimeoutTimer: Timer?
 
     private init() {}
-
-    var isRunning: Bool {
-        return audioEngine?.isRunning == true
-    }
 
     var currentPhase: DictationPhase {
         let raw = defaults?.string(forKey: DictationConstants.phaseKey) ?? "idle"
@@ -44,8 +41,7 @@ class DictationService {
         defaults?.set(now, forKey: DictationConstants.startedAtKey)
 
         do {
-            try configureAudioSession()
-            try startAudioEngine()
+            try microphone.attach(self)
         } catch {
             NSLog("[VoquillApp] Audio setup failed: %@", error.localizedDescription)
             stopDictation()
@@ -57,7 +53,6 @@ class DictationService {
 
         startLiveActivity()
         startHeartbeat()
-        startInterruptionObserver()
         setPhase(.recording)
         startRecordingTimeout()
 
@@ -77,7 +72,7 @@ class DictationService {
         NSLog("[VoquillApp] pauseRecording")
         stopRecordingTimeout()
         isRecording = false
-        audioFile = nil
+        setAudioFile(nil)
         defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
         setPhase(.active)
         updateLiveActivity(phase: "active")
@@ -89,17 +84,12 @@ class DictationService {
         NSLog("[VoquillApp] resumeRecording")
         stopIdleTimeout()
 
-        if audioEngine?.isRunning != true {
-            NSLog("[VoquillApp] Audio engine not running, attempting restart")
+        if !microphone.isRunning || !microphone.isAttached(self) {
+            NSLog("[VoquillApp] Microphone not running, attempting restart")
             do {
-                try configureAudioSession()
-                if audioEngine == nil {
-                    try startAudioEngine()
-                } else {
-                    try audioEngine?.start()
-                }
+                try microphone.attach(self)
             } catch {
-                NSLog("[VoquillApp] Failed to restart audio engine: %@", error.localizedDescription)
+                NSLog("[VoquillApp] Failed to restart microphone: %@", error.localizedDescription)
                 stopDictation()
                 return
             }
@@ -121,45 +111,32 @@ class DictationService {
         stopRecordingTimeout()
         stopIdleTimeout()
         isRecording = false
-        stopAudioEngine()
+        setAudioFile(nil)
+        defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
+        microphone.detach(self)
         stopHeartbeat()
-        stopInterruptionObserver()
         setPhase(.idle)
 
         endLiveActivity()
         endAllLiveActivities()
     }
 
-    private func configureAudioSession() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.mixWithOthers, .defaultToSpeaker, .allowBluetoothA2DP])
-        if #available(iOS 13.0, *) {
-            try session.setAllowHapticsAndSystemSoundsDuringRecording(true)
-        }
-        try session.setActive(true)
-    }
-
-    private func startAudioEngine() throws {
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        self.audioFormat = format
-
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self = self else { return }
-            if self.isRecording {
-                try? self.audioFile?.write(from: buffer)
-                self.updateAudioLevel(buffer: buffer)
+    func microphone(didReceive buffer: AVAudioPCMBuffer) {
+        guard isRecording else { return }
+        fileLock.lock()
+        if let file = audioFile, let converted = fileConverter?.convert(buffer) {
+            do {
+                try file.write(from: converted)
+            } catch {
+                NSLog("[VoquillApp] Dictation audio write failed: %@", error.localizedDescription)
             }
         }
-
-        engine.prepare()
-        try engine.start()
-        self.audioEngine = engine
+        fileLock.unlock()
+        updateAudioLevel(buffer: buffer)
     }
 
     private func createNewAudioFile() {
-        guard let format = audioFormat,
+        guard let format = microphone.inputFormat,
               let audioUrl = DictationConstants.audioFileURL else { return }
         try? FileManager.default.removeItem(at: audioUrl)
 
@@ -169,7 +146,16 @@ class DictationService {
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
         ]
-        audioFile = try? AVAudioFile(forWriting: audioUrl, settings: settings)
+        setAudioFile(try? AVAudioFile(forWriting: audioUrl, settings: settings))
+    }
+
+    /// The tap thread writes the file, so swaps happen under `fileLock`; the
+    /// converter pins buffers to the format the file was opened with.
+    private func setAudioFile(_ file: AVAudioFile?) {
+        fileLock.lock()
+        audioFile = file
+        fileConverter = file.map { PCMConverter(outputFormat: $0.processingFormat) }
+        fileLock.unlock()
     }
 
     private func updateAudioLevel(buffer: AVAudioPCMBuffer) {
@@ -186,16 +172,6 @@ class DictationService {
         let normalized = max(0, min(1, (db + 50) / 50))
 
         defaults?.set(normalized, forKey: DictationConstants.audioLevelKey)
-    }
-
-    private func stopAudioEngine() {
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine?.stop()
-        audioEngine = nil
-        audioFile = nil
-        audioFormat = nil
-        defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 
     private func startRecordingTimeout() {
@@ -271,71 +247,30 @@ class DictationService {
         defaults?.set(Date().timeIntervalSince1970, forKey: DictationConstants.heartbeatKey)
     }
 
-    // MARK: - Audio Session Interruption
+    // MARK: - Microphone Interruption
 
-    private func startInterruptionObserver() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAudioInterruption(_:)),
-            name: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance()
-        )
+    func microphoneInterruptionBegan() {
+        NSLog("[VoquillApp] Dictation interrupted (e.g. phone call)")
+        stopRecordingTimeout()
+        stopIdleTimeout()
+        isRecording = false
+        setAudioFile(nil)
+        defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
     }
 
-    private func stopInterruptionObserver() {
-        NotificationCenter.default.removeObserver(
-            self,
-            name: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance()
-        )
-    }
-
-    @objc private func handleAudioInterruption(_ notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+    func microphoneInterruptionEnded(resumed: Bool) {
+        guard resumed else {
+            NSLog("[VoquillApp] Dictation interruption ended, not resumable — stopping")
+            stopDictation()
             return
         }
-
-        switch type {
-        case .began:
-            NSLog("[VoquillApp] Audio session interrupted (e.g. phone call)")
-            stopRecordingTimeout()
-            stopIdleTimeout()
-            isRecording = false
-            audioFile = nil
-            defaults?.set(Float(0), forKey: DictationConstants.audioLevelKey)
-
-        case .ended:
-            let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-
-            if options.contains(.shouldResume) {
-                NSLog("[VoquillApp] Audio interruption ended, resuming")
-                do {
-                    try AVAudioSession.sharedInstance().setActive(true)
-                    if audioEngine?.isRunning != true {
-                        try audioEngine?.start()
-                    }
-                    if currentPhase == .recording || currentPhase == .active {
-                        createNewAudioFile()
-                        isRecording = true
-                        setPhase(.recording)
-                        updateLiveActivity(phase: "recording")
-                        startRecordingTimeout()
-                    }
-                } catch {
-                    NSLog("[VoquillApp] Failed to resume after interruption: %@", error.localizedDescription)
-                    stopDictation()
-                }
-            } else {
-                NSLog("[VoquillApp] Audio interruption ended, not resumable — stopping")
-                stopDictation()
-            }
-
-        @unknown default:
-            break
-        }
+        guard currentPhase == .recording || currentPhase == .active else { return }
+        NSLog("[VoquillApp] Dictation interruption ended, resuming")
+        createNewAudioFile()
+        isRecording = true
+        setPhase(.recording)
+        updateLiveActivity(phase: "recording")
+        startRecordingTimeout()
     }
 
     // MARK: - Live Activity

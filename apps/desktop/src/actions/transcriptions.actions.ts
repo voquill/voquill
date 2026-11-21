@@ -1,12 +1,17 @@
 import { Transcription } from "@voquill/types";
-import { getRec } from "@voquill/utilities";
+import { countWords, getRec } from "@voquill/utilities";
 import { getTranscriptionRepo } from "../repos";
 import { getAppState, produceAppState } from "../store";
 import {
   applyReplacements,
   applySymbolConversions,
 } from "../utils/string.utils";
-import { postProcessTranscript, transcribeAudio } from "./transcribe.actions";
+import {
+  FAILED_TRANSCRIPT_PLACEHOLDER,
+  postProcessTranscript,
+  transcribeAudio,
+} from "./transcribe.actions";
+import { addWordsToCurrentUser } from "./user.actions";
 
 export const openTranscriptionDetailsDialog = (transcriptionId: string) => {
   produceAppState((draft) => {
@@ -53,7 +58,24 @@ type RetranscribeTranscriptionParams = {
   languageCode?: string | null;
 };
 
-export const retranscribeTranscription = async ({
+const retranscribingIds = new Set<string>();
+
+/** Concurrent retranscribes of the same entry (e.g. a double click) run once. */
+export const retranscribeTranscription = async (
+  params: RetranscribeTranscriptionParams,
+): Promise<void> => {
+  if (retranscribingIds.has(params.transcriptionId)) {
+    return;
+  }
+  retranscribingIds.add(params.transcriptionId);
+  try {
+    await runRetranscribe(params);
+  } finally {
+    retranscribingIds.delete(params.transcriptionId);
+  }
+};
+
+const runRetranscribe = async ({
   transcriptionId,
   toneId,
   languageCode,
@@ -129,4 +151,43 @@ export const retranscribeTranscription = async ({
   produceAppState((draft) => {
     draft.transcriptionById[transcriptionId] = updated;
   });
+
+  // A failed dictation never counted its words, so its first successful retry does.
+  if (transcription.transcript === FAILED_TRANSCRIPT_PLACEHOLDER) {
+    await addWordsToCurrentUser(countWords(finalTranscript)).catch((error) =>
+      console.error("Failed to update usage metrics", error),
+    );
+  }
+};
+
+const LATEST_TRANSCRIPT_PAGE_SIZE = 20;
+const LATEST_TRANSCRIPT_MAX_SCANNED = 200;
+
+/** The newest History transcript that is not a failed dictation. */
+export const findLatestSuccessfulTranscript = async (): Promise<
+  string | null
+> => {
+  const repo = getTranscriptionRepo();
+  for (
+    let offset = 0;
+    offset < LATEST_TRANSCRIPT_MAX_SCANNED;
+    offset += LATEST_TRANSCRIPT_PAGE_SIZE
+  ) {
+    const page = await repo.listTranscriptions({
+      limit: LATEST_TRANSCRIPT_PAGE_SIZE,
+      offset,
+    });
+    const found = page.find(
+      (entry) =>
+        entry.transcript.trim() &&
+        entry.transcript !== FAILED_TRANSCRIPT_PLACEHOLDER,
+    );
+    if (found) {
+      return found.transcript;
+    }
+    if (page.length < LATEST_TRANSCRIPT_PAGE_SIZE) {
+      return null;
+    }
+  }
+  return null;
 };

@@ -15,7 +15,6 @@ import type {
 import dayjs from "dayjs";
 import { detectLocale, matchSupportedLocale } from "../i18n";
 import { DEFAULT_LOCALE, type Locale } from "../i18n/config";
-import { createTranscriptionSession } from "../sessions";
 import type { AppState } from "../state/app.state";
 import { applyAiPreferences } from "./ai.utils";
 import { registerUsers } from "./app.utils";
@@ -318,12 +317,6 @@ export const getTranscriptionPrefs = (state: AppState): TranscriptionPrefs => {
   };
 };
 
-export const getTranscriptionSupportsStreaming = (state: AppState): boolean => {
-  const prefs = getTranscriptionPrefs(state);
-  const session = createTranscriptionSession(prefs);
-  return session.supportsStreaming();
-};
-
 type BaseGenerativePrefs = {
   warnings: string[];
 };
@@ -469,6 +462,16 @@ export const getEffectivePillVisibility = (
   }
 
   return "persistent";
+};
+
+export const getPillVisibilityToApply = (
+  state: AppState,
+): DictationPillVisibility => {
+  if (state.isPillFlashShowing) {
+    return "persistent";
+  }
+
+  return getEffectivePillVisibility(state.userPrefs?.dictationPillVisibility);
 };
 
 const SILENCE_PADDING_MS = 1500;

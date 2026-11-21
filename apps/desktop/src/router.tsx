@@ -1,12 +1,13 @@
 import { createBrowserRouter, Outlet, RouterProvider } from "react-router-dom";
 import AppsPage from "./components/apps/AppsPage.tsx";
-import ChatsPage from "./components/chats/ChatsPage.tsx";
 import { PageLayout } from "./components/common/PageLayout.tsx";
 import DashboardPage from "./components/dashboard/DashboardPage.tsx";
 import DictionaryPage from "./components/dictionary/DictionaryPage.tsx";
 import EnterpriseRoutingPage from "./components/enterprise/EnterpriseRoutingPage.tsx";
 import HomePage from "./components/home/HomePage.tsx";
 import LoginPage from "./components/login/LoginPage.tsx";
+import NotePage from "./components/notes/NotePage.tsx";
+import NotesPage from "./components/notes/NotesPage.tsx";
 import OnboardingPage from "./components/onboarding/OnboardingPage.tsx";
 import ErrorBoundary from "./components/root/ErrorBoundary.tsx";
 import { AppHeader } from "./components/root/Header.tsx";
@@ -121,8 +122,12 @@ export const browserRouter = createBrowserRouter([
                 element: <StylingPage />,
               },
               {
-                path: "chats",
-                element: <ChatsPage />,
+                path: "notes",
+                element: <NotesPage />,
+              },
+              {
+                path: "notes/:noteId",
+                element: <NotePage />,
               },
               {
                 path: "apps",

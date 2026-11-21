@@ -1,6 +1,6 @@
 import type { Nullable } from "@voquill/types";
 import { invoke } from "@tauri-apps/api/core";
-import { createConversation, sendChatMessage } from "../actions/chat.actions";
+import { sendChatMessage } from "../actions/chat.actions";
 import { showToast } from "../actions/toast.actions";
 import { getIntl } from "../i18n";
 import { getAppState, produceAppState } from "../store";
@@ -57,18 +57,10 @@ export class AgentStrategy extends BaseStrategy {
 
   async onBeforeStart(): Promise<void> {
     if (!this.conversationId) {
-      const now = new Date().toISOString();
-      const conversation = await createConversation({
-        id: createId(),
-        title: getIntl().formatMessage({
-          defaultMessage: "New conversation",
-        }),
-        createdAt: now,
-        updatedAt: now,
-      });
-      this.conversationId = conversation.id;
+      const conversationId = createId();
+      this.conversationId = conversationId;
       produceAppState((draft) => {
-        draft.pillConversationId = conversation.id;
+        draft.pillConversationId = conversationId;
       });
     }
   }
@@ -79,8 +71,9 @@ export class AgentStrategy extends BaseStrategy {
 
   async handleTranscript({
     rawTranscript,
+    signal,
   }: HandleTranscriptParams): Promise<HandleTranscriptResult> {
-    if (!this.conversationId) {
+    if (!this.conversationId || signal.aborted) {
       return {
         shouldContinue: false,
         transcript: null,

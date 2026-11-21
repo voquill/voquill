@@ -9,6 +9,7 @@ name = "voquill-gtk-pill"
 path = "src/main.rs"
 
 [dependencies]
+async-channel = "2"
 gtk = "0.18"
 gtk-layer-shell = { version = "0.8", features = ["v0_5", "v0_6"] }
 serde = { version = "1", features = ["derive"] }

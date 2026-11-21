@@ -3,6 +3,7 @@ import { getAppState } from "../store";
 import { AudioSamples } from "../types/audio.types";
 import { isLinux, isMacOS, isWindows11 } from "./env.utils";
 import { getMyUser } from "./user.utils";
+import { getIsMeetingCapturing } from "./note.utils";
 
 const writeString = (view: DataView, offset: number, text: string) => {
   for (let index = 0; index < text.length; index += 1) {
@@ -69,7 +70,7 @@ export function tryPlayAudioChime(clip: AudioClip): void {
   const user = getMyUser(state);
   const playInteractionChime = user?.playInteractionChime ?? true;
 
-  if (!playInteractionChime) {
+  if (!playInteractionChime || getIsMeetingCapturing(state)) {
     return;
   }
 

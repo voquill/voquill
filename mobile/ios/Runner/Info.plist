@@ -53,7 +53,7 @@
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Voquill needs access to your microphone to transcribe your voice.</string>
+	<string>Voquill needs access to your microphone to transcribe your voice and record meeting notes.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

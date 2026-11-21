@@ -22,25 +22,60 @@ const TRAY_ICON_UPDATE: &[u8] = include_bytes!(concat!(
     "/icons/tray/update-win-linux-36.png"
 ));
 
+#[cfg(target_os = "macos")]
+const TRAY_ICON_RECORDING: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/icons/tray/recording-macos-36.png"
+));
+
+#[cfg(not(target_os = "macos"))]
+const TRAY_ICON_RECORDING: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/icons/tray/recording-win-linux-36.png"
+));
+
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum MenuIconVariant {
     Default,
     Update,
+    /// A meeting is being recorded: the logo with a dot in its corner.
+    Recording,
 }
 
 use crate::domain::EVT_REGISTER_CURRENT_APP;
-use std::sync::OnceLock;
-use tauri::menu::{MenuItem, Submenu};
+use std::sync::{Mutex, OnceLock};
+use tauri::menu::{Menu, MenuItem, Submenu};
 
 pub const EVT_INSTALL_UPDATE: &str = "tray-install-update";
 pub const EVT_COPY_LAST_TRANSCRIPT: &str = "tray-copy-last-transcript";
 pub const EVT_SET_DICTATION_LANGUAGE: &str = "tray-set-dictation-language";
+pub const EVT_START_MEETING: &str = "tray-start-meeting";
+pub const EVT_STOP_MEETING: &str = "tray-stop-meeting";
 
 const TRAY_LANGUAGE_ITEM_PREFIX: &str = "tray-lang:";
 
 static UPDATE_MENU_ITEM: OnceLock<MenuItem<tauri::Wry>> = OnceLock::new();
 static LANGUAGE_SUBMENU: OnceLock<Submenu<tauri::Wry>> = OnceLock::new();
+static MEETING_SECTION: OnceLock<MeetingSection> = OnceLock::new();
+
+/// The meeting items between the last two separators. `shown` tracks which of
+/// `items` are currently in the menu, in order.
+struct MeetingSection {
+    menu: Menu<tauri::Wry>,
+    items: [MenuItem<tauri::Wry>; 3],
+    shown: Mutex<[bool; 3]>,
+}
+
+/// Labels for the meeting section; an item is shown only when its label is
+/// set. The status line is always disabled.
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayMeetingMenu {
+    pub start_label: Option<String>,
+    pub status_label: Option<String>,
+    pub stop_label: Option<String>,
+}
 
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -77,6 +112,16 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     )?;
     let language_submenu = SubmenuBuilder::new(app, "Language").build()?;
     let _ = LANGUAGE_SUBMENU.set(language_submenu.clone());
+    let start_meeting_item = MenuItem::with_id(
+        app,
+        "start-meeting",
+        "Start Meeting Notes",
+        true,
+        None::<&str>,
+    )?;
+    let meeting_status_item = MenuItem::with_id(app, "meeting-status", "", false, None::<&str>)?;
+    let stop_meeting_item =
+        MenuItem::with_id(app, "stop-meeting", "Stop Meeting", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit-voquill", "Quit Voquill", true, None::<&str>)?;
 
     let menu = MenuBuilder::new(app)
@@ -86,8 +131,15 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .item(&language_submenu)
         .item(&update_item)
         .separator()
+        .item(&start_meeting_item)
+        .separator()
         .item(&quit_item)
         .build()?;
+    let _ = MEETING_SECTION.set(MeetingSection {
+        menu: menu.clone(),
+        items: [start_meeting_item, meeting_status_item, stop_meeting_item],
+        shown: Mutex::new([true, false, false]),
+    });
 
     let tray_icon_image = Image::from_bytes(TRAY_ICON_DEFAULT)?;
 
@@ -117,6 +169,16 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
                     log::error!("Failed to emit register-current-app event: {err}");
                 }
             }
+            "start-meeting" => {
+                if let Err(err) = app.emit(EVT_START_MEETING, ()) {
+                    log::error!("Failed to emit start-meeting event: {err}");
+                }
+            }
+            "stop-meeting" => {
+                if let Err(err) = app.emit(EVT_STOP_MEETING, ()) {
+                    log::error!("Failed to emit stop-meeting event: {err}");
+                }
+            }
             "quit-voquill" => app.exit(0),
             other if other.starts_with(TRAY_LANGUAGE_ITEM_PREFIX) => {
                 let code = other[TRAY_LANGUAGE_ITEM_PREFIX.len()..].to_string();
@@ -137,15 +199,20 @@ pub fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-pub fn set_menu_icon(app: &tauri::AppHandle, variant: MenuIconVariant) -> Result<(), String> {
+/// Shows `variant` in the tray, and enables the install item when an update
+/// is available (the recording icon takes the update icon's place meanwhile).
+pub fn set_menu_icon(
+    app: &tauri::AppHandle,
+    variant: MenuIconVariant,
+    update_available: bool,
+) -> Result<(), String> {
     use tauri::image::Image;
     use tauri::tray::TrayIconId;
-
-    let is_update = matches!(variant, MenuIconVariant::Update);
 
     let bytes = match variant {
         MenuIconVariant::Default => TRAY_ICON_DEFAULT,
         MenuIconVariant::Update => TRAY_ICON_UPDATE,
+        MenuIconVariant::Recording => TRAY_ICON_RECORDING,
     };
 
     let tray = app
@@ -156,7 +223,7 @@ pub fn set_menu_icon(app: &tauri::AppHandle, variant: MenuIconVariant) -> Result
     tray.set_icon(Some(image)).map_err(|err| err.to_string())?;
 
     if let Some(update_item) = UPDATE_MENU_ITEM.get() {
-        let _ = update_item.set_enabled(is_update);
+        let _ = update_item.set_enabled(update_available);
     }
 
     #[cfg(target_os = "macos")]
@@ -197,5 +264,58 @@ pub fn set_tray_language_menu(
         submenu.append(&check_item).map_err(|err| err.to_string())?;
     }
 
+    Ok(())
+}
+
+pub fn set_tray_meeting_menu(_app: &tauri::AppHandle, menu: TrayMeetingMenu) -> Result<(), String> {
+    let section = MEETING_SECTION
+        .get()
+        .ok_or("Meeting menu section not initialized")?;
+    let labels = [menu.start_label, menu.status_label, menu.stop_label];
+    let desired = [
+        labels[0].is_some(),
+        labels[1].is_some(),
+        labels[2].is_some(),
+    ];
+
+    for (item, label) in section.items.iter().zip(&labels) {
+        if let Some(label) = label {
+            item.set_text(label).map_err(|err| err.to_string())?;
+        }
+    }
+
+    let mut shown = section
+        .shown
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *shown == desired {
+        return Ok(());
+    }
+
+    for (item, is_shown) in section.items.iter().zip(shown.iter()) {
+        if *is_shown {
+            section.menu.remove(item).map_err(|err| err.to_string())?;
+        }
+    }
+
+    // The section sits right before the final separator and the quit item.
+    let section_start = section
+        .menu
+        .items()
+        .map_err(|err| err.to_string())?
+        .len()
+        .saturating_sub(2);
+    let mut position = section_start;
+    for (item, show) in section.items.iter().zip(desired) {
+        if show {
+            section
+                .menu
+                .insert(item, position)
+                .map_err(|err| err.to_string())?;
+            position += 1;
+        }
+    }
+
+    *shown = desired;
     Ok(())
 }

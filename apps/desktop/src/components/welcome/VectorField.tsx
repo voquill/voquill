@@ -2,12 +2,16 @@ import { useTheme } from "@mui/material";
 import chroma from "chroma-js";
 import { useEffect, useMemo, useRef } from "react";
 import { useWindowSize } from "../../hooks/helper.hooks";
+import { useAppStore } from "../../store";
+import { getAreAnimationsSuspended } from "../../utils/animation.utils";
 import { Perlin } from "../../utils/math.utils";
 
 export const VectorField = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { width, height } = useWindowSize();
   const theme = useTheme();
+  const suspended = useAppStore(getAreAnimationsSuspended);
+  const timeRef = useRef(0);
 
   // Initialize Perlin noise generator
   const perlin = useMemo(() => new Perlin(), []);
@@ -39,10 +43,10 @@ export const VectorField = () => {
     const colorScale = chroma.scale(["#3B82F6", "#FF9F1C"]).mode("rgb");
 
     let animationFrameId: number;
-    let time = 0;
 
     const render = () => {
-      time += TIME_SPEED;
+      timeRef.current += TIME_SPEED;
+      const time = timeRef.current;
 
       // Clear canvas
       ctx.clearRect(0, 0, width, height);
@@ -98,7 +102,9 @@ export const VectorField = () => {
         }
       }
 
-      animationFrameId = requestAnimationFrame(render);
+      if (!suspended) {
+        animationFrameId = requestAnimationFrame(render);
+      }
     };
 
     render();
@@ -106,7 +112,7 @@ export const VectorField = () => {
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [width, height, perlin, theme]);
+  }, [width, height, perlin, theme, suspended]);
 
   return (
     <canvas

@@ -14,6 +14,10 @@ interface ImportMetaEnv {
   readonly VITE_STRIPE_PUBLIC_KEY?: string;
   readonly VITE_NEW_SERVER_URL?: string;
   readonly VITE_ENTERPRISE_ROUTING_URL_OVERRIDE?: string;
+  /** Development builds only: meeting segment roll length, in minutes. */
+  readonly VITE_NOTES_DEV_SEGMENT_ROLL_MINUTES?: string;
+  /** Development builds only: meeting length limit, in minutes. */
+  readonly VITE_NOTES_DEV_RECORDING_LIMIT_MINUTES?: string;
 }
 
 interface ImportMeta {

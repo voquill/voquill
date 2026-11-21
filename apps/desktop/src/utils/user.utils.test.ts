@@ -1,10 +1,16 @@
-import type { Hotkey, User, UserPreferences } from "@voquill/types";
+import type {
+  DictationPillVisibility,
+  Hotkey,
+  User,
+  UserPreferences,
+} from "@voquill/types";
 import { describe, expect, it } from "vitest";
 import { AppState, INITIAL_APP_STATE } from "../state/app.state";
 import {
   getActiveDictationLanguage,
   getConfiguredDictationLanguageCodes,
   getMyDictationLanguage,
+  getPillVisibilityToApply,
   LOCAL_USER_ID,
 } from "./user.utils";
 
@@ -168,5 +174,38 @@ describe("getMyDictationLanguage", () => {
       activeDictationLanguage: "primary",
     });
     expect(getMyDictationLanguage(state)).toBe("keyboard-layout");
+  });
+});
+
+describe("getPillVisibilityToApply", () => {
+  const makePillState = (
+    dictationPillVisibility: DictationPillVisibility,
+    isPillFlashShowing: boolean,
+  ): AppState => ({
+    ...INITIAL_APP_STATE,
+    userPrefs: { dictationPillVisibility } as UserPreferences,
+    isPillFlashShowing,
+  });
+
+  it.each<DictationPillVisibility>(["hidden", "while_active", "persistent"])(
+    "follows the %s setting when no flash message is showing",
+    (visibility) => {
+      expect(getPillVisibilityToApply(makePillState(visibility, false))).toBe(
+        visibility,
+      );
+    },
+  );
+
+  it.each<DictationPillVisibility>(["hidden", "while_active", "persistent"])(
+    "keeps the pill visible over the %s setting while a flash message is showing",
+    (visibility) => {
+      expect(getPillVisibilityToApply(makePillState(visibility, true))).toBe(
+        "persistent",
+      );
+    },
+  );
+
+  it("defaults to persistent when preferences are not loaded", () => {
+    expect(getPillVisibilityToApply(INITIAL_APP_STATE)).toBe("persistent");
   });
 });

@@ -7,13 +7,13 @@ use std::thread;
 use std::time::Duration;
 
 /// How long the output stream stays open after the last chime. An open stream
-/// keeps CoreAudio running (and Bluetooth headphones awake) even while silent,
-/// so on macOS it is released when idle. 30s covers most dictations, so the
-/// stop chime usually reuses the start chime's stream. Other platforms keep the
-/// stream open for the life of the app; releasing it is untested there.
-#[cfg(target_os = "macos")]
+/// keeps the audio server running (and Bluetooth headphones awake) even while
+/// silent, so it is released when idle. 30s covers most dictations, so the
+/// stop chime usually reuses the start chime's stream. Windows keeps the stream
+/// open for the life of the app; releasing it is untested there.
+#[cfg(not(target_os = "windows"))]
 const OUTPUT_IDLE_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
 const OUTPUT_IDLE_TIMEOUT: Option<Duration> = None;
 
 /// Silence played ahead of a chime on a freshly opened stream. Bluetooth

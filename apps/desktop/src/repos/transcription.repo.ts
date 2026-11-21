@@ -108,6 +108,13 @@ const fromLocalTranscription = (
   remoteDeviceId: transcription.remoteDeviceId ?? undefined,
 });
 
+/** A transcription that still has stored audio. */
+export type TranscriptionAudioEntry = {
+  id: string;
+  transcript: string;
+  durationMs: number | null;
+};
+
 export abstract class BaseTranscriptionRepo extends BaseRepo {
   abstract createTranscription(
     transcription: Transcription,
@@ -120,7 +127,9 @@ export abstract class BaseTranscriptionRepo extends BaseRepo {
     transcription: Transcription,
   ): Promise<Transcription>;
   abstract loadTranscriptionAudio(id: string): Promise<TranscriptionAudioData>;
-  abstract purgeStaleAudio(): Promise<string[]>;
+  abstract listAudioEntries(): Promise<TranscriptionAudioEntry[]>;
+  /** Deletes stored audio beyond the most recent entries, never touching `keepIds`. */
+  abstract purgeStaleAudio(keepIds: string[]): Promise<string[]>;
 }
 
 export class LocalTranscriptionRepo extends BaseTranscriptionRepo {
@@ -165,9 +174,16 @@ export class LocalTranscriptionRepo extends BaseTranscriptionRepo {
     return invoke<TranscriptionAudioData>("transcription_audio_load", { id });
   }
 
-  async purgeStaleAudio(): Promise<string[]> {
+  async listAudioEntries(): Promise<TranscriptionAudioEntry[]> {
+    return await invoke<TranscriptionAudioEntry[]>(
+      "transcription_audio_entries",
+    );
+  }
+
+  async purgeStaleAudio(keepIds: string[]): Promise<string[]> {
     const purged = await invoke<string[] | undefined>(
       "purge_stale_transcription_audio",
+      { keepIds },
     );
     return Array.isArray(purged) ? purged : [];
   }
