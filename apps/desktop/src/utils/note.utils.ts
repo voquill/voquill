@@ -217,6 +217,28 @@ export const formatNoteDuration = (ms: number): string => {
     : `${minutes}:${pad(seconds)}`;
 };
 
+export type NoteFileExtension = "md" | "txt";
+
+const UNSAFE_FILE_NAME_CHARS = /[<>:"/\\|?*]|\p{Cc}/gu;
+const MAX_FILE_NAME_TITLE_LENGTH = 100;
+
+const toFileNamePart = (text: string): string =>
+  text.replace(UNSAFE_FILE_NAME_CHARS, " ").replace(/\s+/g, " ").trim();
+
+/** A name for a note's file that Windows, macOS and Linux all accept. */
+export const getNoteFileName = (
+  title: string,
+  label: string,
+  extension: NoteFileExtension,
+): string => {
+  const name = toFileNamePart(title)
+    .replace(/^\.+/, "")
+    .slice(0, MAX_FILE_NAME_TITLE_LENGTH)
+    .trim();
+  const parts = [name, toFileNamePart(label)].filter(Boolean);
+  return `${parts.join(" - ")}.${extension}`;
+};
+
 export const getDefaultNoteTitle = (
   source: NoteSource,
   createdAt: string,

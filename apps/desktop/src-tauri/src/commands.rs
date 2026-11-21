@@ -953,6 +953,32 @@ pub async fn export_diagnostics(app: AppHandle, diagnostics_info: String) -> Res
 
 #[tauri::command]
 #[specta::specta]
+pub async fn save_text_file(
+    app: AppHandle,
+    file_name: String,
+    contents: String,
+) -> Result<bool, String> {
+    let mut dialog = rfd::AsyncFileDialog::new().set_file_name(&file_name);
+    if let Ok(download_dir) = app.path().download_dir() {
+        dialog = dialog.set_directory(download_dir);
+    }
+
+    let save_path = match dialog.save_file().await {
+        Some(handle) => handle.path().to_path_buf(),
+        None => return Ok(false),
+    };
+
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::write(&save_path, contents).map_err(|err| format!("Failed to save file: {err}"))
+    })
+    .await
+    .map_err(|err| err.to_string())??;
+
+    Ok(true)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub async fn term_create(
     term: crate::domain::Term,
     database: State<'_, crate::state::OptionKeyDatabase>,

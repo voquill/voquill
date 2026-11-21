@@ -359,6 +359,14 @@ async exportDiagnostics(diagnosticsInfo: string) : Promise<Result<boolean, strin
     else return { status: "error", error: e  as any };
 }
 },
+async saveTextFile(fileName: string, contents: string) : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("save_text_file", { fileName, contents }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async termCreate(term: Term) : Promise<Result<Term, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("term_create", { term }) };

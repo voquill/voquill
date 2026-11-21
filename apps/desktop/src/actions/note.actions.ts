@@ -11,7 +11,7 @@ import {
   selectNoteStorage,
 } from "../pipelines";
 import { NotesApiError } from "../repos/cloud-note.repo";
-import { getMeetingAudioRepo } from "../repos";
+import { getFileRepo, getMeetingAudioRepo } from "../repos";
 import type {
   MeetingCaptureStatus,
   ResumableUploadProgress,
@@ -26,6 +26,8 @@ import {
   getCloudNotesUserId,
   getDefaultNoteTitle,
   getNoteElapsedMs,
+  getNoteFileName,
+  type NoteFileExtension,
 } from "../utils/note.utils";
 import {
   canTransitionNote,
@@ -814,6 +816,18 @@ export const setNotePersonalNotes = (noteId: string, personalNotes: string) =>
     },
     SAVE_EDITS_DEBOUNCE_MS,
   );
+
+/** Saves text from a note as a file. Resolves to false if the user cancels. */
+export const downloadNoteText = (
+  note: Note,
+  label: string,
+  extension: NoteFileExtension,
+  contents: string,
+): Promise<boolean> =>
+  getFileRepo().saveTextFile({
+    fileName: getNoteFileName(note.title, label, extension),
+    contents,
+  });
 
 /** Sends every cloud edit made offline once the connection is back. */
 export const saveUnsyncedNoteEdits = () => {

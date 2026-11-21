@@ -23,6 +23,7 @@ import {
   EnterpriseConfigRepo,
 } from "./config.repo";
 import { EnterpriseRepo } from "./enterprise.repo";
+import { BaseFileRepo, LocalFileRepo } from "./file.repo";
 import {
   AzureOpenAIGenerateTextRepo,
   BaseGenerateTextRepo,
@@ -193,6 +194,10 @@ export const getMeetingAudioRepo = (): MeetingAudioRepo => {
 
 export const getAppTargetRepo = (): BaseAppTargetRepo => {
   return new LocalAppTargetRepo();
+};
+
+export const getFileRepo = (): BaseFileRepo => {
+  return new LocalFileRepo();
 };
 
 export const getTermRepo = (): BaseTermRepo => {
