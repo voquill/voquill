@@ -8,6 +8,7 @@ import {
   DEEPSEEK_MODELS,
   GEMINI_GENERATE_TEXT_MODELS,
   GEMINI_TRANSCRIPTION_MODELS,
+  litellmFetchModels,
   XAI_TRANSCRIPTION_MODELS,
 } from "@voquill/voice-ai";
 import { fetch } from "@tauri-apps/plugin-http";
@@ -226,6 +227,34 @@ export class CheaperInferenceModelProviderRepo extends BaseModelProviderRepo {
 
   async getTranscriptionModels(): Promise<string[]> {
     return [];
+  }
+}
+
+export class LiteLLMModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return true;
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    return (await this.fetchModels(options)).generative;
+  }
+
+  async getTranscriptionModels(options: FetchModelsOptions): Promise<string[]> {
+    return (await this.fetchModels(options)).transcription;
+  }
+
+  private fetchModels(options: FetchModelsOptions) {
+    return litellmFetchModels({
+      baseUrl: options.baseUrl,
+      apiKey: options.apiKey,
+      customFetch: fetch,
+    });
   }
 }
 

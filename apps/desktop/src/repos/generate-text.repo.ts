@@ -219,12 +219,19 @@ export class OpenAICompatibleGenerateTextRepo extends BaseGenerateTextRepo {
   private baseUrl: string;
   private model: string;
   private apiKey: string;
+  private providerName: string;
 
-  constructor(url: string, model: string, apiKey?: string) {
+  constructor(
+    url: string,
+    model: string,
+    apiKey?: string,
+    providerName = "OpenAI Compatible",
+  ) {
     super();
     this.baseUrl = url;
     this.model = model;
     this.apiKey = apiKey || "";
+    this.providerName = providerName;
   }
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
@@ -242,7 +249,7 @@ export class OpenAICompatibleGenerateTextRepo extends BaseGenerateTextRepo {
       text: response.text,
       metadata: {
         postProcessingMode: "api",
-        inferenceDevice: "API • OpenAI Compatible",
+        inferenceDevice: `API • ${this.providerName}`,
       },
     };
   }

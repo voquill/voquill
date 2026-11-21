@@ -13,6 +13,8 @@ import {
   elevenlabsTestIntegration,
   geminiTestIntegration,
   groqTestIntegration,
+  LITELLM_DEFAULT_URL,
+  litellmTestIntegration,
   openaiCompatibleTestIntegration,
   openaiTestIntegration,
   openrouterTestIntegration,
@@ -176,6 +178,29 @@ function getOpenAICompatibleConfig(
   };
 }
 
+const LITELLM_CONFIG: ProviderFormConfig = {
+  displayName: "LiteLLM",
+  defaultBaseUrl: LITELLM_DEFAULT_URL,
+  fields: [
+    {
+      key: "baseUrl",
+      label: <FormattedMessage defaultMessage="Base URL" />,
+      placeholder: LITELLM_DEFAULT_URL,
+      helperText: (
+        <FormattedMessage defaultMessage="Leave empty to use the default URL" />
+      ),
+      required: false,
+    },
+    OPTIONAL_API_KEY_FIELD,
+  ],
+  testIntegration: (apiKey) =>
+    litellmTestIntegration({
+      baseUrl: apiKey.baseUrl || LITELLM_DEFAULT_URL,
+      apiKey: apiKey.keyFull || undefined,
+      customFetch: tauriFetch,
+    }),
+};
+
 const SPEACHES_CONFIG: ProviderFormConfig = {
   displayName: "Speaches",
   defaultBaseUrl: "http://localhost:8000",
@@ -275,5 +300,6 @@ export function getProviderFormConfig(
   if (provider === "openai-compatible")
     return getOpenAICompatibleConfig(context);
   if (provider === "speaches") return SPEACHES_CONFIG;
+  if (provider === "litellm") return LITELLM_CONFIG;
   return buildStandardConfig(provider);
 }
