@@ -5,6 +5,7 @@ import {
   estimateNoteWords,
   getLocalNoteProcessedWith,
   getLocalNoteTranscriptionWordBudget,
+  getNoteFileName,
   selectNoteStorage,
 } from "./note.utils";
 
@@ -123,5 +124,38 @@ describe("local note processing routes (B1)", () => {
       }),
     ).toBeNull();
     expect(estimateNoteWords(60 * 60_000)).toBe(9_000);
+  });
+});
+
+describe("getNoteFileName", () => {
+  it("names the file after the note and the view", () => {
+    expect(getNoteFileName("Weekly sync", "AI notes", "md")).toBe(
+      "Weekly sync - AI notes.md",
+    );
+  });
+
+  it("drops characters a file system rejects", () => {
+    expect(getNoteFileName("Q3/Q4: plan?", "Transcript", "txt")).toBe(
+      "Q3 Q4 plan - Transcript.txt",
+    );
+    expect(getNoteFileName("Meeting, 2:05\u202fPM\n", "My notes", "md")).toBe(
+      "Meeting, 2 05 PM - My notes.md",
+    );
+  });
+
+  it("never starts with a dot", () => {
+    expect(getNoteFileName("..hidden", "AI notes", "md")).toBe(
+      "hidden - AI notes.md",
+    );
+  });
+
+  it("shortens a long title and keeps the view", () => {
+    expect(getNoteFileName("a".repeat(400), "AI notes", "md")).toBe(
+      `${"a".repeat(100)} - AI notes.md`,
+    );
+  });
+
+  it("falls back to the view when the title has no usable characters", () => {
+    expect(getNoteFileName("???", "Transcript", "txt")).toBe("Transcript.txt");
   });
 });

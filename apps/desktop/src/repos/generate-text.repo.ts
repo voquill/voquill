@@ -27,6 +27,8 @@ import {
   GenerateTextModel,
   groqGenerateTextResponse,
   groqStreamChat,
+  OPENLLM_BASE_URL,
+  OPENLLM_DEFAULT_MODEL,
   OpenAIGenerateTextModel,
   openaiGenerateTextResponse,
   openaiStreamChat,
@@ -525,6 +527,47 @@ export class CheaperInferenceGenerateTextRepo extends BaseGenerateTextRepo {
     yield* openaiStreamChat({
       apiKey: this.apiKey,
       baseUrl: CHEAPER_INFERENCE_BASE_URL,
+      model: this.model,
+      input,
+      customFetch: tauriFetch,
+    });
+  }
+}
+
+export class OpenLLMGenerateTextRepo extends BaseGenerateTextRepo {
+  private apiKey: string;
+  private model: string;
+
+  constructor(apiKey: string, model: string | null) {
+    super();
+    this.apiKey = apiKey;
+    this.model = model ?? OPENLLM_DEFAULT_MODEL;
+  }
+
+  async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
+    const response = await openaiGenerateTextResponse({
+      baseUrl: OPENLLM_BASE_URL,
+      apiKey: this.apiKey,
+      model: this.model,
+      prompt: input.prompt,
+      system: input.system ?? undefined,
+      jsonResponse: input.jsonResponse,
+      customFetch: tauriFetch,
+    });
+
+    return {
+      text: response.text,
+      metadata: {
+        postProcessingMode: "api",
+        inferenceDevice: "API • OpenLLM",
+      },
+    };
+  }
+
+  async *streamChat(input: LlmChatInput): AsyncGenerator<LlmStreamEvent> {
+    yield* openaiStreamChat({
+      apiKey: this.apiKey,
+      baseUrl: OPENLLM_BASE_URL,
       model: this.model,
       input,
       customFetch: tauriFetch,

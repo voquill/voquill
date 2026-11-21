@@ -6,6 +6,7 @@ import CloudOutlined from "@mui/icons-material/CloudOutlined";
 import ContentCopyRounded from "@mui/icons-material/ContentCopyRounded";
 import DeleteOutlineRounded from "@mui/icons-material/DeleteOutlineRounded";
 import ErrorOutlineRounded from "@mui/icons-material/ErrorOutlineRounded";
+import FileDownloadOutlined from "@mui/icons-material/FileDownloadOutlined";
 import FileUploadOutlined from "@mui/icons-material/FileUploadOutlined";
 import GraphicEqRounded from "@mui/icons-material/GraphicEqRounded";
 import HourglassEmptyRounded from "@mui/icons-material/HourglassEmptyRounded";
@@ -40,6 +41,7 @@ import { FormattedMessage, useIntl } from "react-intl";
 import { useNavigate, useParams } from "react-router-dom";
 import { showErrorSnackbar, showSnackbar } from "../../actions/app.actions";
 import {
+  downloadNoteText,
   dropNoteSegment,
   loadNoteSegments,
   NoteRecordingBlockedError,
@@ -80,6 +82,7 @@ import {
   getLocalNoteProcessedWith,
   getLocalNoteTranscribesWithVoquill,
   getNoteHasTranscript,
+  type NoteFileExtension,
 } from "../../utils/note.utils";
 import { getProviderFormConfig } from "../settings/api-key-provider-config";
 import { ConfirmDialog } from "../common/ConfirmDialog";
@@ -901,6 +904,40 @@ const AiNotesView = ({ note }: { note: Note }) => {
   );
 };
 
+type NoteViewContent = {
+  getText: () => string;
+  extension: NoteFileExtension;
+  copy: { label: string; copiedMessage: string } | null;
+  downloadLabel: string;
+};
+
+const NoteViewAction = ({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+}) => (
+  <Button
+    variant="text"
+    size="small"
+    startIcon={icon}
+    onClick={onClick}
+    sx={{
+      flexShrink: 0,
+      px: 1.5,
+      color: "text.secondary",
+      typography: "body2",
+      fontWeight: 500,
+      "& .MuiButton-startIcon > .MuiSvgIcon-root": { fontSize: 18 },
+    }}
+  >
+    {label}
+  </Button>
+);
+
 const NoteViews = ({
   note,
   scrollParent,
@@ -924,27 +961,6 @@ const NoteViews = ({
     }
   };
 
-  const copyAction =
-    view === "notes" && note.generatedNotes
-      ? {
-          label: intl.formatMessage({ defaultMessage: "Copy notes" }),
-          run: () =>
-            copy(
-              note.generatedNotes ?? "",
-              intl.formatMessage({ defaultMessage: "Notes copied" }),
-            ),
-        }
-      : view === "transcript" && hasTranscript
-        ? {
-            label: intl.formatMessage({ defaultMessage: "Copy transcript" }),
-            run: () =>
-              copy(
-                getTranscriptCopyText(),
-                intl.formatMessage({ defaultMessage: "Transcript copied" }),
-              ),
-          }
-        : null;
-
   const options: { value: NoteView; label: string }[] = [
     {
       value: "notes",
@@ -959,11 +975,80 @@ const NoteViews = ({
       label: intl.formatMessage({ defaultMessage: "Transcript" }),
     },
   ];
+  const viewLabel = options.find((o) => o.value === view)?.label ?? "";
+
+  const content: NoteViewContent | null =
+    view === "notes" && note.generatedNotes
+      ? {
+          getText: () => note.generatedNotes ?? "",
+          extension: "md",
+          copy: {
+            label: intl.formatMessage({ defaultMessage: "Copy notes" }),
+            copiedMessage: intl.formatMessage({
+              defaultMessage: "Notes copied",
+            }),
+          },
+          downloadLabel: intl.formatMessage({
+            defaultMessage: "Download notes",
+          }),
+        }
+      : view === "mine" && note.personalNotes.trim()
+        ? {
+            getText: () => note.personalNotes,
+            extension: "md",
+            copy: null,
+            downloadLabel: intl.formatMessage({
+              defaultMessage: "Download my notes",
+            }),
+          }
+        : view === "transcript" && hasTranscript
+          ? {
+              getText: getTranscriptCopyText,
+              extension: "txt",
+              copy: {
+                label: intl.formatMessage({
+                  defaultMessage: "Copy transcript",
+                }),
+                copiedMessage: intl.formatMessage({
+                  defaultMessage: "Transcript copied",
+                }),
+              },
+              downloadLabel: intl.formatMessage({
+                defaultMessage: "Download transcript",
+              }),
+            }
+          : null;
+
+  const copyText = content?.copy;
+
+  const download = async ({ extension, getText }: NoteViewContent) => {
+    try {
+      const saved = await downloadNoteText(
+        note,
+        viewLabel,
+        extension,
+        getText(),
+      );
+      if (saved) {
+        showSnackbar(intl.formatMessage({ defaultMessage: "File saved" }), {
+          mode: "success",
+        });
+      }
+    } catch (error) {
+      showErrorSnackbar(error);
+    }
+  };
 
   return (
     <Stack spacing={2.5} useFlexGap>
-      <Stack direction="row" alignItems="center" spacing={1} sx={{ mr: -1.5 }}>
-        <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={1}
+        useFlexGap
+        sx={{ mr: -1.5, flexWrap: "wrap" }}
+      >
+        <Box sx={{ flex: "1 0 auto", maxWidth: "100%" }}>
           <SegmentedControl<NoteView>
             value={view}
             options={options}
@@ -971,29 +1056,24 @@ const NoteViews = ({
             ariaLabel={intl.formatMessage({ defaultMessage: "Note view" })}
           />
         </Box>
-        {copyAction && (
-          <Button
-            variant="text"
-            size="small"
-            startIcon={<ContentCopyRounded />}
-            onClick={copyAction.run}
-            sx={{
-              flexShrink: 0,
-              px: 1.5,
-              color: "text.secondary",
-              typography: "body2",
-              fontWeight: 500,
-              "& .MuiButton-startIcon > .MuiSvgIcon-root": { fontSize: 18 },
-            }}
-          >
-            {copyAction.label}
-          </Button>
+        {content && (
+          <Stack direction="row" spacing={1} sx={{ ml: "auto" }}>
+            {copyText && (
+              <NoteViewAction
+                icon={<ContentCopyRounded />}
+                label={copyText.label}
+                onClick={() => copy(content.getText(), copyText.copiedMessage)}
+              />
+            )}
+            <NoteViewAction
+              icon={<FileDownloadOutlined />}
+              label={content.downloadLabel}
+              onClick={() => download(content)}
+            />
+          </Stack>
         )}
       </Stack>
-      <Box
-        role="region"
-        aria-label={options.find((o) => o.value === view)?.label}
-      >
+      <Box role="region" aria-label={viewLabel}>
         {view === "notes" && <AiNotesView note={note} />}
         {view === "mine" && (
           <PersonalNotesEditor noteId={note.id} minRows={12} />

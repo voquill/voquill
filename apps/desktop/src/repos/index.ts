@@ -23,6 +23,7 @@ import {
   EnterpriseConfigRepo,
 } from "./config.repo";
 import { EnterpriseRepo } from "./enterprise.repo";
+import { BaseFileRepo, LocalFileRepo } from "./file.repo";
 import {
   AzureOpenAIGenerateTextRepo,
   BaseGenerateTextRepo,
@@ -37,6 +38,7 @@ import {
   OllamaGenerateTextRepo,
   OpenAICompatibleGenerateTextRepo,
   OpenAIGenerateTextRepo,
+  OpenLLMGenerateTextRepo,
   OpenRouterGenerateTextRepo,
 } from "./generate-text.repo";
 import { BaseHotkeyRepo, LocalHotkeyRepo } from "./hotkey.repo";
@@ -61,6 +63,7 @@ import {
   OllamaModelProviderRepo,
   OpenAICompatibleModelProviderRepo,
   OpenAIModelProviderRepo,
+  OpenLLMModelProviderRepo,
   OpenRouterModelProviderRepo,
   SpeachesModelProviderRepo,
   XaiModelProviderRepo,
@@ -191,6 +194,10 @@ export const getMeetingAudioRepo = (): MeetingAudioRepo => {
 
 export const getAppTargetRepo = (): BaseAppTargetRepo => {
   return new LocalAppTargetRepo();
+};
+
+export const getFileRepo = (): BaseFileRepo => {
+  return new LocalFileRepo();
 };
 
 export const getTermRepo = (): BaseTermRepo => {
@@ -352,6 +359,12 @@ const getGenTextRepoInternal = ({
         "Configuring Cheaper Inference repo for generate text",
       );
       repo = new CheaperInferenceGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
+    } else if (prefs.provider === "openllm") {
+      getLogger().verbose("Configuring OpenLLM repo for generate text");
+      repo = new OpenLLMGenerateTextRepo(
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
@@ -519,6 +532,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "openllm":
+      return new OpenLLMModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":

@@ -50,6 +50,7 @@ fn main() {
         transcription_audio_entries,
         export_transcription,
         export_diagnostics,
+        save_text_file,
         term_create,
         term_update,
         term_list,
