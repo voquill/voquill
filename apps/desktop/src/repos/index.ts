@@ -37,6 +37,7 @@ import {
   OllamaGenerateTextRepo,
   OpenAICompatibleGenerateTextRepo,
   OpenAIGenerateTextRepo,
+  OpenLLMGenerateTextRepo,
   OpenRouterGenerateTextRepo,
 } from "./generate-text.repo";
 import { BaseHotkeyRepo, LocalHotkeyRepo } from "./hotkey.repo";
@@ -61,6 +62,7 @@ import {
   OllamaModelProviderRepo,
   OpenAICompatibleModelProviderRepo,
   OpenAIModelProviderRepo,
+  OpenLLMModelProviderRepo,
   OpenRouterModelProviderRepo,
   SpeachesModelProviderRepo,
   XaiModelProviderRepo,
@@ -355,6 +357,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "openllm") {
+      getLogger().verbose("Configuring OpenLLM repo for generate text");
+      repo = new OpenLLMGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else {
       getLogger().verbose("Configuring Groq repo for generate text");
       repo = new GroqGenerateTextRepo(
@@ -519,6 +527,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
+    case "openllm":
+      return new OpenLLMModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
