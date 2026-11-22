@@ -87,6 +87,7 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
         .plugin(
             tauri_plugin_window_state::Builder::new()
                 .with_state_flags(StateFlags::SIZE | StateFlags::POSITION)
+                .with_denylist(&[crate::commands::REMINDER_WINDOW_LABEL])
                 .build(),
         )
         .on_window_event(|window, event| {
@@ -159,6 +160,8 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
 
             app.manage(crate::state::OptionKeyDatabase::new(pool.clone()));
             app.manage(crate::state::GoogleOAuthState::from_env());
+            app.manage(crate::state::CalendarTokenState::default());
+            app.manage(crate::state::WakeTimerState::default());
             app.manage(crate::state::OverlayState::new());
             app.manage(crate::state::RemoteReceiverState::new());
             app.manage(crate::state::FloatingWindowState::new());
@@ -363,6 +366,14 @@ pub fn build() -> tauri::Builder<tauri::Wry> {
             crate::commands::meeting_audio_file_size,
             crate::commands::resumable_upload,
             crate::commands::resumable_upload_cancel,
+            crate::commands::calendar_account_link_google,
+            crate::commands::calendar_account_list,
+            crate::commands::calendar_account_set_linked_calendars,
+            crate::commands::calendar_account_unlink,
+            crate::commands::calendar_account_access_token,
+            crate::commands::reminder_window_show,
+            crate::commands::reminder_window_close,
+            crate::commands::wake_timer_set,
         ])
 }
 

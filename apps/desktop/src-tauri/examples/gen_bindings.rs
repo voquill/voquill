@@ -134,6 +134,14 @@ fn main() {
         meeting_audio_file_size,
         resumable_upload,
         resumable_upload_cancel,
+        calendar_account_link_google,
+        calendar_account_list,
+        calendar_account_set_linked_calendars,
+        calendar_account_unlink,
+        calendar_account_access_token,
+        reminder_window_show,
+        reminder_window_close,
+        wake_timer_set,
     ]);
 
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

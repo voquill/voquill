@@ -3,6 +3,7 @@ import type { ApiKeyProvider } from "@voquill/types";
 import { Nullable } from "@voquill/types";
 import { getRec } from "@voquill/utilities";
 import { getAppState } from "../store";
+import type { CalendarProvider } from "../types/calendar.types";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
 import { getLogger } from "../utils/log.utils";
 import { OLLAMA_DEFAULT_URL } from "../utils/ollama.utils";
@@ -17,6 +18,11 @@ import {
 import { BaseApiKeyRepo, LocalApiKeyRepo } from "./api-key.repo";
 import { BaseAppTargetRepo, LocalAppTargetRepo } from "./app-target.repo";
 import { BaseAuthRepo, CloudAuthRepo, EnterpriseAuthRepo } from "./auth.repo";
+import {
+  BaseCalendarAccountRepo,
+  LocalCalendarAccountRepo,
+} from "./calendar-account.repo";
+import { BaseCalendarRepo, GoogleCalendarRepo } from "./calendar.repo";
 import {
   BaseConfigRepo,
   CloudConfigRepo,
@@ -215,6 +221,19 @@ export const getHotkeyRepo = (): BaseHotkeyRepo => {
 
 export const getApiKeyRepo = (): BaseApiKeyRepo => {
   return new LocalApiKeyRepo();
+};
+
+export const getCalendarAccountRepo = (): BaseCalendarAccountRepo => {
+  return new LocalCalendarAccountRepo();
+};
+
+export const getCalendarRepo = (
+  provider: CalendarProvider,
+): BaseCalendarRepo => {
+  switch (provider) {
+    case "google":
+      return new GoogleCalendarRepo();
+  }
 };
 
 export const getToneRepo = (): BaseToneRepo => {

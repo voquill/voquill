@@ -1,5 +1,6 @@
 pub mod api_key;
 pub mod app_target;
+pub mod calendar_account;
 pub mod hotkey;
 pub mod keyboard;
 pub mod monitor;
@@ -16,6 +17,7 @@ pub mod user;
 
 pub use api_key::{ApiKey, ApiKeyCreateRequest, ApiKeyUpdateRequest, ApiKeyView};
 pub use app_target::{AppTarget, EVT_REGISTER_CURRENT_APP};
+pub use calendar_account::{CalendarAccount, CalendarAccountView};
 pub use hotkey::{CompositorBinding, Hotkey};
 pub use keyboard::{KeysHeldPayload, EVT_KEYS_HELD};
 pub use monitor::{MonitorAtCursor, OverlayAnchor, ScreenVisibleArea};

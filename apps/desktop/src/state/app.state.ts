@@ -25,11 +25,13 @@ import {
   UserPreferences,
 } from "@voquill/types";
 import { AuthUser } from "../types/auth.types";
+import { CalendarAccount } from "../types/calendar.types";
 import { Vector2 } from "../types/math.types";
 import { OverlayPhase } from "../types/overlay.types";
 import { PermissionMap } from "../types/permission.types";
 
 import { AgentRunState } from "./agent.state";
+import { CalendarState, INITIAL_CALENDAR_STATE } from "./calendar.state";
 import { DictionaryState, INITIAL_DICTIONARY_STATE } from "./dictionary.state";
 import { INITIAL_LOCAL_STATE, LocalState } from "./local.state";
 import { INITIAL_LOGIN_STATE, LoginState } from "./login.state";
@@ -110,6 +112,7 @@ export type AppState = {
   noteSegmentsByNoteId: Record<string, NoteSegment[]>;
   hotkeyById: Record<string, Hotkey>;
   apiKeyById: Record<string, ApiKey>;
+  calendarAccountById: Record<string, CalendarAccount>;
   toneById: Record<string, Tone>;
   chatMessageById: Record<string, ChatMessage>;
   chatMessageIdsByConversationId: Record<string, string[]>;
@@ -128,6 +131,7 @@ export type AppState = {
   onboarding: OnboardingState;
   transcriptions: TranscriptionsState;
   notes: NotesState;
+  calendar: CalendarState;
   dictionary: DictionaryState;
   tones: TonesState;
   toneEditor: ToneEditorState;
@@ -175,6 +179,7 @@ export const INITIAL_APP_STATE: AppState = {
   noteSegmentsByNoteId: {},
   priceValueByKey: {},
   apiKeyById: {},
+  calendarAccountById: {},
   toneById: {},
   chatMessageById: {},
   chatMessageIdsByConversationId: {},
@@ -211,6 +216,7 @@ export const INITIAL_APP_STATE: AppState = {
   onboarding: INITIAL_ONBOARDING_STATE,
   transcriptions: INITIAL_TRANSCRIPTIONS_STATE,
   notes: INITIAL_NOTES_STATE,
+  calendar: INITIAL_CALENDAR_STATE,
   dictionary: INITIAL_DICTIONARY_STATE,
   tones: INITIAL_TONES_STATE,
   toneEditor: INITIAL_TONE_EDITOR_STATE,

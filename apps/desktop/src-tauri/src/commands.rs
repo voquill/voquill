@@ -429,18 +429,29 @@ pub async fn user_preferences_get(
         .map_err(|err| err.to_string())
 }
 
+fn google_oauth_config<'a>(
+    state: &'a State<'_, crate::state::GoogleOAuthState>,
+) -> Result<&'a crate::state::oauth::GoogleOAuthConfig, String> {
+    state.config().ok_or_else(|| {
+        "Google OAuth client id/secret not configured. Set VOQUILL_GOOGLE_CLIENT_ID and VOQUILL_GOOGLE_CLIENT_SECRET."
+            .to_string()
+    })
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn start_google_sign_in(
     app_handle: AppHandle,
     config: State<'_, crate::state::GoogleOAuthState>,
 ) -> Result<crate::system::google_oauth::GoogleAuthEventPayload, String> {
-    let config = config.config().ok_or_else(|| {
-        "Google OAuth client id/secret not configured. Set VOQUILL_GOOGLE_CLIENT_ID and VOQUILL_GOOGLE_CLIENT_SECRET."
-            .to_string()
-    })?;
+    let config = google_oauth_config(&config)?;
 
-    let result = crate::system::google_oauth::start_google_oauth(&app_handle, config).await?;
+    let result = crate::system::google_oauth::start_google_oauth(
+        &app_handle,
+        config,
+        crate::system::google_oauth::SIGN_IN_SCOPES,
+    )
+    .await?;
 
     // Keep emitting the event for backward compatibility with existing
     // listeners (e.g. the Voquill desktop app itself). Callers that invoke
@@ -1291,7 +1302,7 @@ pub async fn clear_local_data(
     let pool = database.pool();
     let mut transaction = pool.begin().await.map_err(|err| err.to_string())?;
 
-    const TABLES_TO_CLEAR: [&str; 11] = [
+    const TABLES_TO_CLEAR: [&str; 12] = [
         "chat_messages",
         "conversations",
         "user_profiles",
@@ -1300,6 +1311,7 @@ pub async fn clear_local_data(
         "hotkeys",
         "api_keys",
         "user_preferences",
+        "calendar_accounts",
         "note_segments",
         "notes",
         "note_deletions",
@@ -2902,4 +2914,298 @@ pub fn set_tray_meeting_menu(
     menu: crate::system::tray::TrayMeetingMenu,
 ) -> Result<(), String> {
     crate::system::tray::set_tray_meeting_menu(&app, menu)
+}
+
+const GOOGLE_CALENDAR_PROVIDER: &str = "google";
+const CALENDAR_ACCESS_NOT_GRANTED: &str = "calendar_access_not_granted";
+const CALENDAR_REAUTH_REQUIRED: &str = "calendar_reauth_required";
+
+/// Runs the Google consent flow for read-only calendar access and stores the
+/// account. The refresh token never leaves Rust; callers use
+/// `calendar_account_access_token` for a short-lived token.
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_account_link_google(
+    app_handle: AppHandle,
+    config: State<'_, crate::state::GoogleOAuthState>,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+    tokens: State<'_, crate::state::CalendarTokenState>,
+) -> Result<crate::domain::CalendarAccountView, String> {
+    use crate::system::google_oauth::CALENDAR_SCOPES;
+
+    let config = google_oauth_config(&config)?;
+    let scopes = format!("openid email {}", CALENDAR_SCOPES.join(" "));
+    let result =
+        crate::system::google_oauth::start_google_oauth(&app_handle, config, &scopes).await?;
+
+    let granted_all = CALENDAR_SCOPES
+        .iter()
+        .all(|scope| result.granted_scopes.iter().any(|granted| granted == scope));
+    if !granted_all {
+        return Err(CALENDAR_ACCESS_NOT_GRANTED.to_string());
+    }
+
+    let refresh_token = result
+        .refresh_token
+        .ok_or_else(|| "Google did not return a refresh token".to_string())?;
+    let protected = protect_api_key(&refresh_token);
+
+    let account = crate::domain::CalendarAccount {
+        id: format!("{GOOGLE_CALENDAR_PROVIDER}:{}", result.payload.user.sub),
+        provider: GOOGLE_CALENDAR_PROVIDER.to_string(),
+        email: result.payload.user.email,
+        created_at: current_timestamp_millis()?,
+        salt: protected.salt_b64,
+        refresh_token_ciphertext: protected.ciphertext_b64,
+        linked_calendar_ids: Vec::new(),
+    };
+
+    let saved =
+        crate::db::calendar_account_queries::upsert_calendar_account(database.pool(), &account)
+            .await
+            .map_err(|err| err.to_string())?;
+
+    tokens.set(
+        &saved.id,
+        &result.payload.access_token,
+        result.payload.expires_in,
+    );
+
+    Ok(saved.into())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_account_list(
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<Vec<crate::domain::CalendarAccountView>, String> {
+    crate::db::calendar_account_queries::fetch_calendar_accounts(database.pool())
+        .await
+        .map(|accounts| accounts.into_iter().map(Into::into).collect())
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_account_set_linked_calendars(
+    id: String,
+    calendar_ids: Vec<String>,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+) -> Result<(), String> {
+    crate::db::calendar_account_queries::update_linked_calendar_ids(
+        database.pool(),
+        &id,
+        &calendar_ids,
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_account_unlink(
+    id: String,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+    tokens: State<'_, crate::state::CalendarTokenState>,
+) -> Result<(), String> {
+    crate::db::calendar_account_queries::delete_calendar_account(database.pool(), &id)
+        .await
+        .map_err(|err| err.to_string())?;
+    tokens.remove(&id);
+
+    Ok(())
+}
+
+/// Returns a valid access token for the account, refreshing it when the
+/// cached one is about to expire or the caller saw it rejected. Fails with
+/// `calendar_reauth_required` when the user has to link the account again.
+#[tauri::command]
+#[specta::specta]
+pub async fn calendar_account_access_token(
+    id: String,
+    force_refresh: bool,
+    config: State<'_, crate::state::GoogleOAuthState>,
+    database: State<'_, crate::state::OptionKeyDatabase>,
+    tokens: State<'_, crate::state::CalendarTokenState>,
+) -> Result<String, String> {
+    use crate::system::google_oauth::RefreshError;
+
+    if !force_refresh {
+        if let Some(access_token) = tokens.get(&id) {
+            return Ok(access_token);
+        }
+    }
+
+    let config = google_oauth_config(&config)?;
+    let account = crate::db::calendar_account_queries::fetch_calendar_account(database.pool(), &id)
+        .await
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| format!("calendar account not found: {id}"))?;
+    let refresh_token = reveal_api_key(&account.salt, &account.refresh_token_ciphertext)
+        .map_err(|err| err.to_string())?;
+
+    match crate::system::google_oauth::refresh_access_token(config, &refresh_token).await {
+        Ok(refreshed) => {
+            tokens.set(&id, &refreshed.access_token, refreshed.expires_in);
+            Ok(refreshed.access_token)
+        }
+        Err(RefreshError::Revoked) => Err(CALENDAR_REAUTH_REQUIRED.to_string()),
+        Err(RefreshError::Other(message)) => Err(message),
+    }
+}
+
+pub const REMINDER_WINDOW_LABEL: &str = "event-reminders";
+const REMINDER_WINDOW_PAGE: &str = "reminders.html";
+
+#[derive(serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReminderWindowArgs {
+    pub width: f64,
+    pub height: f64,
+    pub margin: f64,
+}
+
+/// Moves the window to the top right of the screen the cursor is on, inside
+/// its menu bar, dock and taskbar.
+fn move_to_top_right(
+    app: &AppHandle,
+    window: &tauri::WebviewWindow,
+    args: &ReminderWindowArgs,
+) -> Result<(), String> {
+    let window = window.clone();
+    let (width, height, margin) = (args.width, args.height, args.margin);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    app.run_on_main_thread(move || {
+        if let Some(monitor) = crate::platform::monitor::get_monitor_at_cursor() {
+            crate::platform::position::set_overlay_position(
+                &window,
+                &monitor,
+                crate::domain::OverlayAnchor::TopRight,
+                width,
+                height,
+                margin,
+            );
+        }
+        let _ = tx.send(());
+    })
+    .map_err(|err| err.to_string())?;
+
+    rx.recv()
+        .map_err(|_| "failed to position the reminder window".to_string())
+}
+
+/// Shows the event reminder popup at the top right of the screen the cursor
+/// is on, creating it on first use. It floats above other windows and never
+/// takes focus from the app the user is working in. While it is open it only
+/// changes height, so it stays where it first appeared.
+#[tauri::command]
+#[specta::specta]
+pub async fn reminder_window_show(args: ReminderWindowArgs, app: AppHandle) -> Result<(), String> {
+    let window = match app.get_webview_window(REMINDER_WINDOW_LABEL) {
+        Some(window) => window,
+        None => {
+            let mut builder = tauri::WebviewWindowBuilder::new(
+                &app,
+                REMINDER_WINDOW_LABEL,
+                tauri::WebviewUrl::App(REMINDER_WINDOW_PAGE.into()),
+            )
+            .title("Voquill")
+            .inner_size(args.width, args.height)
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .resizable(false)
+            .always_on_top(true)
+            .visible_on_all_workspaces(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .focusable(false)
+            .accept_first_mouse(true)
+            .visible(false);
+
+            // WebView2 refuses a second webview on the same data folder unless
+            // it is created with the same browser arguments as the first.
+            let main_browser_args = app
+                .config()
+                .app
+                .windows
+                .iter()
+                .find(|window| window.label == "main")
+                .and_then(|window| window.additional_browser_args.as_deref());
+            if let Some(browser_args) = main_browser_args {
+                builder = builder.additional_browser_args(browser_args);
+            }
+
+            let window = builder.build().map_err(|err| err.to_string())?;
+
+            #[cfg(target_os = "macos")]
+            if let Err(err) = crate::platform::window::make_overlay(&window) {
+                log::error!("Failed to turn the reminder window into an overlay: {err}");
+            }
+
+            if let Err(err) = move_to_top_right(&app, &window, &args) {
+                log::error!("{err}");
+            }
+
+            window
+        }
+    };
+
+    window
+        .set_size(tauri::LogicalSize::new(args.width, args.height))
+        .map_err(|err| err.to_string())?;
+    window.show().map_err(|err| err.to_string())
+}
+
+/// Closes the popup and returns once it is gone, so a show call that follows
+/// creates a new window instead of finding the one being torn down.
+#[tauri::command]
+#[specta::specta]
+pub async fn reminder_window_close(app: AppHandle) -> Result<(), String> {
+    const POLL: std::time::Duration = std::time::Duration::from_millis(10);
+    const MAX_POLLS: u32 = 100;
+
+    let Some(window) = app.get_webview_window(REMINDER_WINDOW_LABEL) else {
+        return Ok(());
+    };
+    window.destroy().map_err(|err| err.to_string())?;
+
+    for _ in 0..MAX_POLLS {
+        if app.get_webview_window(REMINDER_WINDOW_LABEL).is_none() {
+            break;
+        }
+        tokio::time::sleep(POLL).await;
+    }
+
+    Ok(())
+}
+
+pub const EVT_WAKE_TIMER: &str = "wake-timer";
+
+#[derive(Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WakeTimerPayload {
+    pub id: String,
+}
+
+/// Emits `wake-timer` with the given id once the delay has passed. Webview
+/// timers are suspended while the main window is hidden, so anything that
+/// must run on time there is driven from this timer instead.
+#[tauri::command]
+#[specta::specta]
+pub fn wake_timer_set(
+    id: String,
+    delay_ms: u32,
+    app: AppHandle,
+    timers: State<'_, crate::state::WakeTimerState>,
+) {
+    let payload = WakeTimerPayload { id: id.clone() };
+    let timer = tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms.into())).await;
+        if let Err(err) = app.emit(EVT_WAKE_TIMER, payload) {
+            log::error!("Failed to emit wake timer: {err}");
+        }
+    });
+    timers.replace(id, timer);
 }

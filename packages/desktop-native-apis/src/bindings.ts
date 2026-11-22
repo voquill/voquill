@@ -1043,6 +1043,90 @@ async resumableUpload(args: ResumableUploadArgs) : Promise<Result<ResumableUploa
 },
 async resumableUploadCancel(uploadId: string) : Promise<void> {
     await TAURI_INVOKE("resumable_upload_cancel", { uploadId });
+},
+/**
+ * Runs the Google consent flow for read-only calendar access and stores the
+ * account. The refresh token never leaves Rust; callers use
+ * `calendar_account_access_token` for a short-lived token.
+ */
+async calendarAccountLinkGoogle() : Promise<Result<CalendarAccountView, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("calendar_account_link_google") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async calendarAccountList() : Promise<Result<CalendarAccountView[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("calendar_account_list") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async calendarAccountSetLinkedCalendars(id: string, calendarIds: string[]) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("calendar_account_set_linked_calendars", { id, calendarIds }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+async calendarAccountUnlink(id: string) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("calendar_account_unlink", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Returns a valid access token for the account, refreshing it when the
+ * cached one is about to expire or the caller saw it rejected. Fails with
+ * `calendar_reauth_required` when the user has to link the account again.
+ */
+async calendarAccountAccessToken(id: string, forceRefresh: boolean) : Promise<Result<string, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("calendar_account_access_token", { id, forceRefresh }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Shows the event reminder popup at the top right of the screen the cursor
+ * is on, creating it on first use. It floats above other windows and never
+ * takes focus from the app the user is working in. While it is open it only
+ * changes height, so it stays where it first appeared.
+ */
+async reminderWindowShow(args: ReminderWindowArgs) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reminder_window_show", { args }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Closes the popup and returns once it is gone, so a show call that follows
+ * creates a new window instead of finding the one being torn down.
+ */
+async reminderWindowClose() : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("reminder_window_close") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Emits `wake-timer` with the given id once the delay has passed. Webview
+ * timers are suspended while the main window is hidden, so anything that
+ * must run on time there is driven from this timer instead.
+ */
+async wakeTimerSet(id: string, delayMs: number) : Promise<void> {
+    await TAURI_INVOKE("wake_timer_set", { id, delayMs });
 }
 }
 
@@ -1119,6 +1203,7 @@ export type AppProcessMatch = { pid: number; exePath: string | null; appName: st
 export type AppTarget = { id: string; name: string; createdAt: string; toneId: string | null; iconPath: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AppTargetUpsertArgs = { id: string; name: string; toneId?: string | null; iconPath?: string | null; pasteKeybind?: string | null; insertionMethod?: string | null; typingSpeedMs?: number | null }
 export type AudioClip = "start_recording_clip" | "stop_recording_clip" | "alert_linux_clip" | "alert_macos_clip" | "alert_windows_10_clip" | "alert_windows_11_clip"
+export type CalendarAccountView = { id: string; provider: string; email: string | null; createdAt: number; linkedCalendarIds: string[] }
 /**
  * Why a capture stopped receiving audio. Everything captured so far is on disk.
  */
@@ -1285,6 +1370,7 @@ export type PermissionKind = "microphone" | "accessibility"
 export type PermissionState = "authorized" | "denied" | "restricted" | "not-determined"
 export type PermissionStatus = { kind: PermissionKind; state: PermissionState; promptShown: boolean }
 export type PillWindowSize = "dictation" | "assistant_compact" | "assistant_expanded" | "assistant_typing"
+export type ReminderWindowArgs = { width: number; height: number; margin: number }
 export type RemoteReceiverStatus = { enabled: boolean; deviceId: string; deviceName: string; listenAddress: string | null; port: number | null; pairingCode: string; lastSenderDeviceId: string | null; lastEventId: string | null; lastDeliveryStatus: string | null; lastDeliveryAt: string | null; lastError: string | null; lastTargetClassName: string | null; lastTargetTitle: string | null; lastTargetEditable: boolean | null; devicePlatform: string }
 export type RemoteSenderDeliverArgs = { targetDeviceId: string; text: string; mode: string }
 export type RemoteSenderPairArgs = { receiverDeviceId: string; receiverName: string; receiverPlatform: string; receiverAddress: string; pairingCode: string }
