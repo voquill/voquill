@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "event-reminders",
+  "description": "Capability for the event reminder popup: it listens for its cards and emits clicks, and needs no plugin permissions",
+  "windows": ["event-reminders"],
+  "permissions": ["core:event:default"]
+}

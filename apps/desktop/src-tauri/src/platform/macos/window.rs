@@ -1,6 +1,7 @@
 use crate::platform::macos::dock;
-use cocoa::appkit::{NSApp, NSApplication, NSWindow};
-use cocoa::base::{id, nil, YES};
+use cocoa::appkit::{NSApp, NSApplication, NSWindow, NSWindowCollectionBehavior};
+use cocoa::base::{id, nil, BOOL, YES};
+use objc::{msg_send, sel, sel_impl};
 use std::sync::mpsc;
 use tauri::WebviewWindow;
 
@@ -50,4 +51,37 @@ pub fn surface_main_window(window: &WebviewWindow) -> Result<(), String> {
 
     rx.recv()
         .map_err(|_| "failed to surface window on main thread".to_string())?
+}
+
+/// Turns an always-on-top window into an overlay: visible on every Space,
+/// including over other apps' fullscreen windows, and clickable without
+/// making Voquill the active app. The window level is left alone so system
+/// notification banners still draw above it.
+pub fn make_overlay(window: &WebviewWindow) -> Result<(), String> {
+    let window_for_handle = window.clone();
+
+    window
+        .run_on_main_thread(move || match window_for_handle.ns_window() {
+            Ok(ns_window_ptr) => unsafe {
+                let ns_window = ns_window_ptr as id;
+                ns_window.setCollectionBehavior_(
+                    NSWindowCollectionBehavior::NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorFullScreenAuxiliary
+                        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorStationary
+                        | NSWindowCollectionBehavior::NSWindowCollectionBehaviorIgnoresCycle,
+                );
+
+                // What a non-activating NSPanel sets on itself. AppKit has no
+                // public way to ask for it on a window that already exists.
+                let prevents_activation = sel!(_setPreventsActivation:);
+                let supported: BOOL = msg_send![ns_window, respondsToSelector: prevents_activation];
+                if supported == YES {
+                    let _: () = msg_send![ns_window, _setPreventsActivation: YES];
+                } else {
+                    log::warn!("This macOS cannot keep overlay clicks from activating Voquill");
+                }
+            },
+            Err(err) => log::error!("Failed to turn window into an overlay: {err}"),
+        })
+        .map_err(|err| err.to_string())
 }

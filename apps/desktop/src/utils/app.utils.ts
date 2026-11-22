@@ -12,6 +12,7 @@ import {
   User,
 } from "@voquill/types";
 import type { AppState, SnackbarMode } from "../state/app.state";
+import type { CalendarAccount } from "../types/calendar.types";
 
 export type ShowSnackbarOpts = {
   duration?: number;
@@ -61,6 +62,18 @@ export const registerHotkeys = (draft: AppState, hotkeys: Hotkey[]): void => {
 export const registerApiKeys = (draft: AppState, apiKeys: ApiKey[]): void => {
   for (const apiKey of apiKeys) {
     draft.apiKeyById[apiKey.id] = apiKey;
+  }
+};
+
+export const registerCalendarAccounts = (
+  draft: AppState,
+  accounts: CalendarAccount[],
+): void => {
+  for (const account of accounts) {
+    draft.calendarAccountById[account.id] = account;
+    if (!draft.calendar.accountIds.includes(account.id)) {
+      draft.calendar.accountIds.push(account.id);
+    }
   }
 };
 

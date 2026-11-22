@@ -57,13 +57,17 @@ pub fn get_monitor_at_cursor() -> Option<MonitorAtCursor> {
             {
                 let visible = NSScreen::visibleFrame(screen);
                 let backing_scale: CGFloat = msg_send![screen, backingScaleFactor];
+                // Cocoa measures up from the bottom of the primary screen;
+                // visible_y is measured down from its top, like window positions.
+                let primary: cocoa::base::id = msg_send![screens, objectAtIndex: 0];
+                let primary_height = NSScreen::frame(primary).size.height;
                 return Some(MonitorAtCursor {
                     x: frame.origin.x,
                     y: frame.origin.y,
                     width: frame.size.width,
                     height: frame.size.height,
                     visible_x: visible.origin.x,
-                    visible_y: frame.size.height - (visible.origin.y + visible.size.height),
+                    visible_y: primary_height - (visible.origin.y + visible.size.height),
                     visible_width: visible.size.width,
                     visible_height: visible.size.height,
                     scale_factor: backing_scale,

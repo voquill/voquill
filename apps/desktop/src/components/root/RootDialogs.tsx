@@ -11,6 +11,7 @@ import { ClearLocalDataDialog } from "../settings/ClearLocalDataDialog";
 import { DeleteAccountDialog } from "../settings/DeleteAccountDialog";
 import { DictationLanguageDialog } from "../settings/DictationLanguageDialog";
 import { DiagnosticsDialog } from "../settings/DiagnosticsDialog";
+import { GoogleCalendarDialog } from "../settings/GoogleCalendarDialog";
 import { MicrophoneDialog } from "../settings/MicrophoneDialog";
 import { MultiDeviceDialog } from "../settings/MultiDeviceDialog";
 import { MoreSettingsDialog } from "../settings/MoreSettingsDialog";
@@ -42,6 +43,7 @@ export const RootDialogs = () => {
       <DictationLanguageDialog />
       <AppKeybindingsDialog />
       <DiagnosticsDialog />
+      <GoogleCalendarDialog />
       <MobileAppDialog />
       <NativeSetupDialog />
     </>

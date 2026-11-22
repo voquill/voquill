@@ -37,6 +37,11 @@ export default defineConfig(async () => {
       svgr(),
     ],
     clearScreen: false,
+    build: {
+      rollupOptions: {
+        input: ["index.html", "reminders.html"],
+      },
+    },
     server: {
       port: 1420,
       strictPort: true,

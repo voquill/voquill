@@ -4,6 +4,7 @@ import { ErrorBoundary } from "react-error-boundary";
 import { Outlet, useLocation } from "react-router-dom";
 import { trackPageView } from "../../utils/analytics.utils";
 import { AnimationSideEffects } from "./AnimationSideEffects";
+import { CalendarSideEffects } from "./CalendarSideEffects";
 import { LoadingApp } from "./LoadingApp";
 import { NotesSideEffects } from "../notes/NotesSideEffects";
 import { OverlaySyncSideEffects } from "./OverlaySyncSideEffects";
@@ -39,6 +40,7 @@ export default function Root() {
       {/* Meeting supervision (capture progress, rollover, limits, tray) runs
           for the app's lifetime, not only while the dashboard is shown. */}
       <NotesSideEffects />
+      <CalendarSideEffects />
       <RootDialogs />
       <ErrorBoundary FallbackComponent={ErrorFallback}>
         <Suspense fallback={<LoadingApp />}>
