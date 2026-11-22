@@ -42,3 +42,21 @@ _Avoid_: loopback, desktop audio
 
 **Note pipeline**:
 Where a note's network-bound work runs once the user stops: transcription, AI notes and title, search and Ask. The local pipeline uses the user's transcription and post-processing modes.
+
+## Integrations
+
+**Calendar account**:
+A Google account the user linked in Settings so Voquill can read its calendars. Stored on this device only, with its refresh token encrypted in SQLite; linking is per device and does not follow the Voquill account.
+_Avoid_: integration (for one account), connection
+
+**Linked calendar**:
+A calendar inside a calendar account whose events get reminders. A new account starts with only its primary calendar linked.
+_Avoid_: selected calendar, enabled calendar
+
+**Event reminder**:
+The card shown at the top right of the screen from one minute before a timed event starts until the user dismisses it or the event ends. All-day, cancelled and declined events never get one. A dismissal is remembered until the event ends, so a restart does not bring the card back.
+_Avoid_: notification (the OS has those), alert, toast (the pill has those)
+
+**Wake timer**:
+A one-shot timer in Rust that the reminder logic re-arms on every tick. The webview's own timers stop while the main window is hidden, so anything that must run on time there is driven from it.
+_Avoid_: interval, heartbeat

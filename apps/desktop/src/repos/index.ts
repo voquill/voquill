@@ -3,6 +3,7 @@ import type { ApiKeyProvider } from "@voquill/types";
 import { Nullable } from "@voquill/types";
 import { getRec } from "@voquill/utilities";
 import { getAppState } from "../store";
+import type { CalendarProvider } from "../types/calendar.types";
 import { getIsEnterpriseEnabled } from "../utils/enterprise.utils";
 import { getLogger } from "../utils/log.utils";
 import { OLLAMA_DEFAULT_URL } from "../utils/ollama.utils";
@@ -18,6 +19,11 @@ import { BaseApiKeyRepo, LocalApiKeyRepo } from "./api-key.repo";
 import { BaseAppTargetRepo, LocalAppTargetRepo } from "./app-target.repo";
 import { BaseAuthRepo, CloudAuthRepo, EnterpriseAuthRepo } from "./auth.repo";
 import {
+  BaseCalendarAccountRepo,
+  LocalCalendarAccountRepo,
+} from "./calendar-account.repo";
+import { BaseCalendarRepo, GoogleCalendarRepo } from "./calendar.repo";
+import {
   BaseConfigRepo,
   CloudConfigRepo,
   EnterpriseConfigRepo,
@@ -29,6 +35,7 @@ import {
   BaseGenerateTextRepo,
   CerebrasGenerateTextRepo,
   CheaperInferenceGenerateTextRepo,
+  AtlasCloudGenerateTextRepo,
   ClaudeGenerateTextRepo,
   CloudGenerateTextRepo,
   DeepseekGenerateTextRepo,
@@ -54,6 +61,7 @@ import {
   BaseModelProviderRepo,
   CerebrasModelProviderRepo,
   CheaperInferenceModelProviderRepo,
+  AtlasCloudModelProviderRepo,
   ClaudeModelProviderRepo,
   DeepgramModelProviderRepo,
   DeepSeekModelProviderRepo,
@@ -215,6 +223,19 @@ export const getApiKeyRepo = (): BaseApiKeyRepo => {
   return new LocalApiKeyRepo();
 };
 
+export const getCalendarAccountRepo = (): BaseCalendarAccountRepo => {
+  return new LocalCalendarAccountRepo();
+};
+
+export const getCalendarRepo = (
+  provider: CalendarProvider,
+): BaseCalendarRepo => {
+  switch (provider) {
+    case "google":
+      return new GoogleCalendarRepo();
+  }
+};
+
 export const getToneRepo = (): BaseToneRepo => {
   if (isEnterprise()) {
     return new EnterpriseToneRepo();
@@ -365,6 +386,12 @@ const getGenTextRepoInternal = ({
     } else if (prefs.provider === "openllm") {
       getLogger().verbose("Configuring OpenLLM repo for generate text");
       repo = new OpenLLMGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
+    } else if (prefs.provider === "atlascloud") {
+      getLogger().verbose("Configuring Atlas Cloud repo for generate text");
+      repo = new AtlasCloudGenerateTextRepo(
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
@@ -534,6 +561,8 @@ export const getModelProviderRepo = (
       return new CheaperInferenceModelProviderRepo();
     case "openllm":
       return new OpenLLMModelProviderRepo();
+    case "atlascloud":
+      return new AtlasCloudModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":

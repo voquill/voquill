@@ -9,6 +9,8 @@ export type LocalState = {
   accurateDictationEnabled?: boolean;
   hasHiddenTrialExtensionCard: boolean;
   disableAutoStyleLoading?: boolean;
+  /** Dismissed event reminders by event key, with when each stops mattering. */
+  dismissedEventReminders?: Record<string, number>;
 };
 
 export const INITIAL_LOCAL_STATE: LocalState = {

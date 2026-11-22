@@ -25,6 +25,13 @@ const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const CERTS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 const CALLBACK_PATH: &str = "/callback";
 const HTTP_SERVER_TIMEOUT: Duration = Duration::from_secs(120);
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+pub const SIGN_IN_SCOPES: &str = "openid email profile";
+pub const CALENDAR_SCOPES: [&str; 2] = [
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events.readonly",
+];
 
 #[derive(Debug, Serialize, Clone, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -49,11 +56,24 @@ pub struct GoogleUserInfo {
 pub struct GoogleAuthFlowResult {
     pub payload: GoogleAuthEventPayload,
     pub refresh_token: Option<String>,
+    pub granted_scopes: Vec<String>,
+}
+
+pub struct RefreshedAccessToken {
+    pub access_token: String,
+    pub expires_in: i64,
+}
+
+pub enum RefreshError {
+    /// The refresh token was revoked or expired; the user has to link again.
+    Revoked,
+    Other(String),
 }
 
 pub async fn start_google_oauth(
     app_handle: &AppHandle,
     config: &GoogleOAuthConfig,
+    scopes: &str,
 ) -> Result<GoogleAuthFlowResult, String> {
     let code_verifier = generate_code_verifier();
     let code_challenge = compute_code_challenge(&code_verifier);
@@ -74,8 +94,13 @@ pub async fn start_google_oauth(
         run_local_http_server(listener, server_state, HTTP_SERVER_TIMEOUT)
     });
 
-    let auth_url =
-        build_authorization_url(&config.client_id, &redirect_uri, &code_challenge, &state);
+    let auth_url = build_authorization_url(
+        &config.client_id,
+        &redirect_uri,
+        &code_challenge,
+        &state,
+        scopes,
+    );
 
     if let Err(err) = app_handle
         .opener()
@@ -89,10 +114,7 @@ pub async fn start_google_oauth(
         .map_err(|err| format!("OAuth listener panicked: {err}"))?
         .map_err(|err| format!("OAuth listener failed: {err}"))?;
 
-    let client = Client::builder()
-        .user_agent("voquill-desktop")
-        .build()
-        .map_err(|err| format!("Failed to build HTTP client: {err}"))?;
+    let client = http_client()?;
 
     let token_response = exchange_code_for_tokens(
         &client,
@@ -124,7 +146,64 @@ pub async fn start_google_oauth(
     Ok(GoogleAuthFlowResult {
         payload,
         refresh_token: token_response.refresh_token,
+        granted_scopes: token_response
+            .scope
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
     })
+}
+
+pub async fn refresh_access_token(
+    config: &GoogleOAuthConfig,
+    refresh_token: &str,
+) -> Result<RefreshedAccessToken, RefreshError> {
+    let response = http_client()
+        .map_err(RefreshError::Other)?
+        .post(TOKEN_URL)
+        .form(&[
+            ("client_id", config.client_id.as_str()),
+            ("client_secret", config.client_secret.as_str()),
+            ("refresh_token", refresh_token),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|err| RefreshError::Other(format!("Failed to refresh Google token: {err}")))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let error = response
+            .json::<TokenErrorResponse>()
+            .await
+            .map(|body| body.error)
+            .unwrap_or_default();
+        return Err(if error == "invalid_grant" {
+            RefreshError::Revoked
+        } else {
+            RefreshError::Other(format!(
+                "Google token endpoint responded with status {status}"
+            ))
+        });
+    }
+
+    let body = response
+        .json::<RefreshResponse>()
+        .await
+        .map_err(|err| RefreshError::Other(format!("Failed to decode Google token: {err}")))?;
+
+    Ok(RefreshedAccessToken {
+        access_token: body.access_token,
+        expires_in: body.expires_in,
+    })
+}
+
+fn http_client() -> Result<Client, String> {
+    Client::builder()
+        .user_agent("voquill-desktop")
+        .timeout(HTTP_REQUEST_TIMEOUT)
+        .build()
+        .map_err(|err| format!("Failed to build HTTP client: {err}"))
 }
 
 fn generate_code_verifier() -> String {
@@ -149,12 +228,13 @@ fn build_authorization_url(
     redirect_uri: &str,
     code_challenge: &str,
     state: &str,
+    scopes: &str,
 ) -> String {
     let query = form_urlencoded::Serializer::new(String::new())
         .append_pair("response_type", "code")
         .append_pair("client_id", client_id)
         .append_pair("redirect_uri", redirect_uri)
-        .append_pair("scope", "openid email profile")
+        .append_pair("scope", scopes)
         .append_pair("code_challenge", code_challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
@@ -232,7 +312,21 @@ fn handle_request(stream: &mut TcpStream, expected_state: &str) -> Result<Option
     let state = query.get("state");
     let code = query.get("code");
 
-    if state.map(|value| value.as_str()) != Some(expected_state) || code.is_none() {
+    if state.map(|value| value.as_str()) != Some(expected_state) {
+        respond(stream, 400, "Invalid sign-in request")?;
+        return Ok(None);
+    }
+
+    if let Some(error) = query.get("error") {
+        respond(
+            stream,
+            400,
+            "Google access was not granted. You can close this tab.",
+        )?;
+        return Err(format!("Google authorization was not granted: {error}"));
+    }
+
+    if code.is_none() {
         respond(stream, 400, "Invalid sign-in request")?;
         return Ok(None);
     }
@@ -264,10 +358,20 @@ struct TokenResponse {
     access_token: String,
     expires_in: i64,
     refresh_token: Option<String>,
-    #[serde(rename = "scope")]
-    _scope: String,
+    scope: String,
     token_type: String,
     id_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RefreshResponse {
+    access_token: String,
+    expires_in: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TokenErrorResponse {
+    error: String,
 }
 
 #[derive(Debug, Deserialize)]

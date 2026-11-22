@@ -3,6 +3,7 @@ import {
   ArrowOutwardRounded,
   AutoAwesomeOutlined,
   AutoFixHighOutlined,
+  CalendarMonthOutlined,
   DeleteForeverOutlined,
   DescriptionOutlined,
   Edit,
@@ -181,6 +182,12 @@ export default function SettingsPage() {
   const openShortcutsDialog = () => {
     produceAppState((draft) => {
       draft.settings.shortcutsDialogOpen = true;
+    });
+  };
+
+  const openGoogleCalendarDialog = () => {
+    produceAppState((draft) => {
+      draft.settings.googleCalendarDialogOpen = true;
     });
   };
 
@@ -432,6 +439,21 @@ export default function SettingsPage() {
     </Section>
   );
 
+  const integrations = (
+    <Section
+      title={<FormattedMessage defaultMessage="Integrations" />}
+      description={
+        <FormattedMessage defaultMessage="Connect Voquill to the other tools you use." />
+      }
+    >
+      <ListTile
+        title={<FormattedMessage defaultMessage="Google Calendar" />}
+        leading={<CalendarMonthOutlined />}
+        onClick={openGoogleCalendarDialog}
+      />
+    </Section>
+  );
+
   const advanced = (
     <Section
       title={<FormattedMessage defaultMessage="Advanced" />}
@@ -510,6 +532,7 @@ export default function SettingsPage() {
         </Typography>
         {general}
         {processing}
+        {!isEnterprise && integrations}
         {advanced}
         {!isEnterprise && dangerZone}
       </Stack>
