@@ -9,6 +9,10 @@ pub(crate) fn draw_all(gfx: &mut Gfx, state: &PillState) {
 
     state.click_regions.borrow_mut().clear();
 
+    let scale = state.ui_scale.get();
+    gfx.save();
+    gfx.scale(scale, scale);
+
     let ww = state.draw_width.get();
     let wh = state.draw_height.get();
     let (ox, oy) = state.content_offset();
@@ -53,6 +57,7 @@ pub(crate) fn draw_all(gfx: &mut Gfx, state: &PillState) {
         draw_cancel_button(gfx, state, ww, wh);
     }
 
+    gfx.restore();
     gfx.restore();
     gfx.end_frame();
 }
