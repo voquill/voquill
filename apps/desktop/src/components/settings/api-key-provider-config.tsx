@@ -16,7 +16,7 @@ import {
   openaiCompatibleTestIntegration,
   openaiTestIntegration,
   openrouterTestIntegration,
-  uberllmTestIntegration,
+  martllmTestIntegration,
   xaiTestIntegration,
 } from "@voquill/voice-ai";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
@@ -105,10 +105,10 @@ const STANDARD_PROVIDERS: Record<
     testFn: (args) =>
       cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
   },
-  uberllm: {
-    displayName: "UberLLM",
+  martllm: {
+    displayName: "MartLLM",
     testFn: (args) =>
-      uberllmTestIntegration({ ...args, customFetch: tauriFetch }),
+      martllmTestIntegration({ ...args, customFetch: tauriFetch }),
   },
 };
 

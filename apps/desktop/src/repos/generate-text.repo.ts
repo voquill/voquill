@@ -33,8 +33,8 @@ import {
   OPENROUTER_DEFAULT_MODEL,
   openrouterGenerateTextResponse,
   openrouterStreamChat,
-  UBERLLM_BASE_URL,
-  UBERLLM_DEFAULT_MODEL,
+  MARTLLM_BASE_URL,
+  MARTLLM_DEFAULT_MODEL,
 } from "@voquill/voice-ai";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { PostProcessingMode } from "../types/ai.types";
@@ -534,19 +534,19 @@ export class CheaperInferenceGenerateTextRepo extends BaseGenerateTextRepo {
   }
 }
 
-export class UberLLMGenerateTextRepo extends BaseGenerateTextRepo {
+export class MartLLMGenerateTextRepo extends BaseGenerateTextRepo {
   private apiKey: string;
   private model: string;
 
   constructor(apiKey: string, model: string | null) {
     super();
     this.apiKey = apiKey;
-    this.model = model ?? UBERLLM_DEFAULT_MODEL;
+    this.model = model ?? MARTLLM_DEFAULT_MODEL;
   }
 
   async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
     const response = await openaiGenerateTextResponse({
-      baseUrl: UBERLLM_BASE_URL,
+      baseUrl: MARTLLM_BASE_URL,
       apiKey: this.apiKey,
       model: this.model,
       prompt: input.prompt,
@@ -559,7 +559,7 @@ export class UberLLMGenerateTextRepo extends BaseGenerateTextRepo {
       text: response.text,
       metadata: {
         postProcessingMode: "api",
-        inferenceDevice: "API • UberLLM",
+        inferenceDevice: "API • MartLLM",
       },
     };
   }
@@ -567,7 +567,7 @@ export class UberLLMGenerateTextRepo extends BaseGenerateTextRepo {
   async *streamChat(input: LlmChatInput): AsyncGenerator<LlmStreamEvent> {
     yield* openaiStreamChat({
       apiKey: this.apiKey,
-      baseUrl: UBERLLM_BASE_URL,
+      baseUrl: MARTLLM_BASE_URL,
       model: this.model,
       input,
       customFetch: tauriFetch,

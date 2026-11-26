@@ -8,8 +8,8 @@ import {
   DEEPSEEK_MODELS,
   GEMINI_GENERATE_TEXT_MODELS,
   GEMINI_TRANSCRIPTION_MODELS,
-  UBERLLM_BASE_URL,
-  UBERLLM_MODELS,
+  MARTLLM_BASE_URL,
+  MARTLLM_MODELS,
   XAI_TRANSCRIPTION_MODELS,
 } from "@voquill/voice-ai";
 import { fetch } from "@tauri-apps/plugin-http";
@@ -231,7 +231,7 @@ export class CheaperInferenceModelProviderRepo extends BaseModelProviderRepo {
   }
 }
 
-export class UberLLMModelProviderRepo extends BaseModelProviderRepo {
+export class MartLLMModelProviderRepo extends BaseModelProviderRepo {
   supportsGenerativeTextModels(): boolean {
     return true;
   }
@@ -243,7 +243,7 @@ export class UberLLMModelProviderRepo extends BaseModelProviderRepo {
   private async fetchModels(options: FetchModelsOptions): Promise<string[]> {
     if (!options.apiKey) return [];
     return fetchOpenAICompatibleModels(
-      `${UBERLLM_BASE_URL}/models`,
+      `${MARTLLM_BASE_URL}/models`,
       options.apiKey,
     );
   }
@@ -252,7 +252,7 @@ export class UberLLMModelProviderRepo extends BaseModelProviderRepo {
     options: FetchModelsOptions,
   ): Promise<string[]> {
     const fetched = await this.fetchModels(options);
-    return fetched.length > 0 ? fetched : [...UBERLLM_MODELS];
+    return fetched.length > 0 ? fetched : [...MARTLLM_MODELS];
   }
 
   async getTranscriptionModels(): Promise<string[]> {

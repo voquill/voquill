@@ -19,7 +19,7 @@ export const API_KEY_PROVIDERS = [
   "speaches",
   "xai",
   "cheaperinference",
-  "uberllm",
+  "martllm",
 ] as const;
 export type ApiKeyProvider = (typeof API_KEY_PROVIDERS)[number];
 

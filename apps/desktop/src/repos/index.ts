@@ -42,7 +42,7 @@ import {
   OpenAICompatibleGenerateTextRepo,
   OpenAIGenerateTextRepo,
   OpenRouterGenerateTextRepo,
-  UberLLMGenerateTextRepo,
+  MartLLMGenerateTextRepo,
 } from "./generate-text.repo";
 import { BaseHotkeyRepo, LocalHotkeyRepo } from "./hotkey.repo";
 import {
@@ -68,7 +68,7 @@ import {
   OpenAIModelProviderRepo,
   OpenRouterModelProviderRepo,
   SpeachesModelProviderRepo,
-  UberLLMModelProviderRepo,
+  MartLLMModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
 import {
@@ -352,9 +352,9 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
-    } else if (prefs.provider === "uberllm") {
-      getLogger().verbose("Configuring UberLLM repo for generate text");
-      repo = new UberLLMGenerateTextRepo(
+    } else if (prefs.provider === "martllm") {
+      getLogger().verbose("Configuring MartLLM repo for generate text");
+      repo = new MartLLMGenerateTextRepo(
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
@@ -512,8 +512,8 @@ export const getModelProviderRepo = (
       return new CerebrasModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
-    case "uberllm":
-      return new UberLLMModelProviderRepo();
+    case "martllm":
+      return new MartLLMModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
