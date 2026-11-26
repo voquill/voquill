@@ -15,7 +15,7 @@ class ByokGenerateTextRepo: BaseGenerateTextRepo {
             self.model = modelOverride ?? "llama-3.3-70b-versatile"
         case "deepseek":
             self.apiUrl = "https://api.deepseek.com/chat/completions"
-            self.model = modelOverride ?? "deepseek-chat"
+            self.model = modelOverride ?? "deepseek-v4-flash"
         case "openRouter":
             self.apiUrl = "https://openrouter.ai/api/v1/chat/completions"
             self.model = modelOverride ?? "openai/gpt-4o-mini"
