@@ -3,15 +3,15 @@ import type { CustomFetch } from "./types";
 export const MARTLLM_BASE_URL = "https://api.martllm.com/v1";
 
 export const MARTLLM_MODELS = [
-  "openai/gpt-5.4-mini",
-  "openai/gpt-5.4",
-  "anthropic/claude-sonnet-5",
   "deepseek/deepseek-v4-flash",
+  "google/gemini-3.1-flash-lite",
+  "anthropic/claude-haiku-5.5",
+  "anthropic/claude-sonnet-5",
   "z-ai/glm-5.3",
 ] as const;
 export type MartLLMModel = (typeof MARTLLM_MODELS)[number];
 
-export const MARTLLM_DEFAULT_MODEL: MartLLMModel = "openai/gpt-5.4-mini";
+export const MARTLLM_DEFAULT_MODEL: MartLLMModel = "deepseek/deepseek-v4-flash";
 
 export type MartLLMTestIntegrationArgs = {
   apiKey: string;
