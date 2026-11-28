@@ -100,15 +100,15 @@ const STANDARD_PROVIDERS: Record<
   claude: { displayName: "Claude", testFn: claudeTestIntegration },
   cerebras: { displayName: "Cerebras", testFn: cerebrasTestIntegration },
   xai: { displayName: "xAI Grok", testFn: xaiTestIntegration },
-  cheaperinference: {
-    displayName: "Cheaper Inference",
-    testFn: (args) =>
-      cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
-  },
   martllm: {
     displayName: "MartLLM",
     testFn: (args) =>
       martllmTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
+  cheaperinference: {
+    displayName: "Cheaper Inference",
+    testFn: (args) =>
+      cheaperinferenceTestIntegration({ ...args, customFetch: tauriFetch }),
   },
 };
 

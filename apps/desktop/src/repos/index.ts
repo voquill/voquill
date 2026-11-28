@@ -344,17 +344,17 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "martllm") {
+      getLogger().verbose("Configuring MartLLM repo for generate text");
+      repo = new MartLLMGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else if (prefs.provider === "cheaperinference") {
       getLogger().verbose(
         "Configuring Cheaper Inference repo for generate text",
       );
       repo = new CheaperInferenceGenerateTextRepo(
-        prefs.apiKeyValue,
-        prefs.postProcessingModel,
-      );
-    } else if (prefs.provider === "martllm") {
-      getLogger().verbose("Configuring MartLLM repo for generate text");
-      repo = new MartLLMGenerateTextRepo(
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
@@ -510,10 +510,10 @@ export const getModelProviderRepo = (
       return new ClaudeModelProviderRepo();
     case "cerebras":
       return new CerebrasModelProviderRepo();
-    case "cheaperinference":
-      return new CheaperInferenceModelProviderRepo();
     case "martllm":
       return new MartLLMModelProviderRepo();
+    case "cheaperinference":
+      return new CheaperInferenceModelProviderRepo();
     case "deepseek":
       return new DeepSeekModelProviderRepo();
     case "gemini":
