@@ -47,6 +47,7 @@ import {
   OpenAIGenerateTextRepo,
   OpenLLMGenerateTextRepo,
   OpenRouterGenerateTextRepo,
+  MartLLMGenerateTextRepo,
 } from "./generate-text.repo";
 import { BaseHotkeyRepo, LocalHotkeyRepo } from "./hotkey.repo";
 import {
@@ -74,6 +75,7 @@ import {
   OpenLLMModelProviderRepo,
   OpenRouterModelProviderRepo,
   SpeachesModelProviderRepo,
+  MartLLMModelProviderRepo,
   XaiModelProviderRepo,
 } from "./model-provider.repo";
 import { CloudNoteRepo } from "./cloud-note.repo";
@@ -375,6 +377,12 @@ const getGenTextRepoInternal = ({
         prefs.apiKeyValue,
         prefs.postProcessingModel,
       );
+    } else if (prefs.provider === "martllm") {
+      getLogger().verbose("Configuring MartLLM repo for generate text");
+      repo = new MartLLMGenerateTextRepo(
+        prefs.apiKeyValue,
+        prefs.postProcessingModel,
+      );
     } else if (prefs.provider === "cheaperinference") {
       getLogger().verbose(
         "Configuring Cheaper Inference repo for generate text",
@@ -557,6 +565,8 @@ export const getModelProviderRepo = (
       return new ClaudeModelProviderRepo();
     case "cerebras":
       return new CerebrasModelProviderRepo();
+    case "martllm":
+      return new MartLLMModelProviderRepo();
     case "cheaperinference":
       return new CheaperInferenceModelProviderRepo();
     case "openllm":

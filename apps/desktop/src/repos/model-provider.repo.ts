@@ -8,6 +8,8 @@ import {
   CLAUDE_MODELS,
   DEEPGRAM_TRANSCRIPTION_MODELS,
   DEEPSEEK_MODELS,
+  MARTLLM_BASE_URL,
+  MARTLLM_MODELS,
   GEMINI_GENERATE_TEXT_MODELS,
   GEMINI_TRANSCRIPTION_MODELS,
   OPENLLM_BASE_URL,
@@ -197,6 +199,35 @@ export class CerebrasModelProviderRepo extends BaseModelProviderRepo {
   ): Promise<string[]> {
     const fetched = await this.fetchModels(options);
     return fetched.length > 0 ? fetched : [...CEREBRAS_MODELS];
+  }
+
+  async getTranscriptionModels(): Promise<string[]> {
+    return [];
+  }
+}
+
+export class MartLLMModelProviderRepo extends BaseModelProviderRepo {
+  supportsGenerativeTextModels(): boolean {
+    return true;
+  }
+
+  supportsTranscriptionModels(): boolean {
+    return false;
+  }
+
+  private async fetchModels(options: FetchModelsOptions): Promise<string[]> {
+    if (!options.apiKey) return [];
+    return fetchOpenAICompatibleModels(
+      `${MARTLLM_BASE_URL}/models`,
+      options.apiKey,
+    );
+  }
+
+  async getGenerativeTextModels(
+    options: FetchModelsOptions,
+  ): Promise<string[]> {
+    const fetched = await this.fetchModels(options);
+    return fetched.length > 0 ? fetched : [...MARTLLM_MODELS];
   }
 
   async getTranscriptionModels(): Promise<string[]> {

@@ -18,6 +18,7 @@ import {
   openllmTestIntegration,
   openaiTestIntegration,
   openrouterTestIntegration,
+  martllmTestIntegration,
   xaiTestIntegration,
 } from "@voquill/voice-ai";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
@@ -101,6 +102,11 @@ const STANDARD_PROVIDERS: Record<
   claude: { displayName: "Claude", testFn: claudeTestIntegration },
   cerebras: { displayName: "Cerebras", testFn: cerebrasTestIntegration },
   xai: { displayName: "xAI Grok", testFn: xaiTestIntegration },
+  martllm: {
+    displayName: "MartLLM",
+    testFn: (args) =>
+      martllmTestIntegration({ ...args, customFetch: tauriFetch }),
+  },
   cheaperinference: {
     displayName: "Cheaper Inference",
     testFn: (args) =>

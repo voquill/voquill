@@ -37,6 +37,8 @@ import {
   OPENROUTER_DEFAULT_MODEL,
   openrouterGenerateTextResponse,
   openrouterStreamChat,
+  MARTLLM_BASE_URL,
+  MARTLLM_DEFAULT_MODEL,
 } from "@voquill/voice-ai";
 import { fetch as tauriFetch } from "@tauri-apps/plugin-http";
 import { PostProcessingMode } from "../types/ai.types";
@@ -491,6 +493,47 @@ export class CerebrasGenerateTextRepo extends BaseGenerateTextRepo {
       apiKey: this.apiKey,
       model: this.model,
       input,
+    });
+  }
+}
+
+export class MartLLMGenerateTextRepo extends BaseGenerateTextRepo {
+  private apiKey: string;
+  private model: string;
+
+  constructor(apiKey: string, model: string | null) {
+    super();
+    this.apiKey = apiKey;
+    this.model = model ?? MARTLLM_DEFAULT_MODEL;
+  }
+
+  async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
+    const response = await openaiGenerateTextResponse({
+      baseUrl: MARTLLM_BASE_URL,
+      apiKey: this.apiKey,
+      model: this.model,
+      prompt: input.prompt,
+      system: input.system ?? undefined,
+      jsonResponse: input.jsonResponse,
+      customFetch: tauriFetch,
+    });
+
+    return {
+      text: response.text,
+      metadata: {
+        postProcessingMode: "api",
+        inferenceDevice: "API • MartLLM",
+      },
+    };
+  }
+
+  async *streamChat(input: LlmChatInput): AsyncGenerator<LlmStreamEvent> {
+    yield* openaiStreamChat({
+      apiKey: this.apiKey,
+      baseUrl: MARTLLM_BASE_URL,
+      model: this.model,
+      input,
+      customFetch: tauriFetch,
     });
   }
 }

@@ -18,6 +18,7 @@ export const API_KEY_PROVIDERS = [
   "cerebras",
   "speaches",
   "xai",
+  "martllm",
   "cheaperinference",
   "openllm",
   "atlascloud",
